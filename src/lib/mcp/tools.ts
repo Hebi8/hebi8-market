@@ -7,7 +7,7 @@
  */
 import { z } from "zod";
 import { ALERT_CONDS, type AlertCond, type AlertCondition } from "../alert-conds";
-import { alertBadges, alertViews } from "../alert-view";
+import { alertBadges, alertViews, latestPrice } from "../alert-view";
 import { adoptConditionState, alertKeys, readState, stateId } from "../alerts";
 import { barClosed, loadDaily, synthNoData } from "../bars";
 import { allItems, findItem, resolveKey, type Config } from "../config";
@@ -15,6 +15,8 @@ import { fmtDate } from "../format";
 import { nameOf } from "../names";
 import * as ops from "../ops";
 import { CHANGE_PERIODS } from "../periods";
+import { valuation } from "../profile";
+import { profileView } from "../profiles";
 import { liveReader, liveStats } from "../quotes";
 import { readerFor, scan, testFormula } from "../scan";
 import { scheduledNextSync, nextRun } from "../scheduler";
@@ -147,6 +149,55 @@ export const TOOLS: Tool[] = [
         last_daily_bar: { date: fmtDate(last.t), closed: barClosed(key, last.t, cfg, live) },
         columns: ["date", "open", "high", "low", "close", "volume"],
         bars: bars.slice(-args.limit).map((b) => [fmtDate(b.t), num(b.o), num(b.h), num(b.l), num(b.c), b.v]),
+      };
+    },
+  }),
+
+  tool({
+    name: "get_profile",
+    description:
+      "What one symbol is, from the cache: for a company its description, sector, industry, country, employees, website and next earnings date; for a fund its description, issuer, category, expense ratio, net assets, top holdings and sector weights; for anything else (an index, an FX pair, a commodity, a coin, a dataset series) the type, exchange, currency, timezone and trading hours, with a description when its source has one. A field the source does not have is absent. These facts are fetched from the symbol's source once a week (`profile_fetched_at`); `market_cap`, `pe_ttm` and `dividend_yield_pct` are not stored but computed now from the stored shares, trailing EPS and yearly dividend per share with `price`, the latest price (the quote when there is one, else the last daily close). `description_zh` is a Simplified Chinese translation someone asked for on the page, when there is one. A synthetic key has no profile and returns its operands. Nothing is fetched: a symbol that was never cached, or whose profile has not been fetched yet, comes back with what the cache has.",
+    input: { key: z.string().describe(`The symbol: ${KEY}`) },
+    run: ({ dir }, args) => {
+      const cfg = readConfig(dir);
+      const key = keyOf(cfg, args.key);
+      const view = profileView(key, cfg);
+      const p = view.profile;
+      const { price } = latestPrice(key, cfg);
+      const { marketCap, pe, dividendYield } = valuation(p, price);
+      const weights = (items: NonNullable<typeof p>["holdings"]) => items?.map((i) => ({ name: i.name, key: i.key, weight_pct: pct(i.weight) }));
+      return {
+        key,
+        name: nameOf(cfg, key, getSymbol(key)?.name),
+        source: view.source,
+        type: view.kind ?? undefined,
+        exchange: view.exchange ?? undefined,
+        currency: view.currency ?? undefined,
+        timezone: view.timezone ?? undefined,
+        hours: view.hours ?? undefined,
+        operands: view.legs ?? undefined,
+        description: p?.description,
+        description_zh: view.translation ?? undefined,
+        sector: p?.sector,
+        industry: p?.industry,
+        country: p?.country,
+        employees: p?.employees,
+        website: p?.website,
+        price: price != null ? num(price) : null,
+        market_cap: marketCap != null ? num(marketCap) : undefined,
+        pe_ttm: pe != null ? num(pe) : undefined,
+        dividend_yield_pct: pct(dividendYield) ?? undefined,
+        shares_outstanding: p?.shares,
+        eps_ttm: p?.eps,
+        dividend_per_share: p?.dividend != null ? num(p.dividend) : undefined,
+        next_earnings: view.earningsAt != null ? fmtDate(view.earningsAt) : undefined,
+        issuer: p?.issuer,
+        category: p?.category,
+        expense_ratio_pct: p?.expenseRatio != null ? num(p.expenseRatio * 100) : undefined,
+        net_assets: p?.netAssets,
+        top_holdings: weights(p?.holdings),
+        sector_weights: weights(p?.sectors),
+        profile_fetched_at: iso(view.fetchedAt),
       };
     },
   }),

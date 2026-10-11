@@ -157,6 +157,27 @@ const MIGRATIONS: ((db: Database.Database) => void)[] = [
       ALTER TABLE symbols ADD COLUMN holidays TEXT;
       ALTER TABLE symbols ADD COLUMN corrections TEXT;
     `),
+  (db) =>
+    db.exec(`
+      -- What each symbol is, as its source describes it (src/lib/profiles.ts): slow facts fetched
+      -- weekly, shared like bars. json stays from the last fetch that worked; tried_at and error
+      -- are the last attempt. A description's Chinese translation is made when someone asks for it
+      -- and stands for the text whose hash it carries.
+      CREATE TABLE profiles (
+        key        TEXT PRIMARY KEY,
+        json       TEXT,
+        fetched_at INTEGER,
+        tried_at   INTEGER NOT NULL,
+        error      TEXT
+      );
+      CREATE TABLE translations (
+        key   TEXT PRIMARY KEY,
+        hash  TEXT    NOT NULL,
+        text  TEXT    NOT NULL,
+        model TEXT    NOT NULL,
+        at    INTEGER NOT NULL
+      );
+    `),
 ];
 
 const dbFile = () => process.env.HEBI8_DB ?? path.join(process.cwd(), "data", "hebi8.db");

@@ -8,6 +8,7 @@ import { allItems, findItem } from "@/lib/config";
 import { renderMarkdown } from "@/lib/markdown";
 import { benchLabel, nameOf } from "@/lib/names";
 import { CHANGE_PERIODS } from "@/lib/periods";
+import { profileView } from "@/lib/profiles";
 import { listSymbols } from "@/lib/store";
 import { chartTitle, decodeChartKey, isSynthetic, isValidKey, tickerOf } from "@/lib/symbols";
 import { synthName } from "@/lib/synth";
@@ -94,6 +95,7 @@ export default async function ChartPage({ params }: { params: Promise<{ key: str
       readOnly={!viewer.canWrite}
       alerts={alerts}
       livePrice={latestPrice(key, config).price}
+      profile={profileView(key, config)}
       shareUrl={`${publicUrl()}/chart/${encodeURIComponent(key)}`}
     />
   );

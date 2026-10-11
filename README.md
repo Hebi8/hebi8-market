@@ -65,7 +65,7 @@ aliases:
 ```yaml
 name: 显卡二手与零售价
 series:
-  - { id: 4090-xianyu, name: RTX 4090 咸鱼, currency: CNY, file: series/4090-xianyu.csv }
+  - { id: 4090-xianyu, name: RTX 4090 咸鱼, currency: CNY, file: series/4090-xianyu.csv, description: 闲鱼上 RTX 4090 的每日中位成交价 }
   - { id: 4090-jd,     name: RTX 4090 京东, currency: CNY, file: series/4090-jd.csv }
 ```
 
@@ -79,6 +79,21 @@ date,open,high,low,close,volume
 - 远程仓库浅克隆到 `data/datasets/<name>/`，每次同步前拉一次。私有仓库用机器上的 SSH key。本机目录直接读，相对路径相对于 vault 目录。
 - CSV 只要求 `date` 和 `close` 两列，日期写 `YYYY-MM-DD`。`open` 空着就用 `close`，`high`、`low` 空着就取开收的高低，`volume` 可以留空。格式错误会报行号，只影响这一个标的。
 - 清单读到以后，搜索框输入序列名、id 或数据集名就能找到并加进自选；输入 `data:` 开头只查数据集。
+- 序列可以带一段 `description`（可省），显示在图表页的「商品详情」里。
+
+### 商品详情
+
+图表页右侧的「商品详情」面板说明这个标的是什么：股票有简介、板块、行业、国家、员工、网站、市值、市盈率、每股收益、股息收益率、下一次财报；ETF 和基金有简介、发行商、类别、费率、规模、前十大持仓、行业分布；指数、外汇、商品、加密货币、债券没有这些资料，显示类型、交易所、币种、时区、交易时段。数据源没有的字段不显示。
+
+- 资料来自标的自己的数据源（`yahoo` 和 `tv` 有，`binance` 没有，`data` 是清单里的 `description`），存在缓存里，每周在定时同步之后刷新一次，标的第一次拉日线时也取一次；面板底部写着更新日期。打开页面不联网。
+- 市值、市盈率、股息收益率不存，用最新价现算，和图表上的价格是同一个。
+- **翻译**：简介是数据源的原文，多半是英文。想要「翻译」按钮，在 `HEBI8_SECRETS` 目录（默认 `~/.config/hebi8/market`）里写 `llm.json`，`chmod 600`，填任何一个 OpenAI 兼容的 chat completions 接口：
+
+  ```json
+  { "base": "https://api.openai.com/v1", "key": "sk-...", "model": "gpt-4o-mini" }
+  ```
+
+  点了才翻译，译文存在缓存里，之后所有人打开都直接看到，可以切回原文；每周刷新后原文变了，按钮会重新出现。共用实例上只有登录的人能点，访客只能看已有的译文。没有这个文件就没有按钮。
 
 ## 运行
 
@@ -116,7 +131,7 @@ npm run dev        # http://localhost:3000
 | `HEBI8_VAULT` | `./vault` | 用户内容目录 |
 | `HEBI8_DB` | `./data/hebi8.db` | SQLite 缓存，删了会自动重建 |
 | `BINANCE_API_URL` | `https://api.binance.com` | 换成 `https://data-api.binance.vision` 等镜像 |
-| `HEBI8_SECRETS` | `~/.config/hebi8/market` | GitHub 登录会话 `sessions.json`、网页登录的 client `github-oauth.json`（手写，可选）、实例的通知设置 `notify.json`、每个人的通知通道 `notify-users.json`、网页推送的密钥 `vapid.json`（自动生成），权限 700 / 600 |
+| `HEBI8_SECRETS` | `~/.config/hebi8/market` | GitHub 登录会话 `sessions.json`、网页登录的 client `github-oauth.json`（手写，可选）、实例的通知设置 `notify.json`、每个人的通知通道 `notify-users.json`、网页推送的密钥 `vapid.json`（自动生成）、翻译简介用的模型 `llm.json`（手写，可选，见[商品详情](#商品详情)），权限 700 / 600 |
 | `HEBI8_GITHUB_CLIENT_ID` | `app-info.ts` 的 `GITHUB_APP_CLIENT_ID` | 反馈登录用的 GitHub App client id（fork 用自己的 App 时设）；设为 `off` 关闭应用内登录，反馈只走 GitHub 网页 |
 | `HEBI8_FEEDBACK_REPO` | `Hebi8/hebi8-market` | 反馈 issue 开在哪个仓库（`owner/name`） |
 | `HEBI8_PUBLIC_URL` | `https://market-hebi8.dreaife.tokyo` | 实例的公开地址：页面元数据、分享卡片、`robots.txt`、`sitemap.xml`、复制和分享出去的图表链接、导出图片底部的地址都用它 |
@@ -272,7 +287,7 @@ npm run notify:test
 
 | | 工具 |
 |---|---|
-| 读 | `overview` 总览 · `get_bars` K 线 · `scan` 一条公式扫一批标的 · `test_formula` 一条公式在一个标的上的历史表现 · `formula_reference` 公式和警报的写法 · `search_symbols` 搜标的 · `list_alerts` · `read_note` · `read_journal` |
+| 读 | `overview` 总览 · `get_bars` K 线 · `get_profile` 标的资料（简介、行业、市值、基金持仓…）· `scan` 一条公式扫一批标的 · `test_formula` 一条公式在一个标的上的历史表现 · `formula_reference` 公式和警报的写法 · `search_symbols` 搜标的 · `list_alerts` · `read_note` · `read_journal` |
 | 写（要可写令牌） | `save_alert` `delete_alert` `set_alert_enabled` · `add_symbol` `remove_symbol` · `append_note` `append_journal`（只追加，不改已有内容）· `save_indicator` `delete_indicator` |
 
 两条规矩：
@@ -371,6 +386,8 @@ src/
     ├── push.ts push-client.ts 网页推送：VAPID 密钥、发往推送服务；浏览器端的订阅和不能开的原因
     ├── alert-conds.ts        价格警报的九种条件（纯函数，图表的警报对话框也用）
     ├── quotes.ts             盘中轮询：5 分钟 / 1 小时取最新价，内存里拼今天的日线，判断警报
+    ├── profile.ts profiles.ts 标的资料（商品详情）：到期判断和现算的市值 / PE（纯函数）；缓存表、每周刷新、译文
+    ├── translate.ts          把简介翻成中文：服务端唯一的模型调用，配置在 llm.json
     ├── telegram.ts           Telegram 绑定：一次性码、getMe、有待绑定码时才长轮询 getUpdates
     └── time.ts tz.ts week.ts 交易日换算、时区、ISO 周
 public/sw.js                  service worker：显示推送、点通知打开图表、连不上时的一页说明；什么都不缓存

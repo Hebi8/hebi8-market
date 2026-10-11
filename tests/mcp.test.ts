@@ -486,7 +486,7 @@ describe("POST /mcp", () => {
 
     const listed = (await (await handleMcp(rpc(token, { jsonrpc: "2.0", id: 3, method: "tools/list" }))).json()).result.tools as { name: string; inputSchema: { type: string; required?: string[] }; annotations: { readOnlyHint: boolean } }[];
     expect(listed.map((t) => t.name)).toEqual(TOOLS.map((t) => t.name));
-    expect(listed).toHaveLength(18);
+    expect(listed).toHaveLength(19);
     const scanTool = listed.find((t) => t.name === "scan")!;
     // defaults are optional for the caller
     expect(scanTool.inputSchema).toMatchObject({ type: "object", required: ["formula"] });

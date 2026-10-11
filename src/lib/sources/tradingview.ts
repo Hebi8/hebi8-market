@@ -1,7 +1,7 @@
 import TradingView, { type MarketInfos } from "@mathieuc/tradingview";
 import { dedupeBars } from "../series";
 import { tradingDay } from "../time";
-import type { FetchResult, QuoteSession, SearchHit, SourceAdapter, SourceMeta, SourceQuote } from "./types";
+import type { FetchResult, QuoteSession, SearchHit, SourceAdapter, SourceMeta, SourceProfile, SourceQuote } from "./types";
 
 /** More bars than any symbol has (DJI since 1896 is ~33k): the server returns its whole history, no login needed. */
 const RANGE = 100_000;
@@ -142,14 +142,14 @@ const SESSIONS: Record<string, QuoteSession> = { market: "open", pre_market: "pr
 const QUOTE_TIMEOUT_MS = 20_000;
 
 /**
- * Latest prices over the quote session of the (reverse-engineered) websocket: its own client
- * for one round, closed when every symbol has answered or the timeout hits. Whatever arrived by
- * then is returned; nothing at all is an error.
+ * Fields of many symbols over the quote session of the (reverse-engineered) websocket: its own
+ * client for one round, closed when every symbol has answered or the timeout hits. Whatever
+ * arrived by then is returned.
  */
-function fetchQuotes(tickers: string[]): Promise<Record<string, SourceQuote>> {
-  return new Promise((resolve, reject) => {
+function quoteFields(tickers: string[], fields: string[]): Promise<Record<string, Record<string, unknown>>> {
+  return new Promise((resolve) => {
     const client = new TradingView.Client();
-    const session = new client.Session.Quote({ customFields: ["lp", "lp_time", "open_price", "high_price", "low_price", "volume", "current_session"] });
+    const session = new client.Session.Quote({ customFields: fields });
     const data: Record<string, Record<string, unknown>> = {};
     let pending = tickers.length;
     let settled = false;
@@ -162,23 +162,7 @@ function fetchQuotes(tickers: string[]): Promise<Record<string, SourceQuote>> {
       void client.end();
       // end() leaves a socket that is still connecting (a handshake that timed out) open: close it once it connects
       if (!client.isOpen) client.onConnected(() => void client.end());
-      const out: Record<string, SourceQuote> = {};
-      for (const [ticker, d] of Object.entries(data)) {
-        const price = d.lp;
-        if (typeof price !== "number" || !Number.isFinite(price)) continue;
-        out[ticker] = {
-          price,
-          time: typeof d.lp_time === "number" ? d.lp_time : Math.floor(Date.now() / 1000),
-          ...(typeof d.open_price === "number" ? { dayOpen: d.open_price } : {}),
-          ...(typeof d.high_price === "number" ? { dayHigh: d.high_price } : {}),
-          ...(typeof d.low_price === "number" ? { dayLow: d.low_price } : {}),
-          // 0 (a CFD) and 1e100 (a yield) stand for no volume
-          ...(typeof d.volume === "number" && d.volume > 0 && d.volume < 1e99 ? { dayVolume: d.volume } : {}),
-          ...(typeof d.current_session === "string" ? { session: SESSIONS[d.current_session] ?? "closed" } : {}),
-        };
-      }
-      if (Object.keys(out).length === 0 && tickers.length > 0) reject(new Error("TradingView quote: no data"));
-      else resolve(out);
+      resolve(data);
     };
     const timer = setTimeout(finish, QUOTE_TIMEOUT_MS);
     const done = () => {
@@ -194,6 +178,82 @@ function fetchQuotes(tickers: string[]): Promise<Record<string, SourceQuote>> {
       market.onError(done);
     }
   });
+}
+
+/** Latest prices; nothing at all is an error. */
+async function fetchQuotes(tickers: string[]): Promise<Record<string, SourceQuote>> {
+  const data = await quoteFields(tickers, ["lp", "lp_time", "open_price", "high_price", "low_price", "volume", "current_session"]);
+  const out: Record<string, SourceQuote> = {};
+  for (const [ticker, d] of Object.entries(data)) {
+    const price = d.lp;
+    if (typeof price !== "number" || !Number.isFinite(price)) continue;
+    out[ticker] = {
+      price,
+      time: typeof d.lp_time === "number" ? d.lp_time : Math.floor(Date.now() / 1000),
+      ...(typeof d.open_price === "number" ? { dayOpen: d.open_price } : {}),
+      ...(typeof d.high_price === "number" ? { dayHigh: d.high_price } : {}),
+      ...(typeof d.low_price === "number" ? { dayLow: d.low_price } : {}),
+      // 0 (a CFD) and 1e100 (a yield) stand for no volume
+      ...(typeof d.volume === "number" && d.volume > 0 && d.volume < 1e99 ? { dayVolume: d.volume } : {}),
+      ...(typeof d.current_session === "string" ? { session: SESSIONS[d.current_session] ?? "closed" } : {}),
+    };
+  }
+  if (Object.keys(out).length === 0 && tickers.length > 0) throw new Error("TradingView quote: no data");
+  return out;
+}
+
+/** `type` is asked for along with the profile so that any symbol TradingView knows answers with something. */
+const PROFILE_FIELDS = [
+  "type",
+  "lp",
+  "business_description",
+  "sector",
+  "industry",
+  "country",
+  "number_of_employees",
+  "web_site_url",
+  "total_shares_outstanding",
+  "earnings_per_share_diluted_ttm",
+  "dividends_yield",
+  "earnings_release_next_date",
+  "issuer",
+  "expense_ratio",
+  "aum",
+  "top_holdings",
+];
+
+const positive = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v > 0;
+const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+
+/**
+ * A stock's or fund's profile from its quote fields, as measured: a stock has the description,
+ * sector, industry, country, employees, website, shares, EPS, yield and next earnings date; a fund
+ * the description, issuer, expense ratio, assets and top holdings (its category and sector split
+ * only come as ids, and its sector and industry are the placeholders every fund has); an index, a commodity, a yield, an FX pair, a coin or a future has none of
+ * them. The yearly dividend per share is the yield TradingView shows, taken back to an amount
+ * with the price that came with it. Percentages arrive as 8.3 for 8.3%.
+ */
+export function tvProfile(d: Record<string, unknown>): SourceProfile {
+  const holdings = (Array.isArray(d.top_holdings) ? (d.top_holdings as { name?: unknown; symbol?: unknown; weight?: unknown }[]) : []).flatMap((h) =>
+    text(h?.name) && positive(h.weight) ? [{ name: text(h.name)!, ...(text(h.symbol) ? { key: `tv:${text(h.symbol)}` } : {}), weight: h.weight / 100 }] : [],
+  );
+  const company = d.type !== "fund";
+  return {
+    ...(text(d.business_description) ? { description: text(d.business_description) } : {}),
+    ...(company && text(d.sector) ? { sector: text(d.sector) } : {}),
+    ...(company && text(d.industry) ? { industry: text(d.industry) } : {}),
+    ...(text(d.country) ? { country: text(d.country) } : {}),
+    ...(positive(d.number_of_employees) ? { employees: d.number_of_employees } : {}),
+    ...(text(d.web_site_url) ? { website: text(d.web_site_url) } : {}),
+    ...(positive(d.total_shares_outstanding) ? { shares: d.total_shares_outstanding } : {}),
+    ...(typeof d.earnings_per_share_diluted_ttm === "number" ? { eps: d.earnings_per_share_diluted_ttm } : {}),
+    ...(positive(d.dividends_yield) && positive(d.lp) ? { dividend: (d.dividends_yield / 100) * d.lp } : {}),
+    ...(positive(d.earnings_release_next_date) ? { earningsAt: d.earnings_release_next_date } : {}),
+    ...(text(d.issuer) ? { issuer: text(d.issuer) } : {}),
+    ...(positive(d.expense_ratio) ? { expenseRatio: d.expense_ratio / 100 } : {}),
+    ...(positive(d.aum) ? { netAssets: d.aum } : {}),
+    ...(holdings.length ? { holdings: holdings.slice(0, 10) } : {}),
+  };
 }
 
 /** One result of TradingView's symbol search, as far as it is used here. */
@@ -253,6 +313,13 @@ export const tradingview: SourceAdapter = {
   },
 
   quotes: fetchQuotes,
+
+  /** A symbol that does not answer at all (unknown, or the websocket changed) is an error, kept on that symbol. */
+  async profile(ticker) {
+    const d = (await quoteFields([ticker], PROFILE_FIELDS))[ticker];
+    if (!d) throw new Error(`TradingView profile: no data for ${ticker}`);
+    return tvProfile(d);
+  },
 
   async search(query, filter = "") {
     return (await searchSymbols(query, filter)).slice(0, 6).map(tvSearchHit);

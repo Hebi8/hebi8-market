@@ -17,6 +17,7 @@ import { setChartContext } from "@/lib/page-context";
 import type { Prices } from "@/lib/series";
 import { QUOTE_ROUND_MS } from "@/lib/session";
 import { SOURCE_LABELS, TF_LABELS, TIMEFRAMES, chartTitle, isSynthetic, tickerOf, type Timeframe } from "@/lib/symbols";
+import type { ProfileView } from "@/lib/profile";
 import { synthName } from "@/lib/synth";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import { useMediaQuery } from "@/lib/use-media-query";
@@ -29,6 +30,7 @@ import {
   IconCandles,
   IconCaret,
   IconCursor,
+  IconDetails,
   IconEye,
   IconFullscreen,
   IconHelp,
@@ -55,6 +57,7 @@ import { Dialog, Dropdown } from "./Dialog";
 import { IndicatorDialog, ParamDialog } from "./IndicatorDialog";
 import type { DrawingModes } from "./KChart";
 import { LoginPrompt, NotesPanel } from "./NotesPanel";
+import { ProfilePanel } from "./ProfilePanel";
 import { chartHref, isEditable, useUi } from "./UiProvider";
 import { WatchlistPanel, type WatchlistGroup } from "./WatchlistPanel";
 
@@ -67,7 +70,7 @@ const STYLE_ICONS: Record<ChartStyle, (p: { size?: number }) => ReactNode> = {
   area: IconArea,
 };
 
-type Panel = "watchlist" | "notes" | "alerts";
+type Panel = "watchlist" | "details" | "notes" | "alerts";
 type DialogState =
   | { kind: "indicators"; formula?: FormulaDef | "new" }
   | { kind: "compare" }
@@ -120,6 +123,8 @@ interface ChartViewProps {
   alerts: AlertView[];
   /** The latest price of this symbol, where a new alert starts */
   livePrice: number | null;
+  /** What the symbol is, for the 商品详情 panel (§2.8) */
+  profile: ProfileView;
   /** This chart at the instance's public address: copied, shared and printed under a snapshot */
   shareUrl: string;
 }
@@ -143,6 +148,7 @@ export function ChartView({
   vault,
   alerts,
   livePrice,
+  profile,
   shareUrl,
 }: ChartViewProps) {
   const router = useRouter();
@@ -736,6 +742,18 @@ export function ChartView({
         onClose={() => togglePanel("watchlist")}
         className="h-full"
       />
+    ) : panel === "details" ? (
+      <ProfilePanel
+        symbolKey={symbolKey}
+        name={names[symbolKey] ?? symbolKey}
+        ticker={data?.symbol.ticker ?? symbolKey}
+        view={profile}
+        // the price the chart shows: its last bar as the quote rounds move it
+        price={live?.tail?.bar.close ?? data?.bars.at(-1)?.close ?? livePrice}
+        readOnly={readOnly}
+        onClose={() => togglePanel("details")}
+        className="h-full"
+      />
     ) : panel === "alerts" ? (
       <AlertsPanel
         alerts={alerts}
@@ -865,6 +883,9 @@ export function ChartView({
           </Dropdown>
           <button type="button" onClick={() => togglePanel("watchlist")} aria-pressed={panel === "watchlist"} className="tb-btn" title="自选列表" aria-label="自选列表">
             <IconWatchlist />
+          </button>
+          <button type="button" onClick={() => togglePanel("details")} aria-pressed={panel === "details"} className="tb-btn" title="商品详情" aria-label="商品详情">
+            <IconDetails />
           </button>
           <button type="button" onClick={() => togglePanel("notes")} aria-pressed={panel === "notes"} className="tb-btn" title="笔记" aria-label="笔记">
             <IconNotes />
@@ -1086,6 +1107,9 @@ export function ChartView({
         <div className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 border-l border-line py-1.5 md:flex" role="toolbar" aria-label="侧栏" aria-orientation="vertical">
           <button type="button" onClick={() => togglePanel("watchlist")} aria-pressed={panel === "watchlist"} className="tb-btn" title="自选列表 · Space / Shift+Space 下一只 / 上一只" aria-label="自选列表">
             <IconWatchlist />
+          </button>
+          <button type="button" onClick={() => togglePanel("details")} aria-pressed={panel === "details"} className="tb-btn" title="商品详情" aria-label="商品详情">
+            <IconDetails />
           </button>
           <button type="button" onClick={() => togglePanel("notes")} aria-pressed={panel === "notes"} className="tb-btn" title="笔记" aria-label="笔记">
             <IconNotes />

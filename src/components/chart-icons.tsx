@@ -242,6 +242,15 @@ export const IconCheck = (p: IconProps) => (
   </Svg>
 );
 
+/** TradingView's 商品详情: a card with a heading and lines */
+export const IconDetails = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2.5" y="3" width="13" height="12" rx="1.5" />
+    <path d="M5.5 6.5h3M5.5 9.5h7M5.5 12h5" />
+    <circle cx="12" cy="6.5" r=".8" fill="currentColor" stroke="none" />
+  </Svg>
+);
+
 export const IconHelp = (p: IconProps) => (
   <Svg {...p}>
     <circle cx="9" cy="9" r="7" />

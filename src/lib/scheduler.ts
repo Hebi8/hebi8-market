@@ -1,6 +1,7 @@
 /** In-app daily sync at the wall-clock times in `sync.at`, with a catch-up run after downtime. */
+import { refreshProfiles } from "./profiles";
 import { maxSyncedAt } from "./store";
-import { syncAll } from "./sync";
+import { loadVaults, syncAll, unionSyncKeys } from "./sync";
 import { dayOf, partsIn, zonedToUtc } from "./tz";
 import { ensureVault, readConfigSafe, vaultDir } from "./vault";
 
@@ -54,6 +55,8 @@ export function startScheduler(): void {
     log(`sync start (${reason})`);
     try {
       await syncAll();
+      // after the bars and the alerts: the profiles that are a week old (§2.8)
+      await refreshProfiles(unionSyncKeys(loadVaults()));
     } catch (err) {
       log(`sync failed: ${err instanceof Error ? err.message : String(err)}`);
     }

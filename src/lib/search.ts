@@ -222,6 +222,7 @@ const KIND_LABELS: Record<string, string> = {
   equity: "股票",
   etf: "ETF",
   fund: "基金",
+  mutualfund: "基金",
   index: "指数",
   futures: "期货",
   future: "期货",
@@ -234,6 +235,9 @@ const KIND_LABELS: Record<string, string> = {
   cfd: "CFD",
   dataset: "数据",
 };
+
+/** A source's kind in Chinese (`equity` → 股票); one without a label stays as the source wrote it. */
+export const kindLabel = (kind: string) => KIND_LABELS[kind.toLowerCase()] ?? kind;
 
 /**
  * The short type on a search row, as TradingView shows it: its typespecs first (`commodity` +

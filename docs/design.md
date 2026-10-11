@@ -25,7 +25,7 @@ hebi8 是一个**周度复盘工具**，不是 TradingView 的替代品。每天
 **一句话心智模型：`vault/` 是我的，`data/hebi8.db` 是缓存，删了会自动重建。**
 
 ```
-data/hebi8.db                 SQLite 缓存：bars、symbols 元数据与同步状态、stats、告警状态
+data/hebi8.db                 SQLite 缓存：bars、symbols 元数据与同步状态、stats、告警状态、标的资料与简介译文
 data/datasets/<name>/         自定义数据集仓库的浅克隆（§2.4），删了下次同步重新克隆
 vault/                        用户内容，gitignore；HEBI8_VAULT 环境变量可改位置
   hebi8.yaml                  自选分组、别名、公式指标、警报、同步时间表、图表偏好；owner 的
@@ -212,13 +212,24 @@ CREATE TABLE upstream (                     -- §1.7：按天、按源的上游�
   PRIMARY KEY (day, source)
 ) WITHOUT ROWID;
 CREATE TABLE usage_alerts (kind TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY (kind, day)) WITHOUT ROWID;  -- 哪天哪种阈值已经提醒过
+CREATE TABLE profiles (                     -- §2.8：标的的基础资料，每周从数据源取一次，所有人共用
+  key TEXT PRIMARY KEY,                     -- 不含合成标的；数据源没有资料接口的（binance）没有行
+  json TEXT,                                -- 最近一次成功取到的 SourceProfile；只有慢变的事实，没有市值 / PE / 股息率
+  fetched_at INTEGER,                       -- 那次成功的时间（ms），面板上的「资料更新于」
+  tried_at INTEGER NOT NULL, error TEXT     -- 最近一次尝试的时间和失败原因（成功时为空）；失败不动 json
+);
+CREATE TABLE translations (                 -- §2.8：简介的简体中文译文，有人点「翻译」时才生成，所有人共用
+  key TEXT PRIMARY KEY,
+  hash TEXT NOT NULL,                       -- 被翻译的那段原文的 SHA-256；和现在的简介对不上就不再显示
+  text TEXT NOT NULL, model TEXT NOT NULL, at INTEGER NOT NULL
+);
 ```
 
-`symbols` 和 `bars` 里只有缓存和元数据，**没有任何用户字段**（名字、分组、基准、排序都在 yaml），所有人共用；`stats` 和 `alert_state` 按 vault 分开。两表加 `vault` 列的迁移直接删表重建，下次同步重算。
+`symbols`、`bars`、`profiles` 和 `translations` 里只有缓存和元数据，**没有任何用户字段**（名字、分组、基准、排序都在 yaml），所有人共用；`stats` 和 `alert_state` 按 vault 分开。两表加 `vault` 列的迁移直接删表重建，下次同步重算。
 
 ### 1.5 用户配置目录（`HEBI8_SECRETS`，默认 `~/.config/hebi8/market`，目录 700、文件 600）
 
-不在 vault、不在 data、不进 git：`sessions.json`（GitHub 登录，§5.8）、`mcp-tokens.json`（agent 用的个人令牌，只有哈希，§1.6、§5.5）、`github-oauth.json`（网页登录的 client id 和 secret，手写，§5.8）、`notify.json`（实例的通知设置，§2.5）、`notify-users.json`（每个人绑定的通道，§2.5）、`vapid.json`（网页推送的 VAPID 密钥对，首次用到时生成，§2.7）、`traffic-salt.json`（访客哈希的盐，首次用到时生成，§1.7）。
+不在 vault、不在 data、不进 git：`sessions.json`（GitHub 登录，§5.8）、`mcp-tokens.json`（agent 用的个人令牌，只有哈希，§1.6、§5.5）、`github-oauth.json`（网页登录的 client id 和 secret，手写，§5.8）、`notify.json`（实例的通知设置，§2.5）、`notify-users.json`（每个人绑定的通道，§2.5）、`vapid.json`（网页推送的 VAPID 密钥对，首次用到时生成，§2.7）、`traffic-salt.json`（访客哈希的盐，首次用到时生成，§1.7）、`llm.json`（翻译简介用的模型，手写，可省，§2.8）。
 
 ### 1.6 多人共用一台实例
 
@@ -259,7 +270,7 @@ CREATE TABLE usage_alerts (kind TEXT NOT NULL, day INTEGER NOT NULL, PRIMARY KEY
 - **路径归一**（行数不能被扫描器撑大）：proxy 把路径换成本应用真实存在的路由（`traffic.ts` 的 `ROUTES`，测试对照 `src/app` 下的文件保持同步）；`/chart/<key>` 统一成一种编码，落库时只有 `symbols` 或 `stats` 表里有的 key（也就是有人在看、在同步的品种，含合成标的）才保留，其他归到 `/chart/[key]`；匹配不到任何路由的一律是 `(其他)`。所以 `traffic` 每天的行数 ≤ 2 个 origin × 4 种类型 ×（路由数 + 已有品种数 + 2）。
 - **访客**：公网取 `CF-Connecting-IP`，Tailscale 取 Next 填进 `X-Forwarded-For` 的 socket 地址；存 `HMAC-SHA256(盐, IP)` 的前 16 位，盐在配置目录的 `traffic-salt.json`。访客单独一张表（`visitors`），不和路径交叉：每天每个 origin 最多 `MAX_VISITORS = 2000` 个不同访客，已存的照常累加，新来的超出上限就合进 `(其他)` 这一行，页面上那天的访客数显示成「2000+」。代价是热门路径不再有「每个路径多少访客」。**登录名**：proxy 只记会话 cookie，落库时整批只读一次 `sessions.json`，在内存里查；伪造的 cookie 查不到就是未登录。
 - **落库**（`src/lib/usage.ts`，从 `instrumentation` 启动，`globalThis` 防重复）：每 30 秒一次，或内存里攒到 5000 个不同的键时提前；同一天、同一组维度的行累加。写库失败（锁超时、磁盘满）时这一批合并回内存缓冲，下次再写。进程退出丢最后几十秒的计数，可以接受。每小时删一次 90 天以前的行。监控数据只在 `data/hebi8.db`，不进 vault。
-- **上游压力**：`src/lib/sources/index.ts` 把 yahoo、binance、tv 三个适配器的 `fetchDaily` / `search` / `quotes` 包一层，每次调用记一次请求（Binance 的 `search` 除外：它读缓存一天的交易对列表，由 `usdtBases()` 在真正去取列表时自己记，失败时照样回退到旧列表）；抛错记失败，错误里有 HTTP 429 / 403 / 418、Too Many Requests、rate limit 的另记「疑似限流」。`data` 源平时读本地文件，只在真正 `git fetch` / `clone` 远端数据集时记一次。按调用计数：Binance 全量拉取的分页算一次。
+- **上游压力**：`src/lib/sources/index.ts` 把 yahoo、binance、tv 三个适配器的 `fetchDaily` / `search` / `quotes` / `profile` 包一层，每次调用记一次请求（Binance 的 `search` 除外：它读缓存一天的交易对列表，由 `usdtBases()` 在真正去取列表时自己记，失败时照样回退到旧列表）；抛错记失败，错误里有 HTTP 429 / 403 / 418、Too Many Requests、rate limit 的另记「疑似限流」。`data` 源平时读本地文件，只在真正 `git fetch` / `clone` 远端数据集时记一次。按调用计数：Binance 全量拉取的分页算一次。
 - **页面 `/usage`**：只有 `viewer.isOwner` 能看，其他人（包括单用户模式）404；入口是页头账号菜单里的「使用情况」。最上面是「实例」：版本（`APP_INFO`：version · commit · 构建时间）、上次同步、下次同步（调度器 `scheduledNextSync()`，没启动时按 `sync.at` 推算）和每天的时间表、缓存的标的数、上次同步出错的标的和错误（所有 vault 的，名字按根 vault 解析）、根 vault 的绝对路径。这些原来在帮助抽屉里给所有人看，对用的人是噪音，只留给 owner。然后是最近 30 天每天的请求数（页面 / 预取 / Action / API）、公网和 Tailscale 的独立访客、登录用户数；今天的热门路径；最近 30 天访客按请求量排行（只显示哈希前 8 位）；各 vault 的品种数、告警数、最近活跃时间；各数据源每天的请求 / 失败 / 疑似限流。打开页面时先落一次库。
 - **阈值提醒**：根 yaml 的 `usage.visitors`（每日公网独立访客）、`usage.limited`（每日上游疑似限流次数），正整数，可省；`/usage` 页面上也能改（Server Action `setUsageLimits`，parseDocument 写回）。每 5 分钟落库后检查一次，查今天和昨天（午夜前最后几分钟超过的，过了午夜照样补发，消息里写「昨天（10-06）」），超过（严格大于）且还没提醒过的合成一条消息，发到根 vault 的通道（§2.5 的 `channelsFor('')`）；有通道发送成功才按那一天记进 `usage_alerts`；全部失败或没有通道时只打日志、不记，下次检查再试，当天补好通道也能收到。每天每种最多一次。
 - **隐私说明 `/privacy`**：公开页面，页脚（`SiteFooter`，图表页不显示，帮助抽屉的「使用」页签也有入口）链过去。逐条写明收集什么、存哪里、留多久：访问统计、Cloudflare、GitHub 登录与令牌、各自的 vault 与通知通道、公开的反馈 issue、浏览器本地存储、行情由服务器代取。收集的东西变了就同步改这一页和它的更新日期。
@@ -278,6 +289,8 @@ interface SourceAdapter {
     mode: "replace" | "merge";
   }>;
   search?(query: string): Promise<{ key: string; name: string; exchange?: string; kind?: string }[]>;
+  quotes?(tickers: string[]): Promise<Record<string, SourceQuote>>;   // 盘中最新价，§2.6
+  profile?(ticker: string): Promise<SourceProfile>;                   // 基础资料，§2.8；数据源认得这个标的但没什么可说时是 {}
 }
 ```
 
@@ -296,6 +309,7 @@ interface SourceAdapter {
 - `src/instrumentation.ts` 导出 `register()`，仅在 `process.env.NEXT_RUNTIME === "nodejs"` 时启动调度；用 `globalThis` 守卫防止 dev 模式重复启动。
 - 按 `sync.at × sync.tz` 算下一个时刻（用 `Intl.DateTimeFormat` 处理时区与夏令时，不引入日期库），`setTimeout` 链式调度。
 - 启动时：若 `max(symbols.synced_at)` 早于最近一个已过去的时刻，延迟 5s 后补跑一次（等价 systemd 的 `Persistent=true`）。
+- 每次调度的同步跑完（K 线、stats、警报之后），再刷新到期的标的资料（§2.8）。手动「刷新」不带这一步。
 - 日志打到 stdout（journalctl 能看）。
 
 ### 2.3 `syncAll(force?)` / `syncOne(key, force?)`
@@ -307,7 +321,7 @@ interface SourceAdapter {
 - 「刷新」按钮是 Server Action：`await syncAll(true)` 后 `revalidatePath`，按钮期间显示 pending（手动动作，阻塞 3–30s 可以接受）。
 - 新增标的时立即 `syncOne(key, true)`，失败则不写入 yaml 并报错（首次拉取兼做校验）。
 - **打开不在自选里的标的**（搜索选中、直接输网址）：页面照样只读库；图表页挂载后调 Server Action `loadSymbol(key)`，对它（合成标的是各操作数）`syncOne`，一小时内拉过就跳过，只进缓存、不写 yaml，完成后重新取 `/api/bars`。它不在任何 vault 的引用里，所以定时同步不会更新它，下次打开时再补。访客不能触发（和添加一样要登录），只能看到已经缓存的。
-- `syncOne` 只在真的拉到新数据时重算各 vault 的 stats。
+- `syncOne` 只在真的拉到新数据时重算各 vault 的 stats。它成功后顺带看一眼这个标的的资料（§2.8）：还没有，或者到期了，就取一次，所以加自选和按需打开的标的第一次拉日线时资料也一起到；取资料失败不算同步失败。
 - `syncAll` 算完 stats 后跑一次通知（§2.5）；`syncOne` 不通知。
 
 ### 2.4 自定义数据集（`data` 源）
@@ -318,7 +332,7 @@ interface SourceAdapter {
 # 仓库根目录 hebi8-dataset.yaml
 name: 显卡二手与零售价
 series:
-  - { id: 4090-xianyu, name: RTX 4090 咸鱼, currency: CNY, file: series/4090-xianyu.csv }
+  - { id: 4090-xianyu, name: RTX 4090 咸鱼, currency: CNY, file: series/4090-xianyu.csv, description: 闲鱼上 RTX 4090 的每日中位成交价 }
   - { id: 4090-jd,     name: RTX 4090 京东, currency: CNY, file: series/4090-jd.csv }
 ```
 
@@ -331,7 +345,7 @@ date,open,high,low,close,volume
 - key：`data:<数据集>/<序列 id>`。数据集名在 yaml 的 `datasets` 里映射到地址，key 里不写地址，仓库搬家不影响图表和笔记。数据集名和序列 id 只能用 `[A-Za-z0-9._-]`，并以字母或数字开头。
 - 地址是 `https://`、`git@`、`ssh://`、`file://` 时浅克隆到 `data/datasets/<name>/`，之后每次同步 `git fetch --depth 1` 再 `reset --hard`；私有仓库直接用机器上的 SSH key。以 `/`、`~/`、`./`、`../` 开头时当本机目录直接读，相对路径相对于 vault 目录。同一次同步里一个数据集只拉一次。
 - CSV：表头必须有 `date` 和 `close`，其余列可选、可留空。`open` 空时用 `close`；`high`/`low` 空时取 `open`/`close` 的较大/较小值；`volume` 空为 null。`date` 是 `YYYY-MM-DD`，映射到当天 UTC 零点。同一天出现两次取后一行；空行和 `#` 开头的行跳过。格式错误报行号，只记在这个标的上。
-- 元数据：`name`、`currency` 来自清单，`exchange` 是清单的 `name`，`kind` 是 `dataset`。
+- 元数据：`name`、`currency` 来自清单，`exchange` 是清单的 `name`，`kind` 是 `dataset`。序列可以带一段 `description`（可省），显示在图表页的「商品详情」里（§2.8）。
 - 比价数据的用法建议：`close` 放当天中位价，`high`/`low` 放区间，`volume` 放有效挂单数。
 
 ### 2.5 同步后通知
@@ -505,6 +519,58 @@ interface SourceAdapter {
 
 单用户模式没有登录，也就没有这个开关（§2.5），推送只在共用实例上可用。
 
+### 2.8 标的资料（商品详情）
+
+每个标的是什么：公司 / 基金的简介、行业、规模。图表页右侧的「商品详情」面板（§5.2）和 MCP 的 `get_profile`（§6）读它。
+
+**慢变的事实和跟价格走的数字分开。** 存下来的只有事实（`SourceProfile`，`src/lib/sources/types.ts`）：
+
+| 字段 | 说明 |
+|---|---|
+| `description` | 简介，数据源的原文（多半是英文） |
+| `sector` `industry` `country` `employees` `website` | 公司 |
+| `shares` `eps` `dividend` | 总股本（加密货币是流通量）、最近十二个月摊薄每股收益、每股年分红 |
+| `earningsAt` | 下次财报日（unix 秒）；读的时候已经过去的不显示 |
+| `issuer` `category` `expenseRatio` `netAssets` | 基金：发行商、类别、费率（0.0009 = 0.09%）、资产规模 |
+| `holdings` `sectors` | 基金：前十大持仓（`name`、数据源里的 `key`、`weight`）和行业分布 |
+
+**市值、市盈率、股息收益率不存**，读的时候用最新价现算（`profile.ts` 的 `valuation()`：`shares × 价`、`价 / eps`（亏损时没有）、`dividend / 价`）。最新价和图表、总览同一个：有比日线同步新的报价用报价，否则最后一根日线收盘（面板用图表手里最后一根 K 线的收盘，随每轮报价变；MCP 用 `latestPrice()`）。一周前的 PE 不会摆在实时价格旁边。数据源没有的字段不存、不显示，面板上没有一排「—」。
+
+**各源实际拿到的**（2026-10-11 实测）：
+
+| 源 | 怎么取 | 股票 | ETF / 基金 | 其余 |
+|---|---|---|---|---|
+| `yahoo` | yahoo-finance2 的 `quoteSummary`（`assetProfile`、`summaryDetail`、`defaultKeyStatistics`、`calendarEvents`、`fundProfile`、`topHoldings`），不过库的 schema 校验（基金模块常对不上，要的几个字段逐个检查） | 简介、板块、行业、国家、员工、网站、股本（`impliedSharesOutstanding`，Yahoo 自己算市值用的那个）、EPS、每股分红、下次财报日 | 简介、发行商、类别、费率、规模、每股分红、前十大持仓、行业分布（11 个板块 id 译成中文） | 指数、外汇、期货什么都没有（存 `{}`）；加密货币有简介、网站、流通量 |
+| `tv` | 报价会话多要一组字段（`tradingview.ts` 的 `PROFILE_FIELDS`，和取价是同一个逆向 websocket，每个标的一个会话） | 简介、板块、行业、国家、员工、网站、股本、EPS、下次财报日；每股分红由它给的股息率乘同一批数据里的价格还原 | 简介、发行商、费率、规模、前十大持仓；类别和行业分布只有内部 id，不取；每只基金都有的占位板块 / 行业不要 | 指数、商品、债券收益率、外汇、加密、期货只回类型，没有资料（存 `{}`）；完全不应答的（不认识的代码、接口变了）算失败 |
+| `binance` | 没有资料接口 | — | — | 只显示已有元数据 |
+| `data` | 读已经在磁盘上的清单里这条序列的 `description`（§2.4），不联网 | — | — | 有就是简介 |
+
+合成标的没有资料，面板列出它的各个操作数并链到各自的图表。
+
+**刷新**（`src/lib/profiles.ts`）：
+
+- 资料进 `profiles` 表（§1.4）。**页面和 MCP 只读这张表，不联网。**
+- 到期（`profileDue()`）：从没取过；上次成功是 7 天以前；上次失败是 1 天以前。失败后隔一天再试，不是每次同步都试，也不用等一周。
+- 调度器每次同步之后（§2.2）对所有 vault 引用到的标的（和日线同步同一个集合）取到期的，并发 2，结束打一行日志（取了几个、哪些失败）。
+- `syncOne` 成功后也看一眼（§2.3），所以加自选、按需打开的标的第一次拉日线时顺带取到；不在任何自选里的标的不进每周的刷新，下次打开时到期了再取。
+- 失败只把错误和时间记在该标的的行上（`error`、`tried_at`），上一次取到的事实原样留着，同步不受影响。同一个标的同时触发几次只发一个请求。
+- 上游调用照 §1.7 记进 `upstream`（yahoo、tv 各算在自己名下）。
+- 面板底部写「资料更新于 YYYY-MM-DD」（`fetched_at`）；数据源对这个标的没有任何资料时（`{}`）不写。
+
+**翻译**（`src/lib/translate.ts`、`profiles.ts` 的 `translateDescription()`）：
+
+- 简介原样显示。原文不是中文（汉字不到字母的三分之一，`isChinese()`）、实例配了模型、viewer 能写时，简介下面有「翻译」按钮；**点了才调模型**，不自动翻，只翻成简体中文。
+- 译文存进 `translations` 表，带原文的 SHA-256，所有人共用：之后任何人（包括访客）打开这个标的都直接显示译文，旁边「显示原文 / 显示译文」切换。每周刷新后原文变了，哈希对不上，旧译文不再显示，按钮重新出现；再翻一次覆盖旧的。
+- **谁能点**：和其它写操作一样要 `canWrite`。共用实例上只有登录的人能点，访客看得到已有的译文、没有按钮（实例经隧道公开、不限流，匿名访问者不能花模型额度）；单用户模式谁都能点。入口是 Server Action `translateProfile(key)`（§6），只有页面这一路：agent 自己就是模型，读原文就够了，MCP 不提供触发翻译的工具。
+- 同一个标的同时点多次只发一次请求（进程内按 key 去重），已有匹配的译文时直接返回、不调模型。失败（HTTP 错误、空回答）不存任何东西，toast 报错，可以再点。
+- **模型配置**：配置目录（§1.5）里手写的 `llm.json`，任何 OpenAI 兼容的 chat completions 接口：
+
+  ```json
+  { "base": "https://api.openai.com/v1", "key": "sk-...", "model": "gpt-4o-mini" }
+  ```
+
+  三项都要有；没有这个文件（或缺一项）就没有「翻译」按钮，已有的译文照常显示。请求是 `POST <base>/chat/completions`，`temperature: 0`，system 里是翻译要求，user 里只有简介原文，60 秒超时。这是服务端唯一调用模型的地方；发出去的只有数据源的公开简介，没有任何用户内容。模型调用不记进 `upstream`（那张表按数据源记）。
+
 ---
 
 ## 3. 序列层（纯函数，服务端与客户端共用）
@@ -590,10 +656,10 @@ D 原样；W 周一起算；M 月初；**Q 季初**（`Date.UTC(y, floor(m/3)*3,
 - **顶部工具栏**（一行，38px，按钮 30px 热区，组间 1px 竖分隔线）：`‹ 总览` · **商品按钮**（放大镜 + 代码 + 名称，点开全局搜索换标的）· `+` **比较商品** · 周期快捷按钮 `日 周 月 季` · **图表类型**（图标 + 下拉：实心 K 线 / 空心阳线 / 美国线 / 面积）· `fx 指标` · ……右端 **刷新**（tooltip 显示同步时间，加载时图标转动）· **拍快照**（相机，见下文）· **全屏**（`document.documentElement.requestFullscreen()`，全屏时隐藏站点页头，弹窗和搜索浮层照常可用）。
 - **左侧画线工具栏**（42px 竖条，图标按钮，tooltip「名称 · 快捷键」）：十字光标（= 退出画线）· 六个**工具组**，和 TV 一样每组一个按钮：趋势线工具 · 江恩和斐波那契工具 · 形态 · 预测和测量工具 · 几何形状 · 标注工具（组和工具见 `chart-types.ts` 的 `DRAW_GROUPS`）。按钮画这一组当前的工具，悬停时右缘出现小箭头，点开在旁边弹出这一组的菜单（分小节：图标 · 名称 · 快捷键）；选过的工具留在按钮上，记在 localStorage（`hebi8:chart:tools`）｜ **测量**（尺子，tooltip「测量 · Shift + 点击」，见下文「测量」）｜ 磁铁模式（overlay `mode: weak_magnet`）· 锁定所有绘图 · 隐藏所有绘图 / 显示所有绘图 · 删除所有绘图（确认）。当前工具高亮；画完一条自动回到十字光标（TV 默认）；开始画线时若「隐藏所有绘图」开着会先显示出来。磁铁 / 锁定 / 隐藏是纯界面偏好，存 localStorage（`hebi8:chart:drawing`），作用于所有画线和之后新画的；有单条隐藏的绘图时眼睛按钮显示为「显示所有绘图」，点一下全部显示（含单条隐藏的）。
 - **图内图例（左上角，TV 样式，React 覆盖层 `ChartLegend`）**：第一行 `名称 周期 · 源 · 币种 · 基准` + `开 高 低 收` + 涨跌（相对上一根收盘，十字线处或最后一根）；然后每个百分比对比一行、每个主图指标一行（名称 + 参数 + 各条线的值，颜色同线）；副图指标 / 新窗格对比的行放在各自窗格左上角（`chart.getSize(paneId).top`）。行上悬停（鼠标指针事件，不用 CSS `:hover`，触屏上点一下）出现 **眼睛**（隐藏 / 显示，会话内）· **设置**（内置指标 = 参数弹窗，按当前周期保存；公式指标 = 公式编辑器）· **×**（移除）；双击行 = 设置；指标行还有 **⋯**（TV 的「更多」），里面「移动到」：副图指标 →「主图窗格」，主图指标 →「下方新窗格」，写回 yaml `chart.panes`（回到默认窗格时删掉那一项）。移到主图的副图指标用自己的刻度：成交量和 TV 一样不显示刻度、柱子占主图底部四分之一（值域放大到 4 倍），其它的在左侧单独一条刻度（KLineChart 10 的 `createYAxis` + 指标 `yAxisId`；价格轴的 `overrideYAxis` 因此按 id 只改价格轴），图例随左刻度右移。主图图例最后一行下面是 TV 的折叠箭头：收起后只剩商品行，箭头旁显示收起的行数，状态存 localStorage（`hebi8:chart:legend-collapsed`）。数值跟十字线走：KLineChart 10 的 `onCrosshairChange` 只给指针坐标（`{ x, y, paneId }`，不带 `dataIndex`），所以按 x 用 `convertFromPixel` 求 K 线下标；鼠标离开图表时它不回调，由容器的 `mouseleave` 回到最后一根。KLineChart 自己的蜡烛与指标 tooltip 关闭（`showRule: "none"`），数值由 `indicator.result` 和图形样式按 KLineChart 同样的规则取（线色按 `lines[i]`，柱按 `figure.styles` 动态色）。
-- **右侧边栏**：最右 42px 图标条（自选列表 · 笔记），面板 280px，同一时间只开一个，上次打开的记在 localStorage（`hebi8:chart:panel`；没记过时有笔记就默认开笔记）。**自选列表**按 yaml 分组，每行名称 · 最新价 · 总览第一个周期的涨跌（`stats`），当前标的高亮，点击客户端切换（偏好不变）；分组和总览一样能折叠、重命名、删除、新建，标的和分组都能拖动排序（§5.1）；标题栏「+」打开搜索的添加模式。行尾「×」（照 TV，hover / focus 时显示，触屏一直显示；访客没有）把这一行从自选移除，和总览行菜单的「移除」是同一个操作（`useWatchlist` 的 `removeSymbol`）：行立即消失，toast「已移除 X · 撤销」，撤销按 yaml 原来的 `name` / `bench` 加回原分组末尾。× 在数字后面自己的一列里（表头同样留出），不盖最新价和涨跌，触屏上这一列加宽到 36px；在 × 上按下不会起拖。移除的是当前打开的标的时留在这张图上，顶栏出现「加入自选」。**笔记**即原来的笔记面板。
+- **右侧边栏**：最右 42px 图标条（自选列表 · 商品详情 · 笔记 · 警报），面板 280px，同一时间只开一个，上次打开的记在 localStorage（`hebi8:chart:panel`；没记过时有笔记就默认开笔记）。**自选列表**按 yaml 分组，每行名称 · 最新价 · 总览第一个周期的涨跌（`stats`），当前标的高亮，点击客户端切换（偏好不变）；分组和总览一样能折叠、重命名、删除、新建，标的和分组都能拖动排序（§5.1）；标题栏「+」打开搜索的添加模式。行尾「×」（照 TV，hover / focus 时显示，触屏一直显示；访客没有）把这一行从自选移除，和总览行菜单的「移除」是同一个操作（`useWatchlist` 的 `removeSymbol`）：行立即消失，toast「已移除 X · 撤销」，撤销按 yaml 原来的 `name` / `bench` 加回原分组末尾。× 在数字后面自己的一列里（表头同样留出），不盖最新价和涨跌，触屏上这一列加宽到 36px；在 × 上按下不会起拖。移除的是当前打开的标的时留在这张图上，顶栏出现「加入自选」。**商品详情**见下文。**笔记**即原来的笔记面板。
 - **加入自选**：当前标的不在自选里时，顶栏商品按钮后面出现「加入自选」下拉（现有分组 + 新分组名输入），选了就 `addSymbol`，toast 可撤销；在自选里就不显示。不在自选里的标的打开时先按需拉日线（§2.3），图上显示「正在拉取 X 的日线…」。
 - **底部栏**（32px）：左边日期范围 `1年 3年 5年 10年 全部`——按当前周期算出这段有多少根，`setBarSpace(可用宽度 / 根数)` 后 `scrollToRealTime()`；若每根不足 1px（例如日线 10 年），像 TV 一样自动升到下一个周期（日 → 周 → 月）再适配。右边 `ADJ`（含分红，总回报）· `%`（百分比坐标，localStorage）· `log` · `自动`（TV 的开关：亮 = 价格轴自动缩放；点一下熄灭，价格范围固定，在图上上下拖就是纵向平移；拖动价格轴、在价格轴上滚轮缩放也会让它熄灭，双击价格轴或再点一下恢复；换周期 / 换标的时恢复）。对数坐标下 KLineChart 自己按价格做纵向平移和缩放（结果像缩放，甚至出现负刻度），所以对数轴的 `setRange` 被包了一层：库算出的新范围按比例换算到对数空间再生效（拖动以按下时的范围为基准，滚轮以当前范围为基准）。价格里有 0 或负数（`data:` 序列、合成标的可能有）时 `log` 按钮禁用，tooltip 说明原因，yaml 里的 `log` 偏好不动、只是在这个标的上不生效。`%` 与 `log` 互斥；有百分比对比时 `%` 显示为按下且锁定，tooltip「比较模式下使用百分比坐标」，`log` 禁用。
-- **窄屏（≤768px，TV 移动版）**：顶部工具栏一行横向滚动；左侧画线栏隐藏，改为顶栏里的「画线」下拉（十字光标、测量，然后按组列出全部工具 + 磁铁 / 锁定 / 隐藏 / 删除，200px 宽、可滚动）；右侧图标条隐藏，自选 / 笔记按钮进顶栏，面板变成底部抽屉（60vh，默认关闭）；底部栏仍是一行。390px 宽无横向溢出。下拉菜单用 `position: fixed` 按按钮位置弹出，不被滚动的工具栏裁掉；菜单右缘超出视口时整体左移。
+- **窄屏（≤768px，TV 移动版）**：顶部工具栏一行横向滚动；左侧画线栏隐藏，改为顶栏里的「画线」下拉（十字光标、测量，然后按组列出全部工具 + 磁铁 / 锁定 / 隐藏 / 删除，200px 宽、可滚动）；右侧图标条隐藏，自选 / 商品详情 / 笔记 / 警报按钮进顶栏，面板变成底部抽屉（60vh，默认关闭）；底部栏仍是一行。390px 宽无横向溢出。下拉菜单用 `position: fixed` 按按钮位置弹出，不被滚动的工具栏裁掉；菜单右缘超出视口时整体左移。
 
 **快捷键（TV 默认；焦点在输入框里时不响应，`Esc` 除外）**
 
@@ -662,6 +728,19 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 - **系统分享**：生成图片可能耗掉点击带来的用户激活，`navigator.share` 因此抛 `NotAllowedError` 时，留着这次生成的文件，提示「图片已生成，再点一次分享」，下一次点直接分享它。
 - **在 X 上分享**打开 `https://x.com/intent/post?text=<标题 · hebi8/market>&url=<链接>`；intent 带不了图片，和 TV 一样只分享链接，链接展开时的卡片见 §5.9。
 - 标签页标题跟着周期变（`chartTitle`：「英伟达 NVDA · 周线 · hebi8/market」），服务端的 `generateMetadata` 只知道 yaml 里存的周期。
+
+**商品详情**（TV 的同名面板，`ProfilePanel`；数据见 §2.8，页面渲染时读缓存，不联网）：这个标的是什么。从上到下，没有内容的小节整节不出现，没有值的行不出现：
+
+- 名称，下面一行 `代码 · 交易所 · 币种`。
+- **简介**：数据源的原文，超过六行时折叠，「显示更多 / 收起」；下面是「翻译」（能点的人才有）或「显示原文 / 显示译文」（§2.8）。
+- **关键数据**：市值、市盈率 (TTM)、每股收益 (TTM)、股息收益率、下一次财报。市值、市盈率、股息收益率用图表最后一根 K 线的收盘现算，随每轮报价变。大数照 TV 写成 `5.54T`、`809.22B`。
+- **公司**：板块、行业、国家/地区、员工、网站（只认 http(s)，显示域名，新标签打开）。
+- **基金**：发行商、类别、费率、资产管理规模；**前十大持仓**（名称 · 按占比的短条 · 百分比，数据源给了代码的可以点开那只的图表）；**行业分布**。
+- **交易信息**：类型、交易所、币种、时区、交易时段（`symbols.hours` 写成 `09:30–16:00`，`24x7` 写「全天」）、数据源。所有真实标的都有，所以指数、外汇、商品、加密、债券这些没有资料的类型不是空面板。
+- 底部「资料更新于 YYYY-MM-DD，每周刷新」；数据源该有资料但还没取到时写「资料还没有取到，下次同步后补上」。
+- 合成标的：一句「由下面的标的按需计算，没有自己的资料」和各操作数（名称 + key），点了打开那只的图表。
+
+访客看得到全部内容（资料是共用缓存，不是谁的私有内容），只是没有「翻译」按钮。
 
 **笔记**：右侧边栏的「笔记」面板，显示 `notes/<fileKey>.md` 的渲染结果，「编辑」切换 textarea，自动保存走 Server Action。没有笔记时显示「写下为什么看它」。
 
@@ -989,7 +1068,7 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 - `/api/github/login`（GET，跳到 GitHub 的授权页）、`/api/github/callback`（GET，GitHub 跳回来，建会话）、`/api/github/device`（POST 开始 device flow / DELETE 取消）、`/api/github/device/poll`（POST）、`/api/github/logout`（POST）、`/api/github/issues`（GET 最近反馈 / POST 提交）：§5.8，唯一会碰 GitHub 网络的接口（`login` 自己不联网，只是重定向），都是打开反馈页签或用户动作触发。
 - `/api/github/claim`（POST 生成「在其他设备上登录」的一次性链接和二维码 / DELETE 作废）、`/api/github/claim/redeem`（POST，确认页的表单，建会话）：§5.8，不联网。
 
-**Server Actions（写）**：`refresh()`、`addSymbol({ key, group, name?, bench?, alias? })`、`loadSymbol(key)`（只拉缓存，§2.3）、`removeSymbol(key)`、`moveSymbol(key, group, index?)`（index 不算被移动的那个，省略 = 末尾）、`moveGroup(name, index)`、`addGroup(name)`、`renameGroup(name, next)`、`deleteGroup(name)`（标的并入相邻组）、`renameSymbol(key, name)`、`setBench(key, bench | null)`、`saveNote(key, body)`、`saveJournal(week, body)`、`saveIndicator(def)` / `deleteIndicator(id)`、`saveAlert({ id?, key | null, cond, value? | when + tf?, trigger, label?, notify? })` / `deleteAlert(id)` / `setAlertEnabled(id, enabled)`、`saveChartState(key, state)`、`setChartPrefs(partial)`、`setPeriods(list)`、`setUpdown(mode)`、`setUsageLimits({ visitors, limited })`（owner，§1.7）；`src/app/tv-actions.ts` 里的 `importTvList({ text, fallback, mode })`、`listTvLayouts({ sessionid, sign })`、`previewTvDrawings(来源)`、`importTvDrawings({ drawings, add })`（§5.5，`listTvLayouts` 和 `previewTvDrawings` 是仅有的带用户 TradingView cookie 访问外网的地方：`/my-charts/`；`/markets/`、`/chart-token`、charts-storage）。Server Action 在客户端是**串行派发**的，自动保存靠去抖合并，不并行发。
+**Server Actions（写）**：`refresh()`、`addSymbol({ key, group, name?, bench?, alias? })`、`loadSymbol(key)`（只拉缓存，§2.3）、`removeSymbol(key)`、`moveSymbol(key, group, index?)`（index 不算被移动的那个，省略 = 末尾）、`moveGroup(name, index)`、`addGroup(name)`、`renameGroup(name, next)`、`deleteGroup(name)`（标的并入相邻组）、`renameSymbol(key, name)`、`setBench(key, bench | null)`、`saveNote(key, body)`、`saveJournal(week, body)`、`saveIndicator(def)` / `deleteIndicator(id)`、`saveAlert({ id?, key | null, cond, value? | when + tf?, trigger, label?, notify? })` / `deleteAlert(id)` / `setAlertEnabled(id, enabled)`、`saveChartState(key, state)`、`setChartPrefs(partial)`、`setPeriods(list)`、`setUpdown(mode)`、`setUsageLimits({ visitors, limited })`（owner，§1.7）、`translateProfile(key)`（把简介翻成中文并存进缓存，返回译文，§2.8）；`src/app/tv-actions.ts` 里的 `importTvList({ text, fallback, mode })`、`listTvLayouts({ sessionid, sign })`、`previewTvDrawings(来源)`、`importTvDrawings({ drawings, add })`（§5.5，`listTvLayouts` 和 `previewTvDrawings` 是仅有的带用户 TradingView cookie 访问外网的地方：`/my-charts/`；`/markets/`、`/chart-token`、charts-storage）。Server Action 在客户端是**串行派发**的，自动保存靠去抖合并，不并行发。
 
 `saveAlert` 的入参还有 `check?`、`enabled?`，以及撤销删除时把草稿和来源放回去用的 `draft?`、`by?`；`confirmAlert(id)` 确认一条草稿（§2.5）。设置页的令牌在 `src/app/token-actions.ts`：`createAgentToken({ name, write })`（返回值里带一次明文）、`revokeAgentToken(id)`（§5.5）。
 
@@ -1013,6 +1092,7 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 |---|---|---|
 | `overview` | 读 | 分组和每个标的：key、别名、名字、基准、最新价（有报价用报价，带时段）、1W…5Y 涨跌、距高点、52 周位置、在它上面成立或本周触发的警报、同步错误；上次和下次同步时间；待确认的草稿数 |
 | `get_bars` | 读 | 一个标的某周期（D / W / M / Q）的 OHLCV，最新的 `limit` 根（默认 200，最多 1000），带今天未收盘的那根（`last_daily_bar.closed` 说明这根的交易日结束没有，和「日线收盘」警报同一个判断：`bars.ts` 的 `dayClosed`，合成标的看各操作数用到的那根） |
+| `get_profile` | 读 | 一个标的是什么（§2.8）：缓存里的元数据（类型、交易所、币种、时区、时段）、存下的事实（简介、板块、行业、国家、员工、网站、股本、EPS、每股分红、下次财报日；基金的发行商、类别、费率、规模、前十大持仓、行业分布）、用最新价现算的市值 / 市盈率 / 股息率（带 `price`）、已有的中文译文（`description_zh`）和资料的取得时间；合成标的返回它的操作数。只读缓存，没取过资料的返回缓存里有的 |
 | `scan` | 读 | 一条公式（布尔或数值）× 一批标的（默认全部自选，可给 `group` 或 `keys`）：每个标的最后一根和上一根的值、是否成立（`holds`）、出错原因；`only_true` 只留成立的和出错的。成立与否和警报用同一个函数（`conditions.ts` 的 `holds`）：没有值（NaN）不算，其余非 0 为真，无穷大（除以 0）也是值、为真，返回里写成字符串 `"Infinity"` / `"-Infinity"`（JSON 放不了），没有值是 `null`。`check` 选带今日 K 线（`price`，默认）还是只看已收盘日线（`close`），和警报的判断时机对应 |
 | `test_formula` | 读 | 一条公式在一个标的最近 N 根（默认 250，最多 3000）里：成立的根数、成立的区间、由假变真的次数和日期（规则同 §2.5 的判定：上一个已知值为假、这根为真；没有值的根不改状态，第一次见到只记录）。建警报前核对用 |
 | `formula_reference` | 读 | 公式语法、变量和函数（从 `SERIES_VARS`、`FUNCTIONS` 生成，不手抄）、警报的字段和 `cond` 种类（从 `ALERT_CONDS` 生成）、agent 能做什么 |
@@ -1031,7 +1111,7 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 
 笔记和日志只给追加、不给整篇覆盖：页面有自动保存（§5.6），agent 发来一整篇会把正在输入的内容冲掉。反过来，页面开着且有未保存的输入时，它下一次保存仍会盖掉 agent 刚追加的那段；这个窗口只有去抖的一秒，不为它加版本号。
 
-不经 MCP 暴露：分组的增删改排序、基准和改名、图表偏好、画线和对比、TV 导入、通知通道、使用情况设置、强制同步、确认草稿、令牌本身的管理。没有 OAuth（claude.ai 的连接器要用，之后做，发出的令牌同样交给 `tokenViewer()`）、没有另一套 REST 接口、没有 CLI。
+不经 MCP 暴露：分组的增删改排序、基准和改名、图表偏好、画线和对比、TV 导入、通知通道、使用情况设置、强制同步、确认草稿、令牌本身的管理、触发简介翻译（§2.8）。没有 OAuth（claude.ai 的连接器要用，之后做，发出的令牌同样交给 `tokenViewer()`）、没有另一套 REST 接口、没有 CLI。
 
 ---
 
@@ -1074,4 +1154,4 @@ schema v2 + 迁移；`adj` 因子与 `prices` 模式；适配器 meta；应用�
 
 ## 9. 不做的事
 
-页面的访问控制、限流和封禁（实例经隧道公开，GitHub 登录只用来区分共用实例的人和提交反馈，不防恶意访问者；流量只监控，§1.6、§1.7；`/mcp` 例外，没有令牌进不来）；vault 之间的共享和协作编辑；日内 K 线（盘中只取最新价判断警报，§2.6，不存也不画日内 K 线）；比 5 分钟更快的价格警报（WebSocket、逐笔）；入站 webhook（入站的写接口只有带个人令牌的 `/mcp`，§6；没有别的 REST 写接口，也不接收别人推来的事件）；agent 替人确认对全部自选的警报（§2.5）；数据集爬虫（hebi8 只读仓库）；Pine Script 兼容；多个自选列表（TV 的「列表」切换）：现在只有一个列表 + 分组，一个标的只在一个组里，bench、名字都挂在条目上；要做多列表得先把每个标的的字段和「在哪些列表」分开，等确实需要再说。
+页面的访问控制、限流和封禁（实例经隧道公开，GitHub 登录只用来区分共用实例的人和提交反馈，不防恶意访问者；流量只监控，§1.6、§1.7；`/mcp` 例外，没有令牌进不来）；vault 之间的共享和协作编辑；日内 K 线（盘中只取最新价判断警报，§2.6，不存也不画日内 K 线）；比 5 分钟更快的价格警报（WebSocket、逐笔）；入站 webhook（入站的写接口只有带个人令牌的 `/mcp`，§6；没有别的 REST 写接口，也不接收别人推来的事件）；agent 替人确认对全部自选的警报（§2.5）；数据集爬虫（hebi8 只读仓库）；Pine Script 兼容；多个自选列表（TV 的「列表」切换）：现在只有一个列表 + 分组，一个标的只在一个组里，bench、名字都挂在条目上；要做多列表得先把每个标的的字段和「在哪些列表」分开，等确实需要再说；标的资料只在图表页的面板里（§2.8）：没有独立的详情页路由，不做财务报表、新闻、分析师评级，总览上没有「本周财报」徽标（财报日只存下来显示在面板里），简介不自动翻译、只翻成简体中文。

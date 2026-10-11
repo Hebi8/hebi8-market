@@ -24,6 +24,8 @@ export interface DatasetSeries {
   id: string;
   name: string;
   currency?: string;
+  /** What the series is, shown in the chart's 商品详情 panel */
+  description?: string;
   file: string;
 }
 
@@ -57,6 +59,7 @@ export function parseManifest(text: string): Manifest {
       id,
       name: typeof d.name === "string" && d.name.trim() ? d.name.trim() : id,
       ...(typeof d.currency === "string" && d.currency.trim() ? { currency: d.currency.trim() } : {}),
+      ...(typeof d.description === "string" && d.description.trim() ? { description: d.description.trim() } : {}),
       file,
     };
   });
@@ -218,6 +221,18 @@ export const dataset: SourceAdapter = {
       meta: { name: series.name, exchange: manifest.name || name, currency: series.currency, timezone: "UTC", kind: "dataset" },
       mode: "replace",
     };
+  },
+
+  /** The series' `description` in the manifest as it is on disk after the last sync: no network. */
+  async profile(ticker) {
+    const m = DATA_TICKER.exec(ticker);
+    if (!m) throw new Error(`无效的数据集 key「data:${ticker}」`);
+    const [, name, id] = m;
+    const location = readConfig(vaultDir()).datasets[name];
+    const root = location ? rootOnDisk(name, location) : null;
+    if (!root) throw new Error(`数据集「${name}」还没有同步`);
+    const description = readManifest(root).series.find((s) => s.id === id)?.description;
+    return description ? { description } : {};
   },
 
   /** Series whose id or name contains the query, or every series of a dataset whose name does. */
