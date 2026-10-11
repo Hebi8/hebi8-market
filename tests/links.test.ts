@@ -188,9 +188,20 @@ describe("things without a company", () => {
 });
 
 describe("a dataset series", () => {
-  it("links to its repository when there is one to open", () => {
-    expect(links({ key: "data:gpu/4090-xianyu", kind: "dataset", exchange: "显卡", repo: "https://github.com/someone/gpu-prices" })).toEqual([{ label: "数据集仓库", url: "https://github.com/someone/gpu-prices" }]);
-    expect(links({ key: "data:gpu/4090-xianyu", kind: "dataset", exchange: "显卡", repo: null })).toEqual([]);
+  it("has the links its manifest gives, in that order, and nothing made up for it", () => {
+    const given = [
+      { name: "闲鱼搜索页", url: "https://www.goofish.com/search?q=4090" },
+      { name: "数据出处", url: "https://github.com/someone/gpu-prices" },
+    ];
+    expect(links({ key: "data:gpu/4090-xianyu", kind: "dataset", exchange: "显卡", profile: { description: "…", links: given } })).toEqual([
+      { label: "闲鱼搜索页", url: "https://www.goofish.com/search?q=4090" },
+      { label: "数据出处", url: "https://github.com/someone/gpu-prices" },
+    ]);
+    // a manifest that gives none: no section, not even a fallback
+    expect(links({ key: "data:gpu/4090-xianyu", kind: "dataset", exchange: "显卡", profile: { description: "…" } })).toEqual([]);
+    expect(links({ key: "data:gpu/4090-xianyu", kind: "dataset", exchange: "显卡", profile: null })).toEqual([]);
+    // whatever is in the cache, only http(s) becomes an href
+    expect(links({ key: "data:gpu/x", profile: { links: [{ name: "x", url: "javascript:alert(1)" }, { name: "ok", url: "http://example.org/a" }] } })).toEqual([{ label: "ok", url: "http://example.org/a" }]);
   });
 });
 
@@ -227,14 +238,13 @@ describe("the tables", () => {
 describe("the profile view and get_profile carry the links", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hebi8m-links-"));
   const root = path.join(dir, "vault");
-  const yaml = (datasets: string) => `aliases:\n  BTC: binance:BTCUSDT\n  GOLD: tv:TVC:GOLD\ngroups:\n  - { name: 美股, symbols: [yahoo:NVDA] }\n${datasets}`;
 
   beforeAll(() => {
     process.env.HEBI8_VAULT = root;
     process.env.HEBI8_DB = path.join(dir, "hebi8.db");
     process.env.HEBI8_SECRETS = path.join(dir, "secrets");
     fs.mkdirSync(root);
-    fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml("datasets:\n  gpu: https://github.com/someone/gpu-prices.git\n  private: https://token@github.com/someone/private.git\n  local: ./datasets/local\n  ssh: git@github.com:someone/ssh.git\n"));
+    fs.writeFileSync(path.join(root, "hebi8.yaml"), "aliases:\n  BTC: binance:BTCUSDT\n  GOLD: tv:TVC:GOLD\ngroups:\n  - { name: 美股, symbols: [yahoo:NVDA] }\ndatasets:\n  gpu: https://github.com/someone/gpu-prices.git\n");
   });
   afterAll(() => {
     delete process.env.HEBI8_VAULT;
@@ -270,12 +280,12 @@ describe("the profile view and get_profile carry the links", () => {
     ]);
   });
 
-  it("a dataset's repository is linked when its address is a plain https one", async () => {
-    const { profileView } = await import("@/lib/profiles");
+  it("a dataset series shows what its manifest gave, and its repository is not offered in its place", async () => {
+    const { profileView, writeProfile } = await import("@/lib/profiles");
     const { readConfig } = await import("@/lib/vault");
     const cfg = readConfig(root);
-    expect(profileView("data:gpu/4090-xianyu", cfg).links).toEqual([{ label: "数据集仓库", url: "https://github.com/someone/gpu-prices" }]);
-    // credentials in the address, a directory on this machine, an ssh remote: nothing to open
-    for (const key of ["data:private/x", "data:local/x", "data:ssh/x", "data:unknown/x"]) expect(profileView(key, cfg).links, key).toEqual([]);
+    expect(profileView("data:gpu/4090-xianyu", cfg).links).toEqual([]);
+    writeProfile("data:gpu/4090-xianyu", { description: "闲鱼上 RTX 4090 的每日中位成交价", links: [{ name: "数据出处", url: "https://example.org/gpu" }] });
+    expect(profileView("data:gpu/4090-xianyu", cfg)).toMatchObject({ source: "data", profile: { description: "闲鱼上 RTX 4090 的每日中位成交价" }, links: [{ label: "数据出处", url: "https://example.org/gpu" }] });
   });
 });

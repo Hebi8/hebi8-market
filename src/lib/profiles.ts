@@ -1,23 +1,23 @@
 /**
  * Profiles in the cache (design §2.8). A symbol's slow facts are fetched from its source when its
  * daily bars are first pulled and again once they are a week old, after the scheduled sync; a
- * failure stays on that symbol and is tried again a day later. Pages and agents only read the
+ * failure stays on that symbol and is tried again a day later. A dataset series is the exception:
+ * its profile is a few lines of the manifest on disk and is read again with every sync (sync.ts). Pages and agents only read the
  * tables. A description's Chinese translation is made by the model when someone asks, once per
  * text: it is stored with the hash of what it translates and no longer applies when a later
  * refresh brings another text.
  */
 import crypto from "node:crypto";
-import { isRemoteDataset, type Config } from "./config";
+import type { Config } from "./config";
 import { getDb } from "./db";
 import { profileLinks } from "./links";
 import { nameOf } from "./names";
 import { isChinese, nextEarnings, profileDue, type ProfileState, type ProfileView, type SourceProfile, type Translation } from "./profile";
 import { adapters } from "./sources";
 import { getSymbol, listSymbols } from "./store";
-import { DATA_TICKER, isSynthetic, parseKey } from "./symbols";
+import { isSynthetic, parseKey } from "./symbols";
 import { parseSynth } from "./synth";
 import { llmConfig, translateToChinese } from "./translate";
-import { readConfigSafe, vaultDir } from "./vault";
 
 export interface ProfileRow extends ProfileState {
   /** The facts of the last fetch that worked */
@@ -127,16 +127,6 @@ export async function translateDescription(key: string): Promise<Translation> {
 
 // ---------------------------------------------------------------------------- read
 
-/**
- * A `data:` key's dataset as a link: its https address in the root yaml (datasets are an instance
- * setting), unless it carries credentials or is a directory on this machine.
- */
-function datasetRepo(ticker: string): string | null {
-  const name = DATA_TICKER.exec(ticker)?.[1];
-  const location = name ? readConfigSafe(vaultDir()).config?.datasets[name] : undefined;
-  return location && isRemoteDataset(location) && /^https:\/\/[^@\s]+$/.test(location) ? location.replace(/\.git$/, "") : null;
-}
-
 /** One symbol for the 商品详情 panel and for agents, from the cache only; names are the viewer's. */
 export function profileView(key: string, cfg: Config): ProfileView {
   if (isSynthetic(key)) {
@@ -167,7 +157,7 @@ export function profileView(key: string, cfg: Config): ProfileView {
   const row = getSymbol(key);
   const stored = readProfile(key);
   const description = stored?.profile?.description;
-  const { source, ticker } = parseKey(key);
+  const { source } = parseKey(key);
   return {
     source,
     kind: row?.kind ?? null,
@@ -181,7 +171,7 @@ export function profileView(key: string, cfg: Config): ProfileView {
     pending: Boolean(adapters[source].profile) && !stored?.profile,
     translation: description ? readTranslation(key, description) : null,
     translatable: Boolean(description && !isChinese(description) && llmConfig()),
-    links: profileLinks({ key, kind: row?.kind ?? null, exchange: row?.exchange ?? null, profile: stored?.profile ?? null, repo: source === "data" ? datasetRepo(ticker) : null }),
+    links: profileLinks({ key, kind: row?.kind ?? null, exchange: row?.exchange ?? null, profile: stored?.profile ?? null }),
     legs: null,
   };
 }

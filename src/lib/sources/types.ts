@@ -65,6 +65,12 @@ export interface ProfileWeight {
   weight: number;
 }
 
+/** A page the source itself names for reading more: a dataset's manifest lists them */
+export interface SourceLink {
+  name: string;
+  url: string;
+}
+
 /**
  * What an instrument is, as its source describes it (design §2.8): the facts that change slowly,
  * fetched once a week. Nothing in here follows the price: market cap, P/E and the dividend yield
@@ -78,6 +84,8 @@ export interface SourceProfile {
   country?: string;
   employees?: number;
   website?: string;
+  /** Further pages the source lists, http(s) only */
+  links?: SourceLink[];
   /** Shares outstanding (a coin's circulating supply) */
   shares?: number;
   /** Diluted earnings per share over the last twelve months */

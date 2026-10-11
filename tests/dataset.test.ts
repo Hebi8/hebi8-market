@@ -63,6 +63,56 @@ describe("parseManifest", () => {
     });
   });
 
+  it("a series and the dataset may say what they are and where to read more", () => {
+    const manifest = parseManifest(`name: 显卡
+description: " 每天从闲鱼和京东抓取的显卡价格 "
+links:
+  - { name: 数据出处, url: https://github.com/someone/gpu-prices }
+series:
+  - id: 4090-xianyu
+    description: 闲鱼上 RTX 4090 的每日中位成交价
+    links:
+      - { name: 闲鱼搜索页, url: " https://www.goofish.com/search?q=4090 " }
+      - { url: http://example.org/no-name }
+  - { id: 4090-jd }
+`);
+    expect(manifest.description).toBe("每天从闲鱼和京东抓取的显卡价格");
+    expect(manifest.links).toEqual([{ name: "数据出处", url: "https://github.com/someone/gpu-prices" }]);
+    expect(manifest.series[0]).toEqual({
+      id: "4090-xianyu",
+      name: "4090-xianyu",
+      description: "闲鱼上 RTX 4090 的每日中位成交价",
+      links: [
+        { name: "闲鱼搜索页", url: "https://www.goofish.com/search?q=4090" },
+        // without a name it goes by its host
+        { name: "example.org", url: "http://example.org/no-name" },
+      ],
+      file: "4090-xianyu.csv",
+    });
+    // none given: no field at all
+    expect(manifest.series[1]).toEqual({ id: "4090-jd", name: "4090-jd", file: "4090-jd.csv" });
+    expect(parseManifest("series:\n  - { id: a }\n")).toEqual({ name: "", series: [{ id: "a", name: "a", file: "a.csv" }] });
+  });
+
+  it("a link that is not http(s) is dropped: the manifest is someone else's file and a url becomes an href", () => {
+    const manifest = parseManifest(`links:
+  - { name: 脚本, url: "javascript:alert(document.cookie)" }
+  - { name: 数据, url: "data:text/html,<script>alert(1)</script>" }
+  - { name: 文件, url: "file:///etc/passwd" }
+  - { name: 相对, url: "/usage" }
+  - { name: 没有地址 }
+  - 只是一个字符串
+  - { name: 正常, url: "https://example.org/ok" }
+series:
+  - id: a
+    links: [{ name: x, url: "vbscript:msgbox(1)" }, { name: ftp, url: "ftp://example.org/x" }]
+  - { id: b, links: 不是列表 }
+`);
+    expect(manifest.links).toEqual([{ name: "正常", url: "https://example.org/ok" }]);
+    expect(manifest.series[0]).toEqual({ id: "a", name: "a", file: "a.csv" });
+    expect(manifest.series[1]).toEqual({ id: "b", name: "b", file: "b.csv" });
+  });
+
   it("refuses files outside the repo and duplicate ids", () => {
     expect(() => parseManifest("series:\n  - { id: a, file: ../../etc/passwd }\n")).toThrow(/相对路径/);
     expect(() => parseManifest("series:\n  - { id: a, file: /etc/passwd }\n")).toThrow(/相对路径/);
@@ -152,6 +202,48 @@ describe("dataset source", () => {
     expect(result.bars.map((b) => b.c)).toEqual([12900, 12650]);
     await expect(adapters.data.fetchDaily("here/nope", null)).rejects.toThrow(/没有序列「nope」/);
     await expect(adapters.data.fetchDaily("other/x", null)).rejects.toThrow(/datasets 里没有「other」/);
+  });
+
+  it("a series' profile is what the manifest says, and follows the manifest with every sync instead of once a week", async () => {
+    const { profileView, readProfile } = await import("@/lib/profiles");
+    const { adapters } = await import("@/lib/sources");
+    const { syncOne } = await import("@/lib/sync");
+    const { readConfig } = await import("@/lib/vault");
+    const key = "data:here/4090-xianyu";
+    const cfg = readConfig(process.env.HEBI8_VAULT!);
+    const series = "  - { id: 4090-xianyu, name: RTX 4090 咸鱼, currency: CNY, file: series/4090-xianyu.csv";
+
+    // a manifest that says nothing: bars, and a profile with nothing in it
+    expect(await syncOne(key, true)).toMatchObject({ ok: true });
+    expect(readProfile(key)).toMatchObject({ profile: {}, error: null });
+    expect(profileView(key, cfg)).toMatchObject({ profile: {}, links: [], pending: false });
+
+    // the dataset's own words and links, for a series that has none of its own
+    write("hebi8-dataset.yaml", `name: 显卡二手与零售价\ndescription: 每天抓取的显卡价格\nlinks:\n  - { name: 数据出处, url: https://example.org/gpu }\nseries:\n${series} }\n`);
+    expect(await syncOne(key, true)).toMatchObject({ ok: true });
+    expect(readProfile(key)!.profile).toEqual({ description: "每天抓取的显卡价格", links: [{ name: "数据出处", url: "https://example.org/gpu" }] });
+
+    // the series' own come first; the same address is listed once; a bad protocol never gets in
+    write(
+      "hebi8-dataset.yaml",
+      `name: 显卡二手与零售价\ndescription: 每天抓取的显卡价格\nlinks:\n  - { name: 数据出处, url: https://example.org/gpu }\n  - { name: 坏的, url: "javascript:alert(1)" }\nseries:\n${series}, description: 闲鱼上 RTX 4090 的每日中位成交价, links: [{ name: 闲鱼, url: "https://www.goofish.com/search?q=4090" }, { name: 出处, url: https://example.org/gpu }] }\n`,
+    );
+    // minutes later, not a week: the next sync reads it
+    expect(await syncOne(key, true)).toMatchObject({ ok: true });
+    expect(await adapters.data.profile!("here/4090-xianyu")).toEqual({
+      description: "闲鱼上 RTX 4090 的每日中位成交价",
+      links: [
+        { name: "闲鱼", url: "https://www.goofish.com/search?q=4090" },
+        { name: "出处", url: "https://example.org/gpu" },
+      ],
+    });
+    expect(profileView(key, cfg)).toMatchObject({
+      profile: { description: "闲鱼上 RTX 4090 的每日中位成交价" },
+      links: [
+        { label: "闲鱼", url: "https://www.goofish.com/search?q=4090" },
+        { label: "出处", url: "https://example.org/gpu" },
+      ],
+    });
   });
 
   it("searches series that are on disk", async () => {

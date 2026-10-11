@@ -41,6 +41,8 @@ async function run(key: string, force: boolean): Promise<SyncOutcome> {
     if (result.bars.length === 0 && since === null) throw new Error("no data returned");
     writeBars(key, result.bars, result.mode);
     markSynced(key, result.meta);
+    // a dataset's description and links are in the manifest that just came with its bars: no request, so no week to wait (§2.8)
+    if (source === "data") await refreshProfile(key);
     return { key, ok: true, bars: result.bars.length };
   } catch (err) {
     markSyncError(key, message(err));

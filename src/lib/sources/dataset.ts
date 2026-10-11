@@ -12,11 +12,12 @@ import { promisify } from "node:util";
 import { parse } from "yaml";
 import { isRemoteDataset } from "../config";
 import { dataDir } from "../db";
+import { linkHost } from "../links";
 import { dedupeBars, type Bar } from "../series";
 import { DATA_ID, DATA_TICKER } from "../symbols";
 import { countUpstream } from "../traffic";
 import { readConfig, readConfigSafe, vaultDir } from "../vault";
-import type { SearchHit, SourceAdapter } from "./types";
+import type { SearchHit, SourceAdapter, SourceLink } from "./types";
 
 export const MANIFEST = "hebi8-dataset.yaml";
 
@@ -24,15 +25,40 @@ export interface DatasetSeries {
   id: string;
   name: string;
   currency?: string;
-  /** What the series is, shown in the chart's 商品详情 panel */
+  /** What the series is and where to read more, shown in the chart's 商品详情 panel: a dataset's profile is what its manifest says */
   description?: string;
+  links?: SourceLink[];
   file: string;
 }
 
 export interface Manifest {
   name: string;
+  /** For every series: the description of one that has none of its own, and links after a series' own (where the data comes from) */
+  description?: string;
+  links?: SourceLink[];
   series: DatasetSeries[];
 }
+
+/**
+ * `links: [{ name: 数据出处, url: https://… }]`. The manifest is someone else's repository and
+ * a url ends up as an `href`: anything that is not http(s) is dropped here. A link without a name
+ * goes by its host.
+ */
+function parseLinks(raw: unknown): SourceLink[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((entry): SourceLink[] => {
+    const { name, url } = (entry ?? {}) as { name?: unknown; url?: unknown };
+    const host = typeof url === "string" ? linkHost(url.trim()) : null;
+    return host ? [{ name: typeof name === "string" && name.trim() ? name.trim() : host, url: (url as string).trim() }] : [];
+  });
+}
+
+const described = (d: { description?: unknown; links?: unknown }) => {
+  const links = parseLinks(d.links);
+  return {
+    ...(typeof d.description === "string" && d.description.trim() ? { description: d.description.trim() } : {}),
+    ...(links.length > 0 ? { links } : {}),
+  };
+};
 
 /** The manifest, validated; `file` must stay inside the repo. */
 export function parseManifest(text: string): Manifest {
@@ -42,7 +68,7 @@ export function parseManifest(text: string): Manifest {
   } catch (err) {
     throw new Error(`${MANIFEST} 解析失败：${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
   }
-  const root = (raw ?? {}) as { name?: unknown; series?: unknown };
+  const root = (raw ?? {}) as { name?: unknown; description?: unknown; links?: unknown; series?: unknown };
   if (!Array.isArray(root.series)) throw new Error(`${MANIFEST} 缺少 series 列表`);
   const seen = new Set<string>();
   const series = root.series.map((s, i): DatasetSeries => {
@@ -59,11 +85,11 @@ export function parseManifest(text: string): Manifest {
       id,
       name: typeof d.name === "string" && d.name.trim() ? d.name.trim() : id,
       ...(typeof d.currency === "string" && d.currency.trim() ? { currency: d.currency.trim() } : {}),
-      ...(typeof d.description === "string" && d.description.trim() ? { description: d.description.trim() } : {}),
+      ...described(d),
       file,
     };
   });
-  return { name: typeof root.name === "string" && root.name.trim() ? root.name.trim() : "", series };
+  return { name: typeof root.name === "string" && root.name.trim() ? root.name.trim() : "", ...described(root), series };
 }
 
 const COLUMNS = ["date", "open", "high", "low", "close", "volume"] as const;
@@ -223,7 +249,10 @@ export const dataset: SourceAdapter = {
     };
   },
 
-  /** The series' `description` in the manifest as it is on disk after the last sync: no network. */
+  /**
+   * What the manifest says about the series, as it is on disk after the last sync (no network):
+   * its own description or else the dataset's, and its own links followed by the dataset's.
+   */
   async profile(ticker) {
     const m = DATA_TICKER.exec(ticker);
     if (!m) throw new Error(`无效的数据集 key「data:${ticker}」`);
@@ -231,8 +260,11 @@ export const dataset: SourceAdapter = {
     const location = readConfig(vaultDir()).datasets[name];
     const root = location ? rootOnDisk(name, location) : null;
     if (!root) throw new Error(`数据集「${name}」还没有同步`);
-    const description = readManifest(root).series.find((s) => s.id === id)?.description;
-    return description ? { description } : {};
+    const manifest = readManifest(root);
+    const series = manifest.series.find((s) => s.id === id);
+    const description = series?.description ?? manifest.description;
+    const links = [...(series?.links ?? []), ...(manifest.links ?? [])].filter((link, i, all) => all.findIndex((l) => l.url === link.url) === i);
+    return { ...(description ? { description } : {}), ...(links.length > 0 ? { links } : {}) };
   },
 
   /** Series whose id or name contains the query, or every series of a dataset whose name does. */

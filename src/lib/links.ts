@@ -2,10 +2,11 @@
  * Where to read more about a symbol (design §2.8): the 相关链接 of the 商品详情 panel and of
  * `get_profile`. Computed on read from the key, the cached metadata and the stored profile; no
  * request is made and nothing is stored. Three kinds, in this order: what the source itself names
- * (the website), what a rule builds from the listing (the fund issuer's page, the exchange's or
+ * (the website; a dataset's manifest lists its own links), what a rule builds from the listing (the fund issuer's page, the exchange's or
  * regulator's filings), and a hand-kept table of official pages for things without a company
  * behind them (yields, currencies, commodities, indices, coins). The source's own quote page
- * comes last, so every real symbol has at least one.
+ * comes last, so every symbol of a market source has at least one. A dataset series has what its
+ * manifest gives and nothing made up for it.
  *
  * Every URL and every rule here was opened and read before it went in (2026-10-11). Add one the
  * same way: a page that 404s, lands on a search or redirects to a home page does not belong.
@@ -24,8 +25,6 @@ export interface LinkInput {
   kind: string | null;
   exchange: string | null;
   profile: SourceProfile | null;
-  /** A `data:` key's dataset, when it is a repository anyone can open */
-  repo?: string | null;
 }
 
 /** The host a link shows next to its label; null for anything that is not http(s). */
@@ -195,7 +194,7 @@ function quotePage(source: string, ticker: string): ProfileLink[] {
  * their own). A later link to the site the source's own website already names is dropped, as is a
  * repeated URL.
  */
-export function profileLinks({ key, kind, exchange, profile, repo }: LinkInput): ProfileLink[] {
+export function profileLinks({ key, kind, exchange, profile }: LinkInput): ProfileLink[] {
   if (key.startsWith("=")) return [];
   const at = key.indexOf(":");
   const [source, ticker] = [key.slice(0, at), key.slice(at + 1)];
@@ -203,12 +202,14 @@ export function profileLinks({ key, kind, exchange, profile, repo }: LinkInput):
   const listing = listingOf(source, ticker, exchange);
   const site = profile?.website && linkHost(profile.website) ? [{ label: FUND_KINDS.has(k) ? "基金官网" : "官网", url: profile.website }] : [];
   const official = ASSETS.filter((a) => a.keys.some((p) => keyMatches(p, key))).flatMap((a) => a.links.map(([label, url]) => ({ label, url })));
+  // what the source lists itself; stored text, so checked again before it becomes an href
+  const given = (profile?.links ?? []).filter((l) => linkHost(l.url)).map((l) => ({ label: l.name, url: l.url }));
   const all = [
     ...site,
+    ...given,
     ...(listing && FUND_KINDS.has(k) ? issuerPage(listing, k, profile) : []),
     ...(listing ? filings(listing, k) : []),
     ...official,
-    ...(source === "data" && repo ? [{ label: "数据集仓库", url: repo }] : []),
     ...quotePage(source, ticker),
   ];
   const siteHost = site[0] ? linkHost(site[0].url) : null;

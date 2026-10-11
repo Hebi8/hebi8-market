@@ -280,7 +280,9 @@ export function ProfilePanel({
         {/* a symbol whose source has nothing to say about it (an index, a commodity) has no facts to date */}
         {view.fetchedAt != null && p && Object.keys(p).length > 0 ? (
           <p className="px-3 py-2.5 text-[11px] leading-4 text-muted">
-            资料更新于 {fmtDate(view.fetchedAt / 1000)}，每周刷新{(marketCap ?? pe ?? dividendYield) != null && "；市值、市盈率和股息收益率按最新价计算"}。
+            {/* a dataset's profile is its manifest, read with every sync */}
+            资料更新于 {fmtDate(view.fetchedAt / 1000)}，{view.source === "data" ? "随数据集每次同步更新" : "每周刷新"}
+            {(marketCap ?? pe ?? dividendYield) != null && "；市值、市盈率和股息收益率按最新价计算"}。
           </p>
         ) : (
           view.pending && <p className="px-3 py-2.5 text-[11px] text-muted">资料还没有取到，下次同步后补上。</p>
