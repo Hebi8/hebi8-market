@@ -217,6 +217,7 @@ const PROFILE_FIELDS = [
   "dividends_yield",
   "earnings_release_next_date",
   "issuer",
+  "brand",
   "expense_ratio",
   "aum",
   "top_holdings",
@@ -250,6 +251,8 @@ export function tvProfile(d: Record<string, unknown>): SourceProfile {
     ...(positive(d.dividends_yield) && positive(d.lp) ? { dividend: (d.dividends_yield / 100) * d.lp } : {}),
     ...(positive(d.earnings_release_next_date) ? { earningsAt: d.earnings_release_next_date } : {}),
     ...(text(d.issuer) ? { issuer: text(d.issuer) } : {}),
+    // the issuer is the parent company (HSBC for the Tracker Fund): the brand is the name to go by
+    ...(text(d.brand) ? { brand: text(d.brand) } : {}),
     // 0 is a ratio: some funds charge nothing
     ...(typeof d.expense_ratio === "number" && d.expense_ratio >= 0 ? { expenseRatio: d.expense_ratio / 100 } : {}),
     ...(positive(d.aum) ? { netAssets: d.aum } : {}),

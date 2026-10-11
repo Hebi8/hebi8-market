@@ -156,7 +156,7 @@ export const TOOLS: Tool[] = [
   tool({
     name: "get_profile",
     description:
-      "What one symbol is, from the cache: for a company its description, sector, industry, country, employees, website and next earnings date; for a fund its description, issuer, category, expense ratio, net assets, top holdings and sector weights; for anything else (an index, an FX pair, a commodity, a coin, a dataset series) the type, exchange, currency, timezone and trading hours, with a description when its source has one. A field the source does not have is absent. These facts are fetched from the symbol's source once a week (`profile_fetched_at`); `market_cap`, `pe_ttm` and `dividend_yield_pct` are not stored but computed now from the stored shares, trailing EPS and yearly dividend per share with `price`, the latest price as traded (the quote when there is one, else the last daily close; never dividend-adjusted, whatever the user's `prices` setting, so it can differ from get_bars under `total`). `description_zh` is a Simplified Chinese translation someone asked for on the page, when there is one. A synthetic key has no profile and returns its operands. Nothing is fetched: a symbol that was never cached, or whose profile has not been fetched yet, comes back with what the cache has.",
+      "What one symbol is, from the cache: for a company its description, sector, industry, country, employees, website and next earnings date; for a fund its description, issuer, category, expense ratio, net assets, top holdings and sector weights; for anything else (an index, an FX pair, a commodity, a coin, a dataset series) the type, exchange, currency, timezone and trading hours, with a description when its source has one. A field the source does not have is absent. These facts are fetched from the symbol's source once a week (`profile_fetched_at`); `market_cap`, `pe_ttm` and `dividend_yield_pct` are not stored but computed now from the stored shares, trailing EPS and yearly dividend per share with `price`, the latest price as traded (the quote when there is one, else the last daily close; never dividend-adjusted, whatever the user's `prices` setting, so it can differ from get_bars under `total`). `description_zh` is a Simplified Chinese translation someone asked for on the page, when there is one. `links` are pages to read more on, each with a Chinese name: the company's or fund's website, its filings (SEC EDGAR, HKEX, SSE, SZSE), the fund issuer, official sources for a yield, currency, commodity or index, and always the data source's own quote page; they are built from the symbol, not fetched or checked at call time. A synthetic key has no profile and returns its operands. Nothing is fetched: a symbol that was never cached, or whose profile has not been fetched yet, comes back with what the cache has.",
     input: { key: z.string().describe(`The symbol: ${KEY}`) },
     run: ({ dir }, args) => {
       const cfg = readConfig(dir);
@@ -197,6 +197,7 @@ export const TOOLS: Tool[] = [
         net_assets: p?.netAssets,
         top_holdings: weights(p?.holdings),
         sector_weights: weights(p?.sectors),
+        links: view.links.map((l) => ({ name: l.label, url: l.url })),
         profile_fetched_at: iso(view.fetchedAt),
       };
     },

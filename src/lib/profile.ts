@@ -2,6 +2,7 @@
  * What a symbol is (design §2.8), the parts shared by the server and the 商品详情 panel: when the
  * weekly facts are due again, the numbers that follow the price, and how they are written.
  */
+import type { ProfileLink } from "./links";
 import type { SourceProfile } from "./sources/types";
 import { localDay } from "./time";
 
@@ -112,6 +113,8 @@ export interface ProfileView {
   translation: string | null;
   /** A model is configured and the description is not Chinese already: someone who may write can ask for a translation */
   translatable: boolean;
+  /** Where to read more (`links.ts`): the source's website, filings, the issuer, official pages; at least the source's quote page for a real key */
+  links: ProfileLink[];
   /** A synthetic key's operands: it has no profile of its own */
   legs: { key: string; name: string }[] | null;
 }

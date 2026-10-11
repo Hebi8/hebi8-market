@@ -86,8 +86,9 @@ export interface SourceProfile {
   dividend?: number;
   /** The next earnings report, unix seconds */
   earningsAt?: number;
-  /** A fund: who runs it */
+  /** A fund: who runs it, and the brand it is sold under when the source tells them apart (SPDR, iShares) */
   issuer?: string;
+  brand?: string;
   category?: string;
   /** A fund's yearly cost, 0.0009 = 0.09% */
   expenseRatio?: number;

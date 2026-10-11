@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState, useTransition, type ReactNode } from "react";
 import { translateProfile } from "@/app/actions";
 import { fmtDate } from "@/lib/format";
+import { linkHost } from "@/lib/links";
 import { fmtAmount, fmtHours, valuation, type ProfileView, type ProfileWeight, type Translation } from "@/lib/profile";
 import { kindLabel } from "@/lib/search";
 import { IconClose } from "./chart-icons";
@@ -13,16 +14,6 @@ import { chartHref, useUi } from "./UiProvider";
 const SOURCES: Record<string, string> = { yahoo: "Yahoo Finance", tv: "TradingView", binance: "Binance", data: "数据集" };
 
 const pct = (v: number) => `${(v * 100).toFixed(2)}%`;
-
-/** A site the source names, as a link: only http(s), shown as its host. */
-function siteOf(url: string): { href: string; host: string } | null {
-  try {
-    const u = new URL(url);
-    return u.protocol === "http:" || u.protocol === "https:" ? { href: u.href, host: u.host.replace(/^www\./, "") } : null;
-  } catch {
-    return null;
-  }
-}
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -147,7 +138,8 @@ function Description({ symbolKey, view, canAsk }: { symbolKey: string; view: Pro
  * TradingView's 商品详情: what the symbol is. The facts are the cached weekly profile (§2.8); market
  * cap, P/E and the dividend yield are computed here from them and the latest price as traded, so
  * they move with it. A field the source does not have is not shown; a symbol without any profile
- * (an index, an FX pair, a coin) still has what the cache knows about where and when it trades.
+ * (an index, an FX pair, a coin) still has what the cache knows about where and when it trades,
+ * and every real symbol has 相关链接: where to read more, the source's own page at the least.
  * A synthetic symbol has no profile of its own: its operands are listed, each opening its chart.
  */
 export function ProfilePanel({
@@ -182,7 +174,6 @@ export function ProfilePanel({
   const p = view.profile;
   const currency = view.currency ? ` ${view.currency}` : "";
   const { marketCap, pe, dividendYield } = valuation(p, price);
-  const site = p?.website ? siteOf(p.website) : null;
   const present = (rows: [string, ReactNode | null | undefined | false][]) => rows.filter((row): row is [string, ReactNode] => row[1] != null && row[1] !== false && row[1] !== "");
 
   const figures = present([
@@ -197,14 +188,6 @@ export function ProfilePanel({
     ["行业", p?.industry],
     ["国家/地区", p?.country],
     ["员工", p?.employees?.toLocaleString("en-US")],
-    [
-      "网站",
-      site && (
-        <a href={site.href} target="_blank" rel="noopener noreferrer" className="hover:text-accent">
-          {site.host}
-        </a>
-      ),
-    ],
   ]);
   const fund = present([
     ["发行商", p?.issuer],
@@ -273,6 +256,20 @@ export function ProfilePanel({
         {p?.sectors && (
           <Section title="行业分布">
             <Weights items={p.sectors} linked={false} />
+          </Section>
+        )}
+        {view.links.length > 0 && (
+          <Section title="相关链接">
+            <ul className="space-y-1">
+              {view.links.map((link) => (
+                <li key={link.url}>
+                  <a href={link.url} target="_blank" rel="noopener noreferrer" className="group flex items-baseline gap-3" title={link.url}>
+                    <span className="min-w-0 flex-1 truncate group-hover:text-accent">{link.label}</span>
+                    <span className="max-w-[45%] shrink-0 truncate text-[11px] text-muted">{linkHost(link.url)}</span>
+                  </a>
+                </li>
+              ))}
+            </ul>
           </Section>
         )}
         {trading.length > 0 && (

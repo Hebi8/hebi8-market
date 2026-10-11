@@ -7,15 +7,17 @@
  * refresh brings another text.
  */
 import crypto from "node:crypto";
-import type { Config } from "./config";
+import { isRemoteDataset, type Config } from "./config";
 import { getDb } from "./db";
+import { profileLinks } from "./links";
 import { nameOf } from "./names";
 import { isChinese, nextEarnings, profileDue, type ProfileState, type ProfileView, type SourceProfile, type Translation } from "./profile";
 import { adapters } from "./sources";
 import { getSymbol, listSymbols } from "./store";
-import { isSynthetic, parseKey } from "./symbols";
+import { DATA_TICKER, isSynthetic, parseKey } from "./symbols";
 import { parseSynth } from "./synth";
 import { llmConfig, translateToChinese } from "./translate";
+import { readConfigSafe, vaultDir } from "./vault";
 
 export interface ProfileRow extends ProfileState {
   /** The facts of the last fetch that worked */
@@ -125,6 +127,16 @@ export async function translateDescription(key: string): Promise<Translation> {
 
 // ---------------------------------------------------------------------------- read
 
+/**
+ * A `data:` key's dataset as a link: its https address in the root yaml (datasets are an instance
+ * setting), unless it carries credentials or is a directory on this machine.
+ */
+function datasetRepo(ticker: string): string | null {
+  const name = DATA_TICKER.exec(ticker)?.[1];
+  const location = name ? readConfigSafe(vaultDir()).config?.datasets[name] : undefined;
+  return location && isRemoteDataset(location) && /^https:\/\/[^@\s]+$/.test(location) ? location.replace(/\.git$/, "") : null;
+}
+
 /** One symbol for the 商品详情 panel and for agents, from the cache only; names are the viewer's. */
 export function profileView(key: string, cfg: Config): ProfileView {
   if (isSynthetic(key)) {
@@ -148,13 +160,14 @@ export function profileView(key: string, cfg: Config): ProfileView {
       pending: false,
       translation: null,
       translatable: false,
+      links: [],
       legs: legs.map((k) => ({ key: k, name: nameOf(cfg, k, symbols[k]?.name) })),
     };
   }
   const row = getSymbol(key);
   const stored = readProfile(key);
   const description = stored?.profile?.description;
-  const { source } = parseKey(key);
+  const { source, ticker } = parseKey(key);
   return {
     source,
     kind: row?.kind ?? null,
@@ -168,6 +181,7 @@ export function profileView(key: string, cfg: Config): ProfileView {
     pending: Boolean(adapters[source].profile) && !stored?.profile,
     translation: description ? readTranslation(key, description) : null,
     translatable: Boolean(description && !isChinese(description) && llmConfig()),
+    links: profileLinks({ key, kind: row?.kind ?? null, exchange: row?.exchange ?? null, profile: stored?.profile ?? null, repo: source === "data" ? datasetRepo(ticker) : null }),
     legs: null,
   };
 }
