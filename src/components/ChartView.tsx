@@ -176,7 +176,8 @@ export function ChartView({
   const control = useRef<ChartControl | null>(null);
 
   // right panel: one at a time, remembered on wide screens; a bottom sheet that starts closed on narrow ones
-  const wide = useMediaQuery("(min-width: 768px)");
+  // 768px itself is narrow (§5.2), like the classes below and the CSS in globals.css
+  const wide = useMediaQuery("(min-width: 769px)");
   const [storedPanel, setStoredPanel] = useLocalStorage<Panel | "none" | null>("hebi8:chart:panel", null);
   const [sheet, setSheet] = useState<Panel | null>(null);
   const panel: Panel | null = wide ? (storedPanel === "none" ? null : (storedPanel ?? (note ? "notes" : null))) : sheet;
@@ -876,8 +877,8 @@ export function ChartView({
           <span className="hidden sm:inline">警报</span>
         </button>
         {/* narrow screens: drawing tools and the side panels live in the top bar */}
-        <span className="tb-sep md:hidden" />
-        <span className="flex md:hidden">
+        <span className="tb-sep min-[769px]:hidden" />
+        <span className="flex min-[769px]:hidden">
           <Dropdown label={<><IconPencil /><span className="text-xs">画线</span></>} title="画线工具" pressed={Boolean(drawTool)} menuClassName="w-[200px] max-h-[70vh] overflow-y-auto">
             {drawingMenu}
           </Dropdown>
@@ -943,7 +944,7 @@ export function ChartView({
 
       <div className="flex min-h-0 flex-1">
         {/* left drawing toolbar */}
-        <div className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 overflow-y-auto border-r border-line py-1.5 md:flex" role="toolbar" aria-label="画线工具" aria-orientation="vertical">
+        <div className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 overflow-y-auto border-r border-line py-1.5 min-[769px]:flex" role="toolbar" aria-label="画线工具" aria-orientation="vertical">
           <button type="button" onClick={() => chooseTool(null)} aria-pressed={!drawTool} className="tb-btn" title="十字光标 · Esc" aria-label="十字光标">
             <IconCursor />
           </button>
@@ -1104,7 +1105,7 @@ export function ChartView({
         {panel && wide && <div className="w-[280px] shrink-0 border-l border-line">{panelContent}</div>}
 
         {/* right icon strip */}
-        <div className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 border-l border-line py-1.5 md:flex" role="toolbar" aria-label="侧栏" aria-orientation="vertical">
+        <div className="hidden w-[42px] shrink-0 flex-col items-center gap-0.5 border-l border-line py-1.5 min-[769px]:flex" role="toolbar" aria-label="侧栏" aria-orientation="vertical">
           <button type="button" onClick={() => togglePanel("watchlist")} aria-pressed={panel === "watchlist"} className="tb-btn" title="自选列表 · Space / Shift+Space 下一只 / 上一只" aria-label="自选列表">
             <IconWatchlist />
           </button>
