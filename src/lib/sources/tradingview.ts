@@ -250,7 +250,8 @@ export function tvProfile(d: Record<string, unknown>): SourceProfile {
     ...(positive(d.dividends_yield) && positive(d.lp) ? { dividend: (d.dividends_yield / 100) * d.lp } : {}),
     ...(positive(d.earnings_release_next_date) ? { earningsAt: d.earnings_release_next_date } : {}),
     ...(text(d.issuer) ? { issuer: text(d.issuer) } : {}),
-    ...(positive(d.expense_ratio) ? { expenseRatio: d.expense_ratio / 100 } : {}),
+    // 0 is a ratio: some funds charge nothing
+    ...(typeof d.expense_ratio === "number" && d.expense_ratio >= 0 ? { expenseRatio: d.expense_ratio / 100 } : {}),
     ...(positive(d.aum) ? { netAssets: d.aum } : {}),
     ...(holdings.length ? { holdings: holdings.slice(0, 10) } : {}),
   };

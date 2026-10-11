@@ -93,6 +93,12 @@ export function latestBarTime(key: string): number | null {
   return row.t;
 }
 
+/** The close of the latest stored bar as traded: split-adjusted, no dividend factor. */
+export function lastClose(key: string): number | null {
+  const row = getDb().prepare("SELECT c FROM bars WHERE key = ? ORDER BY t DESC LIMIT 1").get(key) as { c: number } | undefined;
+  return row?.c ?? null;
+}
+
 export function writeBars(key: string, bars: Bar[], mode: "replace" | "merge"): void {
   const db = getDb();
   const insert = db.prepare("INSERT OR REPLACE INTO bars (key, t, o, h, l, c, v, adj) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");

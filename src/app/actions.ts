@@ -6,6 +6,7 @@ import { CHART_STYLES, USAGE_LIMITS, resolveKey, type ChartPrefs, type FormulaDe
 import * as ops from "@/lib/ops";
 import type { AddSymbolInput, AlertInput } from "@/lib/ops";
 import { CHANGE_PERIODS, MAX_PERIODS } from "@/lib/periods";
+import type { Translation } from "@/lib/profile";
 import { translateDescription } from "@/lib/profiles";
 import type { Prices } from "@/lib/series";
 import { getSymbol } from "@/lib/store";
@@ -112,15 +113,16 @@ export async function loadSymbol(key: string): Promise<ActionResult> {
  * 翻译 in the chart's 商品详情 panel: the symbol's description in Simplified Chinese, from the model,
  * kept in the cache for everyone (§2.8). Like every write it needs a viewer who may write, so a
  * visitor of a shared instance cannot spend the model's quota. The page is the only caller: an
- * agent reads the original and needs no translation made for it.
+ * agent reads the original and needs no translation made for it. The answer names the text it
+ * translates, so a page still showing another description does not take it for its own.
  */
-export async function translateProfile(key: string): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+export async function translateProfile(key: string): Promise<({ ok: true } & Translation) | { ok: false; error: string }> {
   try {
     requireWriter(await getViewer());
     if (!isValidKey(key)) throw new Error(`无效的 key「${key}」`);
-    const text = await translateDescription(key);
+    const translation = await translateDescription(key);
     revalidatePath("/", "layout");
-    return { ok: true, text };
+    return { ok: true, ...translation };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

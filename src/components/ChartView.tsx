@@ -123,8 +123,9 @@ interface ChartViewProps {
   alerts: AlertView[];
   /** The latest price of this symbol, where a new alert starts */
   livePrice: number | null;
-  /** What the symbol is, for the 商品详情 panel (§2.8) */
+  /** What the symbol is, for the 商品详情 panel (§2.8), and its latest price as traded: not the chart's, which carries dividends under ADJ */
   profile: ProfileView;
+  tradedPrice: number | null;
   /** This chart at the instance's public address: copied, shared and printed under a snapshot */
   shareUrl: string;
 }
@@ -149,6 +150,7 @@ export function ChartView({
   alerts,
   livePrice,
   profile,
+  tradedPrice,
   shareUrl,
 }: ChartViewProps) {
   const router = useRouter();
@@ -749,8 +751,8 @@ export function ChartView({
         name={names[symbolKey] ?? symbolKey}
         ticker={data?.symbol.ticker ?? symbolKey}
         view={profile}
-        // the price the chart shows: its last bar as the quote rounds move it
-        price={live?.tail?.bar.close ?? data?.bars.at(-1)?.close ?? livePrice}
+        // as traded, moving with the quote rounds like the chart's last bar
+        price={live?.price ?? tradedPrice}
         readOnly={readOnly}
         onClose={() => togglePanel("details")}
         className="h-full"

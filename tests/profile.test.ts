@@ -34,14 +34,24 @@ describe("the numbers that follow the price", () => {
     expect(valuation(null, 10)).toEqual({ marketCap: null, pe: null, dividendYield: null });
   });
 
-  it("an earnings date that has passed is not the next one", () => {
-    const at = (ms: number) => ({ earningsAt: Math.floor(ms / 1000) });
-    expect(nextEarnings(at(NOW + 30 * DAY), NOW)).toBe(Math.floor((NOW + 30 * DAY) / 1000));
-    // today's report still counts
-    expect(nextEarnings(at(NOW - 3600_000), NOW)).not.toBeNull();
-    expect(nextEarnings(at(NOW - 2 * DAY), NOW)).toBeNull();
-    expect(nextEarnings({}, NOW)).toBeNull();
-    expect(nextEarnings(null, NOW)).toBeNull();
+  it("the next earnings report is a day on the exchange's calendar, shown through that day and not after", () => {
+    const at = (iso: string) => ({ earningsAt: Date.parse(iso) / 1000 });
+    const day = (iso: string) => Date.parse(`${iso}T00:00:00Z`) / 1000;
+    const NY = "America/New_York";
+    // after the close on Nov 17 in New York
+    const report = at("2026-11-17T21:20:00Z");
+    expect(nextEarnings(report, Date.parse("2026-10-11T03:00:00Z"), NY)).toBe(day("2026-11-17"));
+    // the report is out, the day is not over: still shown
+    expect(nextEarnings(report, Date.parse("2026-11-18T03:00:00Z"), NY)).toBe(day("2026-11-17"));
+    // midnight in New York: gone, though it is less than a day old
+    expect(nextEarnings(report, Date.parse("2026-11-18T05:00:00Z"), NY)).toBeNull();
+    // a morning report in Tokyo is still the day before in UTC: the date is Tokyo's
+    const tokyo = at("2026-10-29T23:30:00Z");
+    expect(nextEarnings(tokyo, Date.parse("2026-10-29T12:00:00Z"), "Asia/Tokyo")).toBe(day("2026-10-30"));
+    expect(nextEarnings(tokyo, Date.parse("2026-10-30T14:59:00Z"), "Asia/Tokyo")).toBe(day("2026-10-30"));
+    expect(nextEarnings(tokyo, Date.parse("2026-10-30T15:00:00Z"), "Asia/Tokyo")).toBeNull();
+    expect(nextEarnings({}, NOW, NY)).toBeNull();
+    expect(nextEarnings(null, NOW, NY)).toBeNull();
   });
 });
 
@@ -135,6 +145,13 @@ describe("Yahoo's quoteSummary as a profile", () => {
       { name: "something_new", weight: 0.01 },
     ]);
     expect(profile.shares).toBeUndefined();
+  });
+
+  it("a fund that charges nothing has an expense ratio of 0, not none", () => {
+    expect(yahooProfile({ fundProfile: { family: "BNY Mellon", feesExpensesInvestment: { annualReportExpenseRatio: 0 } } })).toEqual({ issuer: "BNY Mellon", expenseRatio: 0 });
+    expect(yahooProfile({ fundProfile: { family: "BNY Mellon", feesExpensesInvestment: {} } })).toEqual({ issuer: "BNY Mellon" });
+    expect(tvProfile({ type: "fund", issuer: "BNY Mellon", expense_ratio: 0 })).toEqual({ issuer: "BNY Mellon", expenseRatio: 0 });
+    expect(tvProfile({ type: "fund", issuer: "BNY Mellon" })).toEqual({ issuer: "BNY Mellon" });
   });
 
   it("an index or an FX pair has nothing; a coin has its supply; a date that was not coerced still reads", () => {
@@ -338,14 +355,21 @@ describe("fetching profiles into the cache", () => {
     expect(tv).toHaveBeenCalledTimes(2);
   });
 
-  it("a symbol's first sync brings its profile along, and a failing profile does not fail the sync", async () => {
+  it("a symbol's first sync asks for its profile without waiting for it, and a failing profile does not fail the sync", async () => {
     const { adapters } = await import("@/lib/sources");
-    const { readProfile } = await import("@/lib/profiles");
+    const { readProfile, refreshProfile } = await import("@/lib/profiles");
     const { syncOne } = await import("@/lib/sync");
     const bar = { t: Date.UTC(2026, 9, 9) / 1000, o: 1, h: 1, l: 1, c: 1, v: null, adj: 1 };
     vi.spyOn(adapters.yahoo, "fetchDaily").mockResolvedValue({ bars: [bar], meta: { name: "NVIDIA", kind: "equity" }, mode: "replace" });
-    const profile = vi.spyOn(adapters.yahoo, "profile").mockRejectedValue(new Error("boom"));
+    // a source that takes its time, like a TradingView session running into its timeout
+    let fail!: (err: Error) => void;
+    const profile = vi.spyOn(adapters.yahoo, "profile").mockReturnValue(new Promise((_, reject) => (fail = reject)));
     expect(await syncOne(NVDA, true)).toMatchObject({ ok: true, bars: 1 });
+    // the bars are in while the profile is still on its way
+    expect(profile).toHaveBeenCalledTimes(1);
+    expect(readProfile(NVDA)).toBeNull();
+    fail(new Error("boom"));
+    await refreshProfile(NVDA);
     expect(readProfile(NVDA)).toMatchObject({ profile: null, error: "boom" });
     // opened again within the day: neither fetched again
     profile.mockResolvedValue({ description: EN });
@@ -363,13 +387,15 @@ describe("translating a description", () => {
     expect(profileView(NVDA, cfg)).toMatchObject({ translation: null, translatable: true });
 
     const calls = fakeModel("英伟达公司是一家数据中心级的 AI 基础设施公司。", 20);
-    const answers = await Promise.all([translateDescription(NVDA), translateDescription(NVDA), translateDescription(NVDA)]);
-    expect(new Set(answers)).toEqual(new Set(["英伟达公司是一家数据中心级的 AI 基础设施公司。"]));
+    const got = await Promise.all([translateDescription(NVDA), translateDescription(NVDA), translateDescription(NVDA)]);
+    // each answer names the text it translates
+    expect(got).toEqual(Array(3).fill({ source: EN, text: "英伟达公司是一家数据中心级的 AI 基础设施公司。" }));
+    const answers = got.map((g) => g.text);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ url: "http://llm.test/v1/chat/completions", auth: "Bearer sk-test", body: { model: "test-model" } });
     expect(calls[0].body.messages.at(-1)).toEqual({ role: "user", content: EN });
     // stored: the next one to open the symbol gets it without the model
-    expect(await translateDescription(NVDA)).toBe(answers[0]);
+    expect(await translateDescription(NVDA)).toEqual({ source: EN, text: answers[0] });
     expect(calls).toHaveLength(1);
     expect(profileView(NVDA, cfg).translation).toBe(answers[0]);
 
@@ -380,10 +406,37 @@ describe("translating a description", () => {
     const changed = `${EN} It was incorporated in 1993.`;
     writeProfile(NVDA, { description: changed });
     expect(profileView(NVDA, cfg)).toMatchObject({ translation: null, translatable: true });
-    await translateDescription(NVDA);
+    expect((await translateDescription(NVDA)).source).toBe(changed);
     expect(calls).toHaveLength(2);
     expect(calls[1].body.messages.at(-1)!.content).toBe(changed);
     expect(readTranslation(NVDA, EN)).toBeNull();
+  });
+
+  it("a text that changes while the model works: whoever asks next gets the new text's translation, and the late answer is not kept", async () => {
+    const { profileView, readTranslation, translateDescription, writeProfile } = await import("@/lib/profiles");
+    const { readConfig } = await import("@/lib/vault");
+    const NEW = `${EN} It was incorporated in 1993.`;
+    // a model that answers the old text slowly and the new one at once
+    const asked: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      const text = (JSON.parse(String(init.body)) as { messages: { content: string }[] }).messages.at(-1)!.content;
+      asked.push(text);
+      await new Promise((r) => setTimeout(r, text === EN ? 60 : 5));
+      return new Response(JSON.stringify({ choices: [{ message: { content: text === EN ? "旧原文的译文" : "新原文的译文" } }] }), { status: 200 });
+    });
+    writeProfile(NVDA, { description: EN });
+    const first = translateDescription(NVDA);
+    // the weekly refresh lands while the first request is on its way
+    writeProfile(NVDA, { description: NEW });
+    const second = translateDescription(NVDA);
+    // not the first one's request: the new text is asked for and comes back as what it is
+    expect(await second).toEqual({ source: NEW, text: "新原文的译文" });
+    expect(asked).toEqual([EN, NEW]);
+    // whoever clicked first gets what they asked for, marked as the old text's, so their page does not show it under the new one
+    expect(await first).toEqual({ source: EN, text: "旧原文的译文" });
+    // and its late arrival did not replace the stored translation of the text that is there now
+    expect(readTranslation(NVDA, NEW)).toBe("新原文的译文");
+    expect(profileView(NVDA, readConfig(root)).translation).toBe("新原文的译文");
   });
 
   it("is not offered without a model, for a Chinese description, or where there is nothing to translate", async () => {
@@ -408,16 +461,37 @@ describe("translating a description", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("a model that fails stores nothing and can be asked again", async () => {
+  it("a model that fails stores nothing and can be asked again; the person is told what to do, the log what happened", async () => {
+    const { translateProfile } = await import("@/app/actions");
     const { readTranslation, translateDescription, writeProfile } = await import("@/lib/profiles");
     writeProfile(NVDA, { description: EN });
-    vi.stubGlobal("fetch", async () => new Response("quota exceeded", { status: 429 }));
-    await expect(translateDescription(NVDA)).rejects.toThrow("model API 429: quota exceeded");
+    fs.writeFileSync(yamlFile, SHARED.replace(/^owner:.*\n/m, ""));
+    const logged = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const lastLog = () => String(logged.mock.calls.at(-1)![0]);
+
+    vi.stubGlobal("fetch", async () => new Response('{"error":{"message":"quota exceeded"}}', { status: 429 }));
+    expect(await translateProfile(NVDA)).toEqual({ ok: false, error: "翻译服务返回了错误，请稍后再试" });
+    expect(lastLog()).toContain("model API 429");
+    expect(lastLog()).toContain("quota exceeded");
+    // an answer without a translation, and a proxy's error page with a 200
     vi.stubGlobal("fetch", async () => new Response(JSON.stringify({ choices: [] }), { status: 200 }));
-    await expect(translateDescription(NVDA)).rejects.toThrow("empty answer");
+    await expect(translateDescription(NVDA)).rejects.toThrow("翻译服务返回了错误，请稍后再试");
+    vi.stubGlobal("fetch", async () => new Response("<html>Bad Gateway</html>", { status: 200 }));
+    await expect(translateDescription(NVDA)).rejects.toThrow("翻译服务返回了错误，请稍后再试");
+    expect(lastLog()).toContain("Bad Gateway");
+    // nobody answers at all
+    vi.stubGlobal("fetch", async () => {
+      throw new TypeError("fetch failed");
+    });
+    expect(await translateProfile(NVDA)).toEqual({ ok: false, error: "连不上翻译服务，请稍后再试" });
+    expect(lastLog()).toContain("fetch failed");
+    expect(lastLog()).toContain("http://llm.test/v1/");
+    // the key never reaches the log
+    expect(logged.mock.calls.flat().join("\n")).not.toContain("sk-test");
+
     expect(readTranslation(NVDA, EN)).toBeNull();
     fakeModel("译文");
-    expect(await translateDescription(NVDA)).toBe("译文");
+    expect((await translateDescription(NVDA)).text).toBe("译文");
   });
 
   it("on a shared instance a visitor cannot ask; someone logged in can, and the visitor then sees it", async () => {
@@ -429,7 +503,7 @@ describe("translating a description", () => {
     expect(await translateProfile(NVDA)).toEqual({ ok: false, error: "请先登录" });
     expect(calls).toHaveLength(0);
     await login("alice");
-    expect(await translateProfile(NVDA)).toEqual({ ok: true, text: "译文" });
+    expect(await translateProfile(NVDA)).toEqual({ ok: true, source: EN, text: "译文" });
     expect(await translateProfile("not a key")).toMatchObject({ ok: false });
     session.id = undefined;
     expect(profileView(NVDA, readConfig(root)).translation).toBe("译文");
@@ -442,7 +516,7 @@ describe("translating a description", () => {
     const { writeProfile } = await import("@/lib/profiles");
     writeProfile(NVDA, { description: EN });
     fakeModel("译文");
-    expect(await translateProfile(NVDA)).toEqual({ ok: true, text: "译文" });
+    expect(await translateProfile(NVDA)).toEqual({ ok: true, source: EN, text: "译文" });
   });
 });
 
@@ -457,11 +531,56 @@ describe("reading a profile", () => {
     expect(profileView(NVDA, cfg)).toMatchObject({ source: "yahoo", kind: "equity", exchange: "NasdaqGS", currency: "USD", hours: "0930-1600", profile: null, fetchedAt: null, pending: true, legs: null });
     const soon = Math.floor(Date.now() / 1000) + 30 * 86400;
     writeProfile(NVDA, { description: EN, earningsAt: soon }, NOW);
-    expect(profileView(NVDA, cfg)).toMatchObject({ profile: { description: EN }, fetchedAt: NOW, earningsAt: soon, pending: false });
+    // the day on the exchange's calendar, which is what the panel prints
+    const { localDay } = await import("@/lib/time");
+    expect(profileView(NVDA, cfg)).toMatchObject({ profile: { description: EN }, fetchedAt: NOW, earningsDay: localDay(soon, "America/New_York"), pending: false });
     writeProfile(NVDA, { earningsAt: soon - 60 * 86400 }, NOW);
-    expect(profileView(NVDA, cfg).earningsAt).toBeNull();
+    expect(profileView(NVDA, cfg).earningsDay).toBeNull();
     // Binance has no profiles: nothing is pending, the metadata is all there is
     expect(profileView("binance:BTCUSDT", cfg)).toMatchObject({ source: "binance", profile: null, pending: false, translatable: false });
+  });
+
+  it("the valuation price is the traded one: `prices: total` and a dividend factor on the last bar do not move it", async () => {
+    const { callTool } = await import("@/lib/mcp/tools");
+    const { loadDaily } = await import("@/lib/bars");
+    const { writeProfile } = await import("@/lib/profiles");
+    const { tradedPrice } = await import("@/lib/quotes");
+    const { createToken } = await import("@/lib/secrets");
+    const { ensureSymbol, markSynced, writeBars, writeQuotes } = await import("@/lib/store");
+    const { readConfig } = await import("@/lib/vault");
+    const { tokenViewer } = await import("@/lib/viewer");
+    fs.writeFileSync(yamlFile, `prices: total\n${SHARED}`);
+    const cfg = readConfig(root);
+    expect(cfg.prices).toBe("total");
+    ensureSymbol(NVDA);
+    // the ex-dividend day's bar is not in yet: the last stored one still carries the factor
+    const t = Date.UTC(2026, 9, 8) / 1000;
+    writeBars(
+      NVDA,
+      [
+        { t: t - 86400, o: 99, h: 101, l: 98, c: 99, v: 10, adj: 0.98 },
+        { t, o: 99, h: 101, l: 98, c: 100, v: 10, adj: 0.98 },
+      ],
+      "replace",
+    );
+    markSynced(NVDA, { currency: "USD", timezone: "America/New_York", kind: "equity" });
+    writeProfile(NVDA, { shares: 1000, eps: 5, dividend: 2 });
+    // what a total-return chart draws, and what it trades at
+    expect(loadDaily(NVDA, cfg.prices, cfg).at(-1)!.c).toBeCloseTo(98, 9);
+    expect(tradedPrice(NVDA)).toBe(100);
+    const viewer = tokenViewer(createToken({ name: "t", login: "dreaife", write: false }))!;
+    const get = async () => JSON.parse((await callTool(viewer, "get_profile", { key: NVDA })).content[0].text);
+    expect(await get()).toMatchObject({ price: 100, market_cap: 100_000, pe_ttm: 20, dividend_yield_pct: 2 });
+    // a quote newer than the sync is the price, as on the chart
+    writeQuotes([{ key: NVDA, price: 110, time: Math.floor(Date.now() / 1000), session: "open", fetchedAt: Date.now() + 1000 }]);
+    expect(tradedPrice(NVDA)).toBe(110);
+    expect(await get()).toMatchObject({ price: 110, market_cap: 110_000, pe_ttm: 22 });
+    // one from before the sync is not: the synced bar is newer
+    writeQuotes([{ key: NVDA, price: 90, time: Math.floor(Date.now() / 1000) - 7200, session: "closed", fetchedAt: Date.now() - 3600_000 }]);
+    expect(tradedPrice(NVDA)).toBe(100);
+    // nothing cached, a synthetic key: no price to compute with
+    expect(tradedPrice("yahoo:NOPE")).toBeNull();
+    expect(tradedPrice("=BTC/GOLD")).toBeNull();
   });
 
   it("a synthetic symbol lists its operands under the viewer's names", async () => {

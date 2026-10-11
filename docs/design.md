@@ -309,7 +309,7 @@ interface SourceAdapter {
 - `src/instrumentation.ts` 导出 `register()`，仅在 `process.env.NEXT_RUNTIME === "nodejs"` 时启动调度；用 `globalThis` 守卫防止 dev 模式重复启动。
 - 按 `sync.at × sync.tz` 算下一个时刻（用 `Intl.DateTimeFormat` 处理时区与夏令时，不引入日期库），`setTimeout` 链式调度。
 - 启动时：若 `max(symbols.synced_at)` 早于最近一个已过去的时刻，延迟 5s 后补跑一次（等价 systemd 的 `Persistent=true`）。
-- 每次调度的同步跑完（K 线、stats、警报之后），再刷新到期的标的资料（§2.8）。手动「刷新」不带这一步。
+- 每次调度的同步跑完（K 线、stats、警报之后），再刷新到期的标的资料（§2.8）。资料自己在后面跑，**不等它**：同步一完就照常排下一次，数据源再慢（TV 的会话一个要等 20 秒超时）也不会把下一个时刻拖过去；它出错只记一行日志。同步本身失败的那一轮不刷资料。手动「刷新」不带这一步。
 - 日志打到 stdout（journalctl 能看）。
 
 ### 2.3 `syncAll(force?)` / `syncOne(key, force?)`
@@ -321,7 +321,7 @@ interface SourceAdapter {
 - 「刷新」按钮是 Server Action：`await syncAll(true)` 后 `revalidatePath`，按钮期间显示 pending（手动动作，阻塞 3–30s 可以接受）。
 - 新增标的时立即 `syncOne(key, true)`，失败则不写入 yaml 并报错（首次拉取兼做校验）。
 - **打开不在自选里的标的**（搜索选中、直接输网址）：页面照样只读库；图表页挂载后调 Server Action `loadSymbol(key)`，对它（合成标的是各操作数）`syncOne`，一小时内拉过就跳过，只进缓存、不写 yaml，完成后重新取 `/api/bars`。它不在任何 vault 的引用里，所以定时同步不会更新它，下次打开时再补。访客不能触发（和添加一样要登录），只能看到已经缓存的。
-- `syncOne` 只在真的拉到新数据时重算各 vault 的 stats。它成功后顺带看一眼这个标的的资料（§2.8）：还没有，或者到期了，就取一次，所以加自选和按需打开的标的第一次拉日线时资料也一起到；取资料失败不算同步失败。
+- `syncOne` 只在真的拉到新数据时重算各 vault 的 stats。它成功后顺带看一眼这个标的的资料（§2.8）：还没有，或者到期了，就发起一次，**不等它回来**：日线到了就返回，加自选和打开图表不多等一次资料请求。资料晚一两秒落库，面板自己再读（§5.2）；取资料失败不算同步失败。
 - `syncAll` 算完 stats 后跑一次通知（§2.5）；`syncOne` 不通知。
 
 ### 2.4 自定义数据集（`data` 源）
@@ -530,11 +530,11 @@ interface SourceAdapter {
 | `description` | 简介，数据源的原文（多半是英文） |
 | `sector` `industry` `country` `employees` `website` | 公司 |
 | `shares` `eps` `dividend` | 总股本（加密货币是流通量）、最近十二个月摊薄每股收益、每股年分红 |
-| `earningsAt` | 下次财报日（unix 秒）；读的时候已经过去的不显示 |
-| `issuer` `category` `expenseRatio` `netAssets` | 基金：发行商、类别、费率（0.0009 = 0.09%）、资产规模 |
+| `earningsAt` | 下次财报的时刻（unix 秒）。显示的是它在**交易所时区**（`symbols.timezone`，没有就按 UTC）里的那个日历日（`nextEarnings()`）：财报当天一直显示，那一天在交易所当地过完就不显示了（按日历日比，不是滚动 24 小时） |
+| `issuer` `category` `expenseRatio` `netAssets` | 基金：发行商、类别、费率（0.0009 = 0.09%；0 是有效值，零费率的基金照样显示 0.00%）、资产规模 |
 | `holdings` `sectors` | 基金：前十大持仓（`name`、数据源里的 `key`、`weight`）和行业分布 |
 
-**市值、市盈率、股息收益率不存**，读的时候用最新价现算（`profile.ts` 的 `valuation()`：`shares × 价`、`价 / eps`（亏损时没有）、`dividend / 价`）。最新价和图表、总览同一个：有比日线同步新的报价用报价，否则最后一根日线收盘（面板用图表手里最后一根 K 线的收盘，随每轮报价变；MCP 用 `latestPrice()`）。一周前的 PE 不会摆在实时价格旁边。数据源没有的字段不存、不显示，面板上没有一排「—」。
+**市值、市盈率、股息收益率不存**，读的时候用最新价现算（`profile.ts` 的 `valuation()`：`shares × 价`、`价 / eps`（亏损时没有）、`dividend / 价`）。最新价是**实际成交的价**（`quotes.ts` 的 `tradedPrice()`）：有比日线同步新的报价用报价（和图表、警报采用报价是同一个判断），否则库里最后一根日线的收盘，**不乘分红因子**。它不跟图表的 `prices` 模式走：`total`（ADJ）下图表画的是含分红的价，最后一根的因子不是 1 时（除息后新一天的日线还没进来）会比成交价低，拿它算市值和 PE 就错了。面板的价来自页面渲染时的 `tradedPrice()`，之后随每轮报价从 `/api/status` 的 `price` 更新；MCP 直接调 `tradedPrice()`。一周前的 PE 不会摆在实时价格旁边。数据源没有的字段不存、不显示，面板上没有一排「—」。
 
 **各源实际拿到的**（2026-10-11 实测）：
 
@@ -551,8 +551,9 @@ interface SourceAdapter {
 
 - 资料进 `profiles` 表（§1.4）。**页面和 MCP 只读这张表，不联网。**
 - 到期（`profileDue()`）：从没取过；上次成功是 7 天以前；上次失败是 1 天以前。失败后隔一天再试，不是每次同步都试，也不用等一周。
-- 调度器每次同步之后（§2.2）对所有 vault 引用到的标的（和日线同步同一个集合）取到期的，并发 2，结束打一行日志（取了几个、哪些失败）。
-- `syncOne` 成功后也看一眼（§2.3），所以加自选、按需打开的标的第一次拉日线时顺带取到；不在任何自选里的标的不进每周的刷新，下次打开时到期了再取。
+- 调度器每次同步之后（§2.2）对所有 vault 引用到的标的（和日线同步同一个集合）取到期的，并发 2，结束打一行日志（取了几个、哪些失败）。它不挡调度：下一次同步在资料开始之前就排好了。
+- `syncOne` 成功后也发起一次（§2.3），不等结果，所以加自选、按需打开的标的第一次拉日线后一两秒资料就到；不在任何自选里的标的不进每周的刷新，下次打开时到期了再取。
+- 没人等的请求不能留下未处理的拒绝：取到了写不进库（锁超时、磁盘满）时只打一行日志。
 - 失败只把错误和时间记在该标的的行上（`error`、`tried_at`），上一次取到的事实原样留着，同步不受影响。同一个标的同时触发几次只发一个请求。
 - 上游调用照 §1.7 记进 `upstream`（yahoo、tv 各算在自己名下）。
 - 面板底部写「资料更新于 YYYY-MM-DD」（`fetched_at`）；数据源对这个标的没有任何资料时（`{}`）不写。
@@ -561,8 +562,10 @@ interface SourceAdapter {
 
 - 简介原样显示。原文不是中文（汉字不到字母的三分之一，`isChinese()`）、实例配了模型、viewer 能写时，简介下面有「翻译」按钮；**点了才调模型**，不自动翻，只翻成简体中文。
 - 译文存进 `translations` 表，带原文的 SHA-256，所有人共用：之后任何人（包括访客）打开这个标的都直接显示译文，旁边「显示原文 / 显示译文」切换。每周刷新后原文变了，哈希对不上，旧译文不再显示，按钮重新出现；再翻一次覆盖旧的。
+- **译文只代表它译的那段原文**，在哪一层都一样：`translateDescription()` 和 `translateProfile` 返回的是 `{ source, text }`（原文和译文），面板把刚译出来的这一对留在页面状态里，只在 `source` 和现在的简介一字不差时才显示。所以页面开着的时候每周刷新换了原文，刚才那份译文不会挂在新简介下面。
 - **谁能点**：和其它写操作一样要 `canWrite`。共用实例上只有登录的人能点，访客看得到已有的译文、没有按钮（实例经隧道公开、不限流，匿名访问者不能花模型额度）；单用户模式谁都能点。入口是 Server Action `translateProfile(key)`（§6），只有页面这一路：agent 自己就是模型，读原文就够了，MCP 不提供触发翻译的工具。
-- 同一个标的同时点多次只发一次请求（进程内按 key 去重），已有匹配的译文时直接返回、不调模型。失败（HTTP 错误、空回答）不存任何东西，toast 报错，可以再点。
+- 同一个标的的同一段原文同时点多次只发一次请求（进程内按 key + 原文哈希去重），已有匹配的译文时直接返回、不调模型。翻译进行中原文被刷新换掉了：后来点的人不搭前一个请求，另发一个译新原文的；前一个请求回来得晚，发现库里的简介已经不是它译的那段，就不存（不会把新原文的译文盖掉）。
+- **失败**不存任何东西，可以再点。给人看的是该怎么办，不是原始报错：连不上、超时是「连不上翻译服务，请稍后再试」；HTTP 错误、不是 JSON、空回答是「翻译服务返回了错误，请稍后再试」（toast 前面加「翻译失败：」）。状态码、返回内容的前 300 个字符、连的是哪个 `base` 进服务器日志（`[hebi8m] translate: …`），key 不进日志。
 - **模型配置**：配置目录（§1.5）里手写的 `llm.json`，任何 OpenAI 兼容的 chat completions 接口：
 
   ```json
@@ -732,12 +735,12 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 **商品详情**（TV 的同名面板，`ProfilePanel`；数据见 §2.8，页面渲染时读缓存，不联网）：这个标的是什么。从上到下，没有内容的小节整节不出现，没有值的行不出现：
 
 - 名称，下面一行 `代码 · 交易所 · 币种`。
-- **简介**：数据源的原文，超过六行时折叠，「显示更多 / 收起」；下面是「翻译」（能点的人才有）或「显示原文 / 显示译文」（§2.8）。
-- **关键数据**：市值、市盈率 (TTM)、每股收益 (TTM)、股息收益率、下一次财报。市值、市盈率、股息收益率用图表最后一根 K 线的收盘现算，随每轮报价变。大数照 TV 写成 `5.54T`、`809.22B`。
+- **简介**：数据源的原文，超过六行时折叠，「显示更多 / 收起」（只在文字真的被截掉时出现；切换原文 / 译文、译文刚到时先折回去，按新的文字重新量）；下面是「翻译」（能点的人才有）或「显示原文 / 显示译文」（§2.8）。
+- **关键数据**：市值、市盈率 (TTM)、每股收益 (TTM)、股息收益率、下一次财报（交易所当地的日期，当天过完就不显示）。市值、市盈率、股息收益率用实际成交的最新价现算（§2.8，不受 `ADJ` 影响），随每轮报价变。大数照 TV 写成 `5.54T`、`809.22B`。
 - **公司**：板块、行业、国家/地区、员工、网站（只认 http(s)，显示域名，新标签打开）。
 - **基金**：发行商、类别、费率、资产管理规模；**前十大持仓**（名称 · 按占比的短条 · 百分比，数据源给了代码的可以点开那只的图表）；**行业分布**。
 - **交易信息**：类型、交易所、币种、时区、交易时段（`symbols.hours` 写成 `09:30–16:00`，`24x7` 写「全天」）、数据源。所有真实标的都有，所以指数、外汇、商品、加密、债券这些没有资料的类型不是空面板。
-- 底部「资料更新于 YYYY-MM-DD，每周刷新」；数据源该有资料但还没取到时写「资料还没有取到，下次同步后补上」。
+- 底部「资料更新于 YYYY-MM-DD，每周刷新」；数据源该有资料但还没取到时写「资料还没有取到，下次同步后补上」。刚加自选或刚打开的标的，资料比日线晚一点到（§2.3）：面板开着且资料还没到时，3 秒后 `router.refresh()` 一次，25 秒后（最慢的源已经超时）再一次，之后不再试，不轮询。
 - 合成标的：一句「由下面的标的按需计算，没有自己的资料」和各操作数（名称 + key），点了打开那只的图表。
 
 访客看得到全部内容（资料是共用缓存，不是谁的私有内容），只是没有「翻译」按钮。
@@ -1062,13 +1065,13 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 
 - `GET /api/bars?key=&tf=D|W|M|Q&prices=split|total&with=k1,k2`
   → `{ symbol: {key, name, source, ticker, currency, exchange, bench, calendar: {hours, timezone, holidays, corrections}, syncedAt, syncError, quotedAt, session, lastDay}, pricePrecision, bars: [{timestamp, open, high, low, close, volume}], refs: { [key]: { c: (number|null)[], o?, h?, l?, v? } } }`，`refs` 与 `bars` 等长对齐。响应按 viewer 的 yaml 解析名字、基准和合成别名，`Cache-Control: no-store`，不做条件请求。
-- `GET /api/status?key=&tf=&prices=&with=`（参数同 `/api/bars`）→ `{ syncedAt, syncError, quotedAt, session, tail: { bar, prev, refs: { [key]: {o,h,l,c,v} }, lastDay } | null }`：打开着的图表每轮报价后读它来更新最后一根 K 线和状态条（§5.2），只读缓存。
+- `GET /api/status?key=&tf=&prices=&with=`（参数同 `/api/bars`）→ `{ syncedAt, syncError, quotedAt, session, tail: { bar, prev, refs: { [key]: {o,h,l,c,v} }, lastDay } | null, price }`：打开着的图表每轮报价后读它来更新最后一根 K 线和状态条（§5.2），只读缓存。`price` 是实际成交的最新价（`tradedPrice()`，不随 `prices` 变，合成标的为 null），「商品详情」拿它现算市值和市盈率（§2.8）。
 - `GET /api/search?q=` → 外部结果 `SearchResult[]`（§5.4；本地层在浏览器里算）。
 - `GET /api/help` → 反馈页签和通知设置抽屉要的登录状态与反馈设置（§5.8，只读本地）。
 - `/api/github/login`（GET，跳到 GitHub 的授权页）、`/api/github/callback`（GET，GitHub 跳回来，建会话）、`/api/github/device`（POST 开始 device flow / DELETE 取消）、`/api/github/device/poll`（POST）、`/api/github/logout`（POST）、`/api/github/issues`（GET 最近反馈 / POST 提交）：§5.8，唯一会碰 GitHub 网络的接口（`login` 自己不联网，只是重定向），都是打开反馈页签或用户动作触发。
 - `/api/github/claim`（POST 生成「在其他设备上登录」的一次性链接和二维码 / DELETE 作废）、`/api/github/claim/redeem`（POST，确认页的表单，建会话）：§5.8，不联网。
 
-**Server Actions（写）**：`refresh()`、`addSymbol({ key, group, name?, bench?, alias? })`、`loadSymbol(key)`（只拉缓存，§2.3）、`removeSymbol(key)`、`moveSymbol(key, group, index?)`（index 不算被移动的那个，省略 = 末尾）、`moveGroup(name, index)`、`addGroup(name)`、`renameGroup(name, next)`、`deleteGroup(name)`（标的并入相邻组）、`renameSymbol(key, name)`、`setBench(key, bench | null)`、`saveNote(key, body)`、`saveJournal(week, body)`、`saveIndicator(def)` / `deleteIndicator(id)`、`saveAlert({ id?, key | null, cond, value? | when + tf?, trigger, label?, notify? })` / `deleteAlert(id)` / `setAlertEnabled(id, enabled)`、`saveChartState(key, state)`、`setChartPrefs(partial)`、`setPeriods(list)`、`setUpdown(mode)`、`setUsageLimits({ visitors, limited })`（owner，§1.7）、`translateProfile(key)`（把简介翻成中文并存进缓存，返回译文，§2.8）；`src/app/tv-actions.ts` 里的 `importTvList({ text, fallback, mode })`、`listTvLayouts({ sessionid, sign })`、`previewTvDrawings(来源)`、`importTvDrawings({ drawings, add })`（§5.5，`listTvLayouts` 和 `previewTvDrawings` 是仅有的带用户 TradingView cookie 访问外网的地方：`/my-charts/`；`/markets/`、`/chart-token`、charts-storage）。Server Action 在客户端是**串行派发**的，自动保存靠去抖合并，不并行发。
+**Server Actions（写）**：`refresh()`、`addSymbol({ key, group, name?, bench?, alias? })`、`loadSymbol(key)`（只拉缓存，§2.3）、`removeSymbol(key)`、`moveSymbol(key, group, index?)`（index 不算被移动的那个，省略 = 末尾）、`moveGroup(name, index)`、`addGroup(name)`、`renameGroup(name, next)`、`deleteGroup(name)`（标的并入相邻组）、`renameSymbol(key, name)`、`setBench(key, bench | null)`、`saveNote(key, body)`、`saveJournal(week, body)`、`saveIndicator(def)` / `deleteIndicator(id)`、`saveAlert({ id?, key | null, cond, value? | when + tf?, trigger, label?, notify? })` / `deleteAlert(id)` / `setAlertEnabled(id, enabled)`、`saveChartState(key, state)`、`setChartPrefs(partial)`、`setPeriods(list)`、`setUpdown(mode)`、`setUsageLimits({ visitors, limited })`（owner，§1.7）、`translateProfile(key)`（把简介翻成中文并存进缓存，返回原文和译文 `{ source, text }`，§2.8）；`src/app/tv-actions.ts` 里的 `importTvList({ text, fallback, mode })`、`listTvLayouts({ sessionid, sign })`、`previewTvDrawings(来源)`、`importTvDrawings({ drawings, add })`（§5.5，`listTvLayouts` 和 `previewTvDrawings` 是仅有的带用户 TradingView cookie 访问外网的地方：`/my-charts/`；`/markets/`、`/chart-token`、charts-storage）。Server Action 在客户端是**串行派发**的，自动保存靠去抖合并，不并行发。
 
 `saveAlert` 的入参还有 `check?`、`enabled?`，以及撤销删除时把草稿和来源放回去用的 `draft?`、`by?`；`confirmAlert(id)` 确认一条草稿（§2.5）。设置页的令牌在 `src/app/token-actions.ts`：`createAgentToken({ name, write })`（返回值里带一次明文）、`revokeAgentToken(id)`（§5.5）。
 
@@ -1092,7 +1095,7 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 |---|---|---|
 | `overview` | 读 | 分组和每个标的：key、别名、名字、基准、最新价（有报价用报价，带时段）、1W…5Y 涨跌、距高点、52 周位置、在它上面成立或本周触发的警报、同步错误；上次和下次同步时间；待确认的草稿数 |
 | `get_bars` | 读 | 一个标的某周期（D / W / M / Q）的 OHLCV，最新的 `limit` 根（默认 200，最多 1000），带今天未收盘的那根（`last_daily_bar.closed` 说明这根的交易日结束没有，和「日线收盘」警报同一个判断：`bars.ts` 的 `dayClosed`，合成标的看各操作数用到的那根） |
-| `get_profile` | 读 | 一个标的是什么（§2.8）：缓存里的元数据（类型、交易所、币种、时区、时段）、存下的事实（简介、板块、行业、国家、员工、网站、股本、EPS、每股分红、下次财报日；基金的发行商、类别、费率、规模、前十大持仓、行业分布）、用最新价现算的市值 / 市盈率 / 股息率（带 `price`）、已有的中文译文（`description_zh`）和资料的取得时间；合成标的返回它的操作数。只读缓存，没取过资料的返回缓存里有的 |
+| `get_profile` | 读 | 一个标的是什么（§2.8）：缓存里的元数据（类型、交易所、币种、时区、时段）、存下的事实（简介、板块、行业、国家、员工、网站、股本、EPS、每股分红、下次财报日；基金的发行商、类别、费率、规模、前十大持仓、行业分布）、用实际成交的最新价现算的市值 / 市盈率 / 股息率（带 `price`；`prices: total` 下它和 `get_bars` 的收盘可以不一样）、已有的中文译文（`description_zh`）和资料的取得时间；合成标的返回它的操作数。只读缓存，没取过资料的返回缓存里有的 |
 | `scan` | 读 | 一条公式（布尔或数值）× 一批标的（默认全部自选，可给 `group` 或 `keys`）：每个标的最后一根和上一根的值、是否成立（`holds`）、出错原因；`only_true` 只留成立的和出错的。成立与否和警报用同一个函数（`conditions.ts` 的 `holds`）：没有值（NaN）不算，其余非 0 为真，无穷大（除以 0）也是值、为真，返回里写成字符串 `"Infinity"` / `"-Infinity"`（JSON 放不了），没有值是 `null`。`check` 选带今日 K 线（`price`，默认）还是只看已收盘日线（`close`），和警报的判断时机对应 |
 | `test_formula` | 读 | 一条公式在一个标的最近 N 根（默认 250，最多 3000）里：成立的根数、成立的区间、由假变真的次数和日期（规则同 §2.5 的判定：上一个已知值为假、这根为真；没有值的根不改状态，第一次见到只记录）。建警报前核对用 |
 | `formula_reference` | 读 | 公式语法、变量和函数（从 `SERIES_VARS`、`FUNCTIONS` 生成，不手抄）、警报的字段和 `cond` 种类（从 `ALERT_CONDS` 生成）、agent 能做什么 |

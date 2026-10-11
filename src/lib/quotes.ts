@@ -15,7 +15,7 @@ import { QUOTE_ROUND_MS, QUOTE_SLOW_MS, quoteIsCurrent, scheduledSession, tradin
 import { adapters } from "./sources";
 import type { Quote, QuoteSession } from "./sources/types";
 import { computeStats, type Stats } from "./stats";
-import { calendarOfRow, getSymbol, listSymbols, readDaily, readQuotes, writeQuotes, type QuoteRow, type SymbolRow } from "./store";
+import { calendarOfRow, getSymbol, lastClose, listSymbols, readDaily, readQuotes, writeQuotes, type QuoteRow, type SymbolRow } from "./store";
 import { isSynthetic, isValidKey, parseKey, type Source } from "./symbols";
 import { parseSynth } from "./synth";
 import { loadVaults, type VaultConfig } from "./sync";
@@ -261,6 +261,15 @@ export function resetQuotes(): void {
 /** A real key's quote where `withQuote` takes it (`quoteDayIn`), judged from the symbol's row alone. */
 function takenQuote(quote: QuoteRow | undefined, meta: SymbolRow | null | undefined): QuoteRow | null {
   return quote && quoteDayIn(meta?.lastT, quote, meta?.timezone ?? "UTC", meta?.syncedAt ?? null, calendarOfRow(meta)) !== null ? quote : null;
+}
+
+/**
+ * The latest price of a real key as it trades: the quote where `withQuote` takes it, else the last
+ * daily close, never with the dividend factor a `prices: total` chart applies. What market cap,
+ * P/E and yield are computed with (§2.8); null for a key without bars, a synthetic one included.
+ */
+export function tradedPrice(key: string, quotes = readQuotes()): number | null {
+  return takenQuote(quotes[key], getSymbol(key))?.price ?? lastClose(key);
 }
 
 /** The oldest quote among the ones a key's price comes from: its own, or for a synthetic key its operands'. */

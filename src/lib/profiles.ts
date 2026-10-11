@@ -10,7 +10,7 @@ import crypto from "node:crypto";
 import type { Config } from "./config";
 import { getDb } from "./db";
 import { nameOf } from "./names";
-import { isChinese, nextEarnings, profileDue, type ProfileState, type ProfileView, type SourceProfile } from "./profile";
+import { isChinese, nextEarnings, profileDue, type ProfileState, type ProfileView, type SourceProfile, type Translation } from "./profile";
 import { adapters } from "./sources";
 import { getSymbol, listSymbols } from "./store";
 import { isSynthetic, parseKey } from "./symbols";
@@ -40,6 +40,8 @@ function markProfileError(key: string, message: string, now = Date.now()): void 
     .run({ key, now, message });
 }
 
+const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
 const inflight = new Map<string, Promise<void>>();
 
 /** Fetch one real key's profile now, if its source has profiles; concurrent calls share the request. Never throws. */
@@ -52,8 +54,10 @@ export function refreshProfile(key: string): Promise<void> {
     job = fetchProfile(ticker)
       .then(
         (profile) => writeProfile(key, profile),
-        (err) => markProfileError(key, err instanceof Error ? err.message : String(err)),
+        (err) => markProfileError(key, message(err)),
       )
+      // nobody waits for a profile (sync.ts): a cache that cannot be written is logged, not left as an unhandled rejection
+      .catch((err) => console.warn(`[hebi8m] profiles: ${key} not stored: ${message(err)}`))
       .finally(() => inflight.delete(key));
     inflight.set(key, job);
   }
@@ -89,28 +93,34 @@ export function readTranslation(key: string, description: string): string | null
 const translating = new Map<string, Promise<string>>();
 
 /**
- * A symbol's description in Simplified Chinese: the stored one when it still matches, else the
- * model is asked once, however many people click at the same time, and the answer is kept for
- * everyone. Throws (Chinese, for the page) when there is nothing to translate or no model.
+ * A symbol's description in Simplified Chinese, with the text it translates: the stored one when
+ * it still matches, else the model is asked once per text, however many people click at the same
+ * time, and the answer is kept for everyone. A refresh that brings another text while the model
+ * works starts over for whoever asks next: they get the new text's translation, and the late
+ * answer for the old text is not stored over it. Throws (Chinese, for the page) when there is
+ * nothing to translate or no model.
  */
-export async function translateDescription(key: string): Promise<string> {
-  const description = isSynthetic(key) ? undefined : readProfile(key)?.profile?.description;
-  if (!description) throw new Error("这个标的没有可翻译的简介");
-  const stored = readTranslation(key, description);
-  if (stored) return stored;
+export async function translateDescription(key: string): Promise<Translation> {
+  const current = () => (isSynthetic(key) ? undefined : readProfile(key)?.profile?.description);
+  const source = current();
+  if (!source) throw new Error("这个标的没有可翻译的简介");
+  const stored = readTranslation(key, source);
+  if (stored) return { source, text: stored };
   const llm = llmConfig();
   if (!llm) throw new Error("这台实例没有配置翻译用的模型");
-  let job = translating.get(key);
+  const hash = hashOf(source);
+  const id = `${key} ${hash}`;
+  let job = translating.get(id);
   if (!job) {
-    job = translateToChinese(description, llm)
+    job = translateToChinese(source, llm)
       .then((text) => {
-        getDb().prepare("INSERT OR REPLACE INTO translations (key, hash, text, model, at) VALUES (?, ?, ?, ?, ?)").run(key, hashOf(description), text, llm.model, Date.now());
+        if (current() === source) getDb().prepare("INSERT OR REPLACE INTO translations (key, hash, text, model, at) VALUES (?, ?, ?, ?, ?)").run(key, hash, text, llm.model, Date.now());
         return text;
       })
-      .finally(() => translating.delete(key));
-    translating.set(key, job);
+      .finally(() => translating.delete(id));
+    translating.set(id, job);
   }
-  return job;
+  return { source, text: await job };
 }
 
 // ---------------------------------------------------------------------------- read
@@ -134,7 +144,7 @@ export function profileView(key: string, cfg: Config): ProfileView {
       hours: null,
       profile: null,
       fetchedAt: null,
-      earningsAt: null,
+      earningsDay: null,
       pending: false,
       translation: null,
       translatable: false,
@@ -154,7 +164,7 @@ export function profileView(key: string, cfg: Config): ProfileView {
     hours: row?.hours ?? null,
     profile: stored?.profile ?? null,
     fetchedAt: stored?.fetchedAt ?? null,
-    earningsAt: nextEarnings(stored?.profile ?? null, Date.now()),
+    earningsDay: nextEarnings(stored?.profile ?? null, Date.now(), row?.timezone ?? "UTC"),
     pending: Boolean(adapters[source].profile) && !stored?.profile,
     translation: description ? readTranslation(key, description) : null,
     translatable: Boolean(description && !isChinese(description) && llmConfig()),

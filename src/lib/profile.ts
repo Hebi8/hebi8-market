@@ -3,6 +3,7 @@
  * weekly facts are due again, the numbers that follow the price, and how they are written.
  */
 import type { SourceProfile } from "./sources/types";
+import { localDay } from "./time";
 
 export type { ProfileWeight, SourceProfile } from "./sources/types";
 
@@ -43,9 +44,15 @@ export function valuation(profile: Pick<SourceProfile, "shares" | "eps" | "divid
   };
 }
 
-/** The next earnings report (unix seconds) while it is still ahead: a date that passed since the weekly fetch is not the next one. */
-export function nextEarnings(profile: Pick<SourceProfile, "earningsAt"> | null, now: number): number | null {
-  return profile?.earningsAt && profile.earningsAt * 1000 > now - DAY_MS ? profile.earningsAt : null;
+/**
+ * The day of the next earnings report on the exchange's calendar (unix seconds at UTC midnight,
+ * like `bars.t`), shown through that day: once the day is over there, a date from the weekly
+ * fetch is not the next one any more.
+ */
+export function nextEarnings(profile: Pick<SourceProfile, "earningsAt"> | null, now: number, timeZone: string): number | null {
+  if (!profile?.earningsAt) return null;
+  const day = localDay(profile.earningsAt, timeZone);
+  return day >= localDay(Math.floor(now / 1000), timeZone) ? day : null;
 }
 
 /** A description that is already Chinese needs no translation: a third of its letters are Han. */
@@ -78,6 +85,12 @@ export function fmtHours(hours: string): string | null {
   return sessions.length > 0 ? sessions.join(" · ") : null;
 }
 
+/** A description and its Chinese: a translation only ever stands for the text it was made from. */
+export interface Translation {
+  source: string;
+  text: string;
+}
+
 /** What the page and an agent get for one symbol: cached facts, the stored translation, and what there is to say without a profile. */
 export interface ProfileView {
   /** yahoo | tv | binance | data, or `expr` for a synthetic key */
@@ -91,8 +104,8 @@ export interface ProfileView {
   profile: SourceProfile | null;
   /** When the facts were fetched (ms) */
   fetchedAt: number | null;
-  /** The next earnings report (unix seconds) while it is still ahead */
-  earningsAt: number | null;
+  /** The day of the next earnings report on the exchange's calendar (unix seconds at UTC midnight), until that day is over */
+  earningsDay: number | null;
   /** The source has profiles and this symbol's has not been fetched yet */
   pending: boolean;
   /** The description in Simplified Chinese, when one was made from the text as it is now */

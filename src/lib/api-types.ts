@@ -62,6 +62,8 @@ export interface BarsSymbol extends SymbolStatus {
 /** `/api/status`: the status strip, and the last bar when a timeframe is asked for */
 export interface StatusResponse extends SymbolStatus {
   tail: BarsTail | null;
+  /** The latest price as traded (`tradedPrice`), whatever the chart's `prices` mode: what the 商品详情 panel computes market cap, P/E and yield with */
+  price: number | null;
 }
 
 export interface BarsResponse {

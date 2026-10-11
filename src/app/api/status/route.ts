@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { StatusResponse } from "@/lib/api-types";
 import { chartTail, loadChart } from "@/lib/bars";
 import { SESSION_COOKIE } from "@/lib/github";
-import { liveReader, symbolStatus } from "@/lib/quotes";
+import { liveReader, symbolStatus, tradedPrice } from "@/lib/quotes";
 import { readConfigSafe } from "@/lib/vault";
 import { resolveViewer } from "@/lib/viewer";
 import { chartQuery } from "@/lib/chart-query";
@@ -26,6 +26,6 @@ export function GET(request: NextRequest) {
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
   }
-  const body: StatusResponse = { ...symbolStatus(key, config.aliases), tail };
+  const body: StatusResponse = { ...symbolStatus(key, config.aliases), tail, price: tradedPrice(key) };
   return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });
 }

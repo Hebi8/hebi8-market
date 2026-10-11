@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useState, useTransition, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useState, useTransition, type ReactNode } from "react";
 import { translateProfile } from "@/app/actions";
 import { fmtDate } from "@/lib/format";
-import { fmtAmount, fmtHours, valuation, type ProfileView, type ProfileWeight } from "@/lib/profile";
+import { fmtAmount, fmtHours, valuation, type ProfileView, type ProfileWeight, type Translation } from "@/lib/profile";
 import { kindLabel } from "@/lib/search";
 import { IconClose } from "./chart-icons";
 import { chartHref, useUi } from "./UiProvider";
@@ -78,16 +79,18 @@ function Weights({ items, linked }: { items: ProfileWeight[]; linked: boolean })
  * The description as the source wrote it, and in Chinese once someone asked for it: 翻译 calls the
  * model once and the result is kept for everyone, so afterwards the translation is what shows,
  * with the original one click away. A visitor sees a stored translation but cannot ask for one.
+ * A translation made here only shows while the description is still the text it was made from.
  */
 function Description({ symbolKey, view, canAsk }: { symbolKey: string; view: ProfileView; canAsk: boolean }) {
   const { toast } = useUi();
-  const [made, setMade] = useState<string | null>(null);
+  const [made, setMade] = useState<Translation | null>(null);
   const [original, setOriginal] = useState(false);
   const [open, setOpen] = useState(false);
   const [long, setLong] = useState(false);
   const [pending, start] = useTransition();
-  const translation = view.translation ?? made;
-  const text = translation && !original ? translation : view.profile!.description!;
+  const description = view.profile!.description!;
+  const translation = view.translation ?? (made?.source === description ? made.text : null);
+  const text = translation && !original ? translation : description;
   // 显示更多 only when the six lines cut something off, at whatever width the panel has
   const measure = useCallback(
     (el: HTMLParagraphElement | null) => {
@@ -100,12 +103,18 @@ function Description({ symbolKey, view, canAsk }: { symbolKey: string; view: Pro
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [open, text],
   );
+  // another text is folded again, so that whether it needs 显示更多 is measured anew
   const translate = () =>
     start(async () => {
       const result = await translateProfile(symbolKey);
-      if (result.ok) setMade(result.text);
-      else toast(`翻译失败：${result.error}`, { kind: "error" });
+      if (!result.ok) return toast(`翻译失败：${result.error}`, { kind: "error" });
+      setMade({ source: result.source, text: result.text });
+      setOpen(false);
     });
+  const flip = () => {
+    setOriginal(!original);
+    setOpen(false);
+  };
   return (
     <Section title="简介">
       <p ref={measure} className={`leading-5 whitespace-pre-line ${open ? "" : "line-clamp-6"}`}>
@@ -118,7 +127,7 @@ function Description({ symbolKey, view, canAsk }: { symbolKey: string; view: Pro
           </button>
         )}
         {translation ? (
-          <button type="button" className="btn h-6 px-1.5" onClick={() => setOriginal(!original)}>
+          <button type="button" className="btn h-6 px-1.5" onClick={flip}>
             {original ? "显示译文" : "显示原文"}
           </button>
         ) : (
@@ -136,7 +145,7 @@ function Description({ symbolKey, view, canAsk }: { symbolKey: string; view: Pro
 
 /**
  * TradingView's 商品详情: what the symbol is. The facts are the cached weekly profile (§2.8); market
- * cap, P/E and the dividend yield are computed here from them and the chart's latest price, so
+ * cap, P/E and the dividend yield are computed here from them and the latest price as traded, so
  * they move with it. A field the source does not have is not shown; a symbol without any profile
  * (an index, an FX pair, a coin) still has what the cache knows about where and when it trades.
  * A synthetic symbol has no profile of its own: its operands are listed, each opening its chart.
@@ -155,12 +164,21 @@ export function ProfilePanel({
   name: string;
   ticker: string;
   view: ProfileView;
-  /** The chart's latest price, the one market cap, P/E and yield are computed with */
+  /** The latest price as traded (no dividend adjustment), the one market cap, P/E and yield are computed with */
   price: number | null;
   readOnly: boolean;
   onClose: () => void;
   className?: string;
 }) {
+  // a symbol just added or opened gets its profile a moment after its bars (sync.ts): look again
+  // twice, soon and once the slowest source has timed out, then leave it to the next visit
+  const router = useRouter();
+  useEffect(() => {
+    if (!view.pending) return;
+    const timers = [3_000, 25_000].map((ms) => setTimeout(() => router.refresh(), ms));
+    return () => timers.forEach(clearTimeout);
+  }, [view.pending, router]);
+
   const p = view.profile;
   const currency = view.currency ? ` ${view.currency}` : "";
   const { marketCap, pe, dividendYield } = valuation(p, price);
@@ -172,7 +190,7 @@ export function ProfilePanel({
     ["市盈率 (TTM)", pe != null && pe.toFixed(2)],
     ["每股收益 (TTM)", p?.eps != null && `${p.eps.toFixed(2)}${currency}`],
     ["股息收益率", dividendYield != null && pct(dividendYield)],
-    ["下一次财报", view.earningsAt != null && fmtDate(view.earningsAt)],
+    ["下一次财报", view.earningsDay != null && fmtDate(view.earningsDay)],
   ]);
   const company = present([
     ["板块", p?.sector],

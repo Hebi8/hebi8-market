@@ -51,15 +51,25 @@ export function startScheduler(): void {
     }
   };
 
+  // on their own after a sync: a slow source must not hold back the next scheduled time
+  const refreshDue = async () => {
+    try {
+      await refreshProfiles(unionSyncKeys(loadVaults()));
+    } catch (err) {
+      log(`profiles failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const runSync = async (reason: string) => {
     log(`sync start (${reason})`);
     try {
       await syncAll();
-      // after the bars and the alerts: the profiles that are a week old (§2.8)
-      await refreshProfiles(unionSyncKeys(loadVaults()));
     } catch (err) {
       log(`sync failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
+    // after the bars and the alerts: the profiles that are a week old (§2.8)
+    void refreshDue();
   };
 
   const schedule = () => {

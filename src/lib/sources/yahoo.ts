@@ -65,6 +65,8 @@ export function yahooProfile(r: YahooSummary): SourceProfile {
     .map(([id, weight]) => ({ name: SECTORS[id] ?? id, weight }))
     .sort((a, b) => b.weight - a.weight);
   const description = text(asset?.longBusinessSummary) ?? text(asset?.description);
+  // 0 is a ratio: some funds charge nothing
+  const expenseRatio = fund?.feesExpensesInvestment?.annualReportExpenseRatio;
   return {
     ...(description ? { description } : {}),
     ...(text(asset?.sector) ? { sector: text(asset?.sector) } : {}),
@@ -78,7 +80,7 @@ export function yahooProfile(r: YahooSummary): SourceProfile {
     ...(Number.isFinite(earningsAt) ? { earningsAt } : {}),
     ...(text(fund?.family) ? { issuer: text(fund?.family) } : {}),
     ...(text(fund?.categoryName) ? { category: text(fund?.categoryName) } : {}),
-    ...(positive(fund?.feesExpensesInvestment?.annualReportExpenseRatio) ? { expenseRatio: fund.feesExpensesInvestment.annualReportExpenseRatio } : {}),
+    ...(typeof expenseRatio === "number" && expenseRatio >= 0 ? { expenseRatio } : {}),
     ...(positive(detail?.totalAssets) ? { netAssets: detail.totalAssets } : {}),
     ...(holdings.length ? { holdings: holdings.slice(0, 10) } : {}),
     ...(sectors.length ? { sectors } : {}),

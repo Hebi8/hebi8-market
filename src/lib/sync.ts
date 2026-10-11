@@ -117,13 +117,14 @@ export function statsFor(vault: string, cfg: Config): Record<string, Stats> {
 
 /**
  * Sync one key and, when new bars came in, refresh stats; used when adding a symbol (the fetch
- * doubles as validation) and when opening one that no list has. Its profile comes along when it
- * has none yet or the one it has is due (§2.8): a symbol no list has is not in the weekly refresh.
+ * doubles as validation) and when opening one that no list has. A profile it lacks or that is due
+ * is asked for on the side (§2.8), since a symbol no list has is not in the weekly refresh: the
+ * bars do not wait for it, and the panel that shows it looks again a moment later.
  */
 export async function syncOne(key: string, force = false): Promise<SyncOutcome> {
   const outcome = await fetchKey(key, force);
   if (outcome.bars && readConfigSafe(vaultDir()).config) for (const v of loadVaults()) recomputeStats(v.id, v.config);
-  if (outcome.ok && profileDue(readProfile(key), Date.now())) await refreshProfile(key);
+  if (outcome.ok && profileDue(readProfile(key), Date.now())) void refreshProfile(key);
   return outcome;
 }
 

@@ -9,6 +9,7 @@ import { renderMarkdown } from "@/lib/markdown";
 import { benchLabel, nameOf } from "@/lib/names";
 import { CHANGE_PERIODS } from "@/lib/periods";
 import { profileView } from "@/lib/profiles";
+import { tradedPrice } from "@/lib/quotes";
 import { listSymbols } from "@/lib/store";
 import { chartTitle, decodeChartKey, isSynthetic, isValidKey, tickerOf } from "@/lib/symbols";
 import { synthName } from "@/lib/synth";
@@ -96,6 +97,7 @@ export default async function ChartPage({ params }: { params: Promise<{ key: str
       alerts={alerts}
       livePrice={latestPrice(key, config).price}
       profile={profileView(key, config)}
+      tradedPrice={tradedPrice(key)}
       shareUrl={`${publicUrl()}/chart/${encodeURIComponent(key)}`}
     />
   );
