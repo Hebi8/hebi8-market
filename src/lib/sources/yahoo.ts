@@ -1,6 +1,6 @@
 import YahooFinance from "yahoo-finance2";
 import { dedupeBars, type Bar } from "../series";
-import { tradingDay } from "../time";
+import { localDay, tradingDay } from "../time";
 import { partsIn } from "../tz";
 import { exchangeCalendar } from "./calendar";
 import type { QuoteSession, SourceAdapter, SourceProfile, SourceQuote } from "./types";
@@ -8,6 +8,14 @@ import type { QuoteSession, SourceAdapter, SourceProfile, SourceQuote } from "./
 const SESSIONS: Record<string, QuoteSession> = { REGULAR: "open", PRE: "pre", PREPRE: "pre", POST: "post", POSTPOST: "post", CLOSED: "closed" };
 
 const yf = new YahooFinance({ suppressNotices: ["yahooSurvey"] });
+
+/**
+ * Yahoo counts a mainland China index's volume in one unit while its day trades and in another once
+ * the day is settled, in the quote and in the chart's last row alike, and no fixed factor joins the
+ * two (上证指数 at the 2026-10-12 lunch break: 4,169,905,624 against 535,100 for the whole day before).
+ * The day in progress has no volume for these.
+ */
+const liveVolumeOff = (ticker: string, type: string | undefined) => type?.toUpperCase() === "INDEX" && /\.S[SZ]$/.test(ticker);
 
 /** A trading period as `HHMM-HHMM` on the exchange's clock. */
 function clockHours(period: { start: Date; end: Date }, timeZone: string): string {
@@ -96,16 +104,18 @@ export const yahoo: SourceAdapter = {
   async fetchDaily(ticker) {
     const result = await yf.chart(ticker, { period1: new Date("1800-01-01"), interval: "1d" });
     const timeZone = result.meta.exchangeTimezoneName ?? "UTC";
+    const unsettled = liveVolumeOff(ticker, result.meta.instrumentType) ? localDay(Date.now() / 1000, timeZone) : null;
     const bars: Bar[] = [];
     for (const q of result.quotes) {
       if (q.open == null || q.high == null || q.low == null || q.close == null || !q.close) continue;
+      const t = tradingDay(q.date.getTime() / 1000, timeZone);
       bars.push({
-        t: tradingDay(q.date.getTime() / 1000, timeZone),
+        t,
         o: q.open,
         h: q.high,
         l: q.low,
         c: q.close,
-        v: q.volume ?? null,
+        v: t === unsettled ? null : (q.volume ?? null),
         adj: q.adjclose != null ? q.adjclose / q.close : 1,
       });
     }
@@ -143,7 +153,7 @@ export const yahoo: SourceAdapter = {
         ...(q.regularMarketDayHigh != null ? { dayHigh: q.regularMarketDayHigh } : {}),
         ...(q.regularMarketDayLow != null ? { dayLow: q.regularMarketDayLow } : {}),
         // FX reports 0: no volume, as in its daily bars
-        ...(q.regularMarketVolume ? { dayVolume: q.regularMarketVolume } : {}),
+        ...(q.regularMarketVolume && !liveVolumeOff(q.symbol, q.quoteType) ? { dayVolume: q.regularMarketVolume } : {}),
         ...(session ? { session } : {}),
       };
     }
