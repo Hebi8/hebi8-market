@@ -273,7 +273,8 @@ CREATE TABLE translations (                 -- §2.8：简介的简体中文译�
 - **上游压力**：`src/lib/sources/index.ts` 把 yahoo、binance、tv 三个适配器的 `fetchDaily` / `search` / `quotes` / `profile` 包一层，每次调用记一次请求（Binance 的 `search` 除外：它读缓存一天的交易对列表，由 `usdtBases()` 在真正去取列表时自己记，失败时照样回退到旧列表）；抛错记失败，错误里有 HTTP 429 / 403 / 418、Too Many Requests、rate limit 的另记「疑似限流」。`data` 源平时读本地文件，只在真正 `git fetch` / `clone` 远端数据集时记一次。按调用计数：Binance 全量拉取的分页算一次。
 - **页面 `/usage`**：只有 `viewer.isOwner` 能看，其他人（包括单用户模式）404；入口是页头账号菜单里的「使用情况」。最上面是「实例」：版本（`APP_INFO`：version · commit · 构建时间）、上次同步、下次同步（调度器 `scheduledNextSync()`，没启动时按 `sync.at` 推算）和每天的时间表、缓存的标的数、上次同步出错的标的和错误（所有 vault 的，名字按根 vault 解析）、根 vault 的绝对路径。这些原来在帮助抽屉里给所有人看，对用的人是噪音，只留给 owner。然后是最近 30 天每天的请求数（页面 / 预取 / Action / API）、公网和 Tailscale 的独立访客、登录用户数；今天的热门路径；最近 30 天访客按请求量排行（只显示哈希前 8 位）；各 vault 的品种数、告警数、最近活跃时间；各数据源每天的请求 / 失败 / 疑似限流。打开页面时先落一次库。
 - **阈值提醒**：根 yaml 的 `usage.visitors`（每日公网独立访客）、`usage.limited`（每日上游疑似限流次数），正整数，可省；`/usage` 页面上也能改（Server Action `setUsageLimits`，parseDocument 写回）。每 5 分钟落库后检查一次，查今天和昨天（午夜前最后几分钟超过的，过了午夜照样补发，消息里写「昨天（10-06）」），超过（严格大于）且还没提醒过的合成一条消息，发到根 vault 的通道（§2.5 的 `channelsFor('')`）；有通道发送成功才按那一天记进 `usage_alerts`；全部失败或没有通道时只打日志、不记，下次检查再试，当天补好通道也能收到。每天每种最多一次。
-- **隐私说明 `/privacy`**：公开页面，页脚（`SiteFooter`，图表页不显示，帮助抽屉的「使用」页签也有入口）链过去。逐条写明收集什么、存哪里、留多久：访问统计、Cloudflare、GitHub 登录与令牌、各自的 vault 与通知通道、公开的反馈 issue、浏览器本地存储、行情由服务器代取。收集的东西变了就同步改这一页和它的更新日期。
+- **隐私说明 `/privacy`**：公开页面，页脚（`SiteFooter`，图表页不显示，帮助抽屉的「使用」页签也有入口）链过去。逐条写明收集什么、存哪里、留多久：访问统计、VibeCafé 作品统计、Cloudflare、GitHub 登录与令牌、各自的 vault 与通知通道、公开的反馈 issue、浏览器本地存储、行情由服务器代取。收集的东西变了就同步改这一页和它的更新日期。
+- **VibeCafé 作品统计**：唯一的第三方统计脚本，根布局 `<head>` 里的一个 `<script defer>`（`vibecafe.ai/telemetry/v1.js`，带作品 id 和只在公网域名下有效的浏览器接入标识）。每次打开或切换页面上报一次「浏览」和本地存储里的随机访客编号，不带页面地址；浏览器开了 DNT / GPC 时不上报。和上面的流量监控互不相干，本应用不读它的数据。
 
 ---
 

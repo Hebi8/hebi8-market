@@ -48,6 +48,10 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   const webLogin = Boolean(webLoginClient(await headers()));
   return (
     <html lang="zh-CN" data-updown={updown === "red-up" ? "red-up" : undefined}>
+      <head>
+        {/* VibeCafé's pageview counter (/privacy says what it sends). The key is a browser id that only works from the public origin. */}
+        <script defer src="https://vibecafe.ai/telemetry/v1.js" data-vc-product-id="cmv68559h000106maupvumst4" data-vc-auth-key="vc_web_zGKqr86FCcDKfYnZCpjtBXwHPUUmTbVoWT7-vSh_NX4" />
+      </head>
       <body className="flex min-h-screen flex-col font-sans antialiased">
         <ErrorCapture />
         <ServiceWorker />

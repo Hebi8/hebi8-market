@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "隐私说明" };
 
 /** Updated whenever what the instance collects changes (design §1.7). */
-const UPDATED = "2026-10-10";
+const UPDATED = "2026-10-13";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -40,7 +40,7 @@ export default function PrivacyPage() {
           <a href={REPO_URL} target="_blank" rel="noreferrer" className={ext}>
             GitHub
           </a>
-          ，下面说的每一项都能在代码里核对。本站没有广告，也没有第三方统计脚本。
+          ，下面说的每一项都能在代码里核对。本站没有广告；第三方统计脚本只有一个，见下面的「VibeCafé 作品统计」。
         </p>
       </Section>
 
@@ -53,6 +53,22 @@ export default function PrivacyPage() {
           <li>如果你已登录，还有你的 GitHub 用户名。</li>
         </ul>
         <p>统计保留 {KEEP_DAYS} 天后自动删除，只有运营者能看到，不会出售或提供给其他人。</p>
+      </Section>
+
+      <Section title="VibeCafé 作品统计">
+        <p>
+          本站登记在{" "}
+          <a href="https://vibecafe.ai" target="_blank" rel="noreferrer" className={ext}>
+            VibeCafé
+          </a>{" "}
+          的作品里，每个页面都会加载它的统计脚本（vibecafe.ai/telemetry/v1.js），用来数作品的浏览量。脚本由你的浏览器直接从 vibecafe.ai 加载，每打开或切换一个页面向它上报一次：
+        </p>
+        <ul className="list-disc space-y-1 pl-5">
+          <li>上报的内容只有本站的作品标识、事件类型「浏览」和一个随机生成的访客编号。没有你正在看的页面地址，没有你的 GitHub 用户名，也没有你保存的任何内容。</li>
+          <li>访客编号存在你浏览器的本地存储里，清掉本地存储就会换一个。</li>
+          <li>和头像、图标这些直接加载的内容一样，VibeCafé 会看到这些请求和你的 IP、浏览器标识。</li>
+          <li>浏览器开了「请勿跟踪」（Do Not Track）或 Global Privacy Control 时，脚本不生成编号，也不上报。</li>
+        </ul>
       </Section>
 
       <Section title="Cloudflare">
@@ -97,7 +113,7 @@ export default function PrivacyPage() {
       </Section>
 
       <Section title="浏览器本地存储">
-        <p>界面偏好（面板开关、画线模式等）和还没保存成功的草稿存在你浏览器的本地存储里，不会发到服务器。</p>
+        <p>界面偏好（面板开关、画线模式等）和还没保存成功的草稿存在你浏览器的本地存储里，不会发到服务器。上面说的 VibeCafé 访客编号也存在这里。</p>
       </Section>
 
       <Section title="行情数据">
