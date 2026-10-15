@@ -24,6 +24,7 @@ import { lineOf, withAlpha } from "./drawing-style";
 import { BOX_HANDLES, boxHandleAt, channelHandles, dragBoxBy, dragChannel, drawable, yAt, type ChannelHandle } from "./drawing-edit";
 import { FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
 import { measureLines, pct, priceChangeText, volumeBetween } from "./measure";
+import { tradesWeekends, tradingDayOffset, tradingDayTimestamp } from "./drawing-time";
 
 type Params = OverlayCreateFiguresCallbackParams<unknown>;
 type Figures = OverlayFigure[];
@@ -42,6 +43,7 @@ let scaleOf: (id: string) => PriceScale | undefined = () => undefined;
 export function setOverlayChart(chart: Chart | null, scales: typeof scaleOf = () => undefined) {
   activeChart = chart;
   scaleOf = scales;
+  if (chart) patchDailyTime(chart);
 }
 
 const DASHED = { style: "dashed", dashedValue: [4, 4] } as const;
@@ -212,16 +214,48 @@ function infoBox(p: Params, at: number, y: number, lines: string[], color?: stri
 
 /**
  * KLineChart's own placing of a timestamp (the store behind the chart, not on its public type): the
- * bar at or before it, and past either end of the data the period's calendar (a day bar per day, a
- * month bar per month), so the counts here match where the chart draws the points.
+ * bar at or before it, and past either end the period's calendar (trading days for daily bars),
+ * so the counts here match where the chart draws the points.
  */
 interface ChartStore {
   timestampToDataIndex: (timestamp: number) => number;
   dataIndexToTimestamp: (dataIndex: number) => number | null;
+  timestampToFloatIndex: (timestamp: number) => number;
+  floatIndexToTimestamp: (floatIndex: number) => number | null;
   getHoverOverlayInfo: () => { overlay: Overlay | null; figureType: string; figure: OverlayFigure | null };
   getClickOverlayInfo: () => { overlay: Overlay | null; figureType: string };
 }
 const storeOf = (chart: Chart) => (chart as unknown as { getChartStore: () => ChartStore }).getChartStore();
+
+/** Patch the store itself so drawings, the time axis and crosshair share the same daily calendar. */
+function patchDailyTime(chart: Chart) {
+  const store = storeOf(chart);
+  const anchorAt = (value: number, time: boolean) => {
+    const period = chart.getPeriod();
+    const bars = chart.getDataList();
+    if (period?.type !== "day" || !bars.length) return null;
+    const last = bars.length - 1;
+    const index = value < (time ? bars[0].timestamp : 0) ? 0 : value > (time ? bars[last].timestamp : last) ? last : null;
+    return index === null ? null : { index, timestamp: bars[index].timestamp, span: period.span, weekends: tradesWeekends(bars) };
+  };
+  for (const method of ["timestampToDataIndex", "timestampToFloatIndex"] as const) {
+    const original = store[method];
+    store[method] = (timestamp) => {
+      const anchor = anchorAt(timestamp, true);
+      if (!anchor) return original.call(store, timestamp);
+      const offset = tradingDayOffset(anchor.timestamp, timestamp, anchor.weekends) / anchor.span;
+      return anchor.index + (method === "timestampToDataIndex" ? Math.floor(offset) : offset);
+    };
+  }
+  for (const method of ["dataIndexToTimestamp", "floatIndexToTimestamp"] as const) {
+    const original = store[method];
+    store[method] = (index) => {
+      const anchor = anchorAt(index, false);
+      if (!anchor) return original.call(store, index);
+      return tradingDayTimestamp(anchor.timestamp, (index - anchor.index) * anchor.span, anchor.weekends);
+    };
+  }
+}
 
 const dataIndexOf = (chart: Chart, timestamp: number): number => storeOf(chart).timestampToDataIndex(timestamp);
 
