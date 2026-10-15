@@ -10,9 +10,13 @@
 | 深看 | `/chart/[key]` 图表：K 线、指标、对比、画线、笔记 | 值得细看的几个，结构是什么样？和别的比呢？ |
 | 记录 | `/review` 复盘：本周日志、上周日志、本周变化汇总 | 上周怎么想的，这周怎么想？ |
 
+![示例自选总览：分组行情、周期涨跌和两年走势图](docs/images/overview.png)
+
 Next.js + [KLineChart](https://github.com/klinecharts/KLineChart) + SQLite。你的自选、笔记、画线都存在一个 YAML + Markdown 的 `vault/` 目录里，数据库只是缓存。
 
 ## 功能
+
+![SPY 三年周线：10、40、200 周均线与成交量](docs/images/spy-weekly.png)
 
 - **搜索**：`/` 或 `Ctrl/Cmd+K`，中文名、拼音、首字母都能搜，本地没有再查 Yahoo / TradingView / Binance。
 - **总览**：按分组列出最新价、涨跌、距高点、警报和周线迷你图；排序、拖动、改名都写回 `hebi8.yaml`。
