@@ -46,7 +46,7 @@ indicators:                    # 公式指标，图表页可开关
   - { id: dev40, label: 均线乖离, pane: sub, formula: "(close / sma(close, 40) - 1) * 100" }
   - { id: vs_bench, label: 对基准比价, pane: sub, formula: "close / close(bench)" }
 
-datasets: {}                   # 自定义数据集：名字 → git 地址或本机目录，key 写 data:名字/序列，见 README
+datasets: {}                   # 自定义数据集：名字 → git 地址或本机目录，key 写 data:名字/序列，见 docs/usage.md「自定义数据集」
 #  gpu: https://github.com/you/gpu-prices
 
 # 警报：总览「警报」列按你起的名字显示，触发时推到通知通道（~/.config/hebi8/market/notify.json 或页头「通知设置」）。

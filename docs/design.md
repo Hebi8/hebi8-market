@@ -420,7 +420,7 @@ date,open,high,low,close,volume
 - `npm run notify:test` 往 `notify.json` 里的通道发一条测试消息。
 - **owner 在页面上设置 bot**：「通知设置」抽屉里，owner 多一块「实例的 Telegram bot」：显示「未配置」或 `@<bot 用户名>`；粘贴 token 后服务端先用 `getMe` 校验，通过才写进 `notify.json`（保留文件里的其他字段，原子写、600），「移除」删掉 telegram 段。token 写进去以后不再回显，只显示 bot 用户名。接口 `PUT /api/notify/bot`、`DELETE /api/notify/bot`，非 owner 返回 403。
 
-**通知设置抽屉**（`AccountPanel`，和帮助抽屉同样的位置和尺寸，但不是它的页签：通知设置只有这一个入口）。页头的「登录」和账号菜单的「通知设置」都打开它：未登录时标题是「登录」，显示 device flow（从「登录」打开时直接开始）；登录后标题是「通知设置」，顶部是头像 + login +「退出」，下面是这个人的通道，owner 再多一块实例的 bot。只有共用实例有登录，所以单用户模式没有这个抽屉，通道和 bot 都手写 `notify.json`（README「通知」）。
+**通知设置抽屉**（`AccountPanel`，和帮助抽屉同样的位置和尺寸，但不是它的页签：通知设置只有这一个入口）。页头的「登录」和账号菜单的「通知设置」都打开它：未登录时标题是「登录」，显示 device flow（从「登录」打开时直接开始）；登录后标题是「通知设置」，顶部是头像 + login +「退出」，下面是这个人的通道，owner 再多一块实例的 bot。只有共用实例有登录，所以单用户模式没有这个抽屉，通道和 bot 都手写 `notify.json`（[usage.md](usage.md#通知通道)「通知通道」）。
 
 - **绑定 Telegram**：服务端生成一次性码（10 分钟有效，内存里），用 `getMe` 拿 bot 用户名，返回 `https://t.me/<bot>?start=<码>`；面板显示「打开 Telegram 点 Start」和等待状态。有待绑定的码时，服务端用 `getUpdates` 长轮询（timeout 25 秒，只往外连）读 bot 收到的消息；私聊里收到 `/start <码>` 就把这个 chat id 记到对应 login，回一句「已绑定 hebi8：<login>」，确认 update 的 offset。没有待绑定的码时不轮询。
 - 实例的 bot 必须是 hebi8 专用的：同一个 token 被别的程序（比如 Hermes 网关）`getUpdates` 时两边会抢消息。
@@ -676,7 +676,7 @@ D 原样；W 周一起算；M 月初；**Q 季初**（`Date.UTC(y, floor(m/3)*3,
 - **报价**：价格来自报价的行（`withQuote` 采用了报价，§2.6，和图表、警报同一个价），价格是报价价，涨跌幅等按它现算；价格下面一行（窄屏是价格左边）是小号灰字「盘中 · 3 分钟前」，时段用状态条的叫法（盘中 / 盘前 / 盘后 / 休市，加密是 24h），只在报价还是当前的时候标，过了只写「3 小时前」；时间总是报价取到多久前。休市（`closed`）只写「休市」不带时间（收盘价不会变旧，时间留在悬停里）。悬停 title 补充取价频率（开盘和加密每 5 分钟、其余时段每小时）。合成标的按操作数的报价现算，只写多久前（最旧的那个操作数报价），不标时段。价格来自日线的行不标（`data:` 标的，或者日线同步刚跑完、下一轮报价还没到）。
 - 显示名：yaml `name` > 内置字典中文名 > 数据源名（超过 24 字符 truncate，hover 显全名）。
 - ≤768px 隐藏 sparkline，徽标 `whitespace-nowrap`；≤640px 改为列表：第一行 名称 + 报价标签 + 价格，第二行 所选涨跌周期，第三行 徽标（徽标是按钮，放在卡片链接外面）；外层 `overflow-x-auto` 兜底，不允许横向溢出。
-- 页面上不提示 yaml 的路径：共用实例的其他人和访客改不了服务器上的文件，怎么手改 yaml 写在 README。
+- 页面上不提示 yaml 的路径：共用实例的其他人和访客改不了服务器上的文件，怎么手改 yaml 写在 [usage.md](usage.md) 和 [self-hosting.md](self-hosting.md#vault)。
 - 同步错误显示在该行；库为空时显示「首次拉取中…」并轮询。
 
 ### 5.2 图表 `/chart/[key]`（key 需 URL 编码，`yahoo:SPY → yahoo%3ASPY`，合成 `=BTC/GOLD → %3DBTC%2FGOLD`）
@@ -832,7 +832,7 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 
 ### 5.5 设置
 
-周期选择、涨跌色、图表偏好由各处 UI 写回 yaml；分组、名称、基准由总览行菜单写回；警报由图表和总览的警报对话框写回；其余（同步时间、别名、数据集）直接改 yaml，写法在 README，页面上不提示路径（owner 在 `/usage` 能看到）。通知通道写在 `~/.config/hebi8/market/notify.json`（§2.5）。反馈用的 GitHub App 只有一个 client id，写在源码里（§5.8）。
+周期选择、涨跌色、图表偏好由各处 UI 写回 yaml；分组、名称、基准由总览行菜单写回；警报由图表和总览的警报对话框写回；其余（同步时间、别名、数据集）直接改 yaml，写法在 [usage.md](usage.md) 和 [self-hosting.md](self-hosting.md#vault)，页面上不提示路径（owner 在 `/usage` 能看到）。通知通道写在 `~/.config/hebi8/market/notify.json`（§2.5）。反馈用的 GitHub App 只有一个 client id，写在源码里（§5.8）。
 
 **设置页 `/settings`**（页头「设置」）放两类东西：agent 的接入令牌，和一次性的搬家操作（从 TradingView 导入自选列表和画线、把自选导出成 TradingView 能导入的列表）。访客能看、能导出（示例列表），生成令牌和导入的按钮是灰的，提示登录。
 
@@ -936,9 +936,9 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 
 **入口**：页头最右的圆形「?」，或焦点不在输入框时按 `?`（Shift+/）；图表页全屏时页头隐藏，顶栏全屏按钮旁出现同样的「?」。右侧抽屉 380px（≤768px 为底部抽屉 85dvh），两个页签「使用 / 反馈」，上次的页签记在 localStorage（`hebi8:help:tab`，「使用」的值是 `project`，存着已经去掉的 `notify` 时回到「使用」）。Esc、点外面、再按 `?` 关闭；抽屉内的按键不冒泡到页面（图表的 Space / 方向键 / 字母搜索不会在背后触发）。`?help=feedback|project` 打开抽屉并从地址栏去掉这个参数。全程不用原生 alert / confirm / prompt（会退出全屏）。
 
-**原则**：抽屉里只放用的时候要的东西：怎么用、快捷键、反馈、隐私说明和登录状态。项目介绍、架构、数据源细节、yaml 字段、版本 / commit、vault 路径、缓存统计、部署信息都写在 README 和本文档，界面上只留一个「项目文档」链接到仓库。owner 需要的实例状态在 `/usage`（§1.7）；通知设置在自己的抽屉里（§2.5），不是这里的页签。
+**原则**：抽屉里只放用的时候要的东西：怎么用、快捷键、反馈、隐私说明和登录状态。项目介绍、架构、数据源细节、yaml 字段、版本 / commit、vault 路径、缓存统计、部署信息都写在 README（概览和文档索引）、`docs/` 下的 usage / self-hosting / maintainers 和本文档，界面上只留一个「项目文档」链接到仓库。owner 需要的实例状态在 `/usage`（§1.7）；通知设置在自己的抽屉里（§2.5），不是这里的页签。
 
-**使用页签**（纯前端，不请求接口）：「怎么用」一句话 +「打开三步引导」（§1.6 的引导面板）；快捷键表；「项目文档」（仓库首页，即 README）和「隐私说明」两个链接。
+**使用页签**（纯前端，不请求接口）：「怎么用」一句话 +「打开三步引导」（§1.6 的引导面板）；快捷键表；「项目文档」（仓库首页，即 README，从它的文档索引进各篇）和「隐私说明」两个链接。
 
 **版本**：`package.json` version + 构建时的 `git rev-parse --short HEAD` + 构建时间（`next.config.ts` 的 `env` 注入 `HEBI8_VERSION / HEBI8_COMMIT / HEBI8_BUILT_AT`，取不到 commit 时为 `unknown`）。只出现在反馈的 `hebi8-context` 里和 owner 的 `/usage` 上。
 

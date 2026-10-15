@@ -21,7 +21,7 @@ are mostly written in Chinese by the maintainer.
 - review: per-symbol notes and the weekly review page (`/review`).
 - data: data sources (Yahoo, TradingView, Binance, CSV datasets), sync schedule, statistics, the formula language.
 - account: GitHub login, the shared instance and per-user vaults, in-app feedback, the owner's usage page.
-- docs: README, docs/design.md.
+- docs: README and docs/ (usage.md, self-hosting.md, maintainers.md, design.md).
 
 ## Difficulty
 - simple: the expected behaviour is clear from the issue; the fix is small and local (about three
