@@ -42,12 +42,11 @@ interface State {
   errors: Map<string, string>;
   /** Bot username by token, from getMe */
   botNames: Map<string, string>;
-  version: number;
   probing: boolean;
 }
 
 const g = globalThis as unknown as { hebi8Telegram?: State };
-const state: State = (g.hebi8Telegram ??= { bindings: new Map(), token: null, runs: new Map(), errors: new Map(), botNames: new Map(), version: 0, probing: false });
+const state: State = (g.hebi8Telegram ??= { bindings: new Map(), token: null, runs: new Map(), errors: new Map(), botNames: new Map(), probing: false });
 
 const log = (msg: string) => console.log(`[hebi8m] telegram: ${msg}`);
 
@@ -81,11 +80,11 @@ export async function botName(bot: Bot): Promise<string> {
 
 /** A new code for this login (replacing any earlier one) and the link that sends it to the bot. */
 export async function startBinding(login: string, now = Date.now()): Promise<{ url: string; expiresAt: number }> {
-  const version = state.version;
   const bot = instanceBot();
   if (!bot) throw new Error("这台 hebi8/market 没有配置 Telegram bot（notify.json 的 telegram.token），请找部署的人");
   const name = await botName(bot);
-  if (version !== state.version) throw new Error("bot 已更换，请重新开始绑定");
+  // replaced while getMe was out, on the page or by hand; another start for the same bot is fine
+  if (checkConfig(bot.token) === "changed") throw new Error("bot 已更换，请重新开始绑定");
   // the token was changed by hand since the last codes: theirs are for the old bot
   if (state.token !== bot.token) resetBindings();
   state.token = bot.token;
@@ -128,7 +127,6 @@ export function cancelBinding(login: string): void {
  * and the old bot's polling ends now (its long poll is aborted). The next code starts a new loop.
  */
 export function resetBindings(): void {
-  state.version++;
   state.token = null;
   for (const [key, b] of state.bindings) if (!b.chat) state.bindings.delete(key);
   for (const run of state.runs.values()) run.stop.abort();
@@ -144,22 +142,23 @@ export function resetBindings(): void {
  * takes it before anything else), so the same `/start` read on both binds once.
  */
 function pollUpdates(bot: Bot): void {
-  for (const api of bot.apis) if (!state.runs.has(api)) void pollAt(api);
+  for (const api of bot.apis) if (!state.runs.has(api)) void pollAt(api, bot.token);
 }
 
 /**
- * notify.json as it is now, read on every round of every loop since it may be edited by hand: a
- * different token (or none) voids the waiting codes and ends every loop, an address added gets its
- * loop, and an address taken out ends its own (null).
+ * notify.json as it is now, read on every round of every loop and before each update is handled,
+ * since it may be edited by hand. `changed`: another token or no bot, which voids the waiting codes
+ * and ends every loop. `unreadable`: the file does not parse right now (say, half saved), so that
+ * round waits and the codes keep their time.
  */
-function followConfig(api: string): Bot | null {
-  const bot = instanceBot();
-  if (!bot || bot.token !== state.token) {
+function checkConfig(token: string): Bot | "unreadable" | "changed" {
+  const { config, error } = readNotifyConfig();
+  if (error) return "unreadable";
+  if (config.telegram?.token !== token) {
     resetBindings();
-    return null;
+    return "changed";
   }
-  pollUpdates(bot);
-  return bot.apis.includes(api) ? bot : null;
+  return { token, apis: config.telegram.apis };
 }
 
 /**
@@ -167,7 +166,7 @@ function followConfig(api: string): Bot | null {
  * last `timeout: 0` call confirms the final batch (and whatever it returns is handled like any
  * other). A code started meanwhile keeps the same loop going.
  */
-async function pollAt(api: string): Promise<void> {
+async function pollAt(api: string, token: string): Promise<void> {
   const run = { stop: new AbortController() };
   state.runs.set(api, run);
   const current = () => state.runs.get(api) === run;
@@ -175,11 +174,18 @@ async function pollAt(api: string): Promise<void> {
   let offset: number | undefined;
   let unconfirmed = false;
   try {
-    for (;;) {
+    poll: for (;;) {
       const busy = waiting();
       if (!current() || (!busy && !unconfirmed)) break;
-      const bot = followConfig(api);
-      if (!bot) break;
+      const bot = checkConfig(token);
+      if (bot === "changed") break;
+      if (bot === "unreadable") {
+        await new Promise((r) => setTimeout(r, RETRY_MS));
+        continue;
+      }
+      // an address added meanwhile gets its loop; one taken out ends its own
+      pollUpdates(bot);
+      if (!bot.apis.includes(api)) break;
       try {
         const updates: Update[] = await callAt<Update[]>(
           api,
@@ -194,8 +200,13 @@ async function pollAt(api: string): Promise<void> {
         state.errors.delete(api);
         unconfirmed = updates.length > 0;
         for (const u of updates) {
+          // answered for a token that is no longer the bot's: none of it is handled
+          const now = checkConfig(token);
+          if (now === "changed") break poll;
+          // not confirmed, so the next round reads the rest again
+          if (now === "unreadable") break;
           offset = u.update_id + 1;
-          await receive(bot, u);
+          await receive(now, u);
         }
       } catch (err) {
         if (!current()) break;

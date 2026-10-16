@@ -322,4 +322,75 @@ describe("binding with two addresses", () => {
     expect(await quiet(`c.follow ${TOKEN}`)).toBe(true);
     expect(bindingStatus("frank")).toEqual({ status: "pending" });
   });
+
+  it("two people starting at once on a fresh process both get a code", async () => {
+    const { bindingStatus, startBinding } = await import("@/lib/telegram");
+    const FRESH = "111222:FRESH-token";
+    hosts.set("fresh.bind", async (m, b, signal) => (m === "getMe" ? (await after(30, signal), getMe(m, b, signal)) : updatesServer([])(m, b, signal)));
+    writeNotify(["http://fresh.bind"], FRESH);
+    const [a, b] = await Promise.all([startBinding("gina"), startBinding("hank")]);
+    expect(a.url).toMatch(/start=/);
+    expect(b.url).toMatch(/start=/);
+    expect(bindingStatus("gina")).toEqual({ status: "pending" });
+    expect(bindingStatus("hank")).toEqual({ status: "pending" });
+  });
+
+  it("drops an answer that comes back after the token was changed by hand", async () => {
+    const { bindingStatus, startBinding } = await import("@/lib/telegram");
+    const { readNotifyUsers } = await import("@/lib/notify");
+    let answer: ((updates: unknown[]) => void) | null = null;
+    hosts.set("held.bind", (m, b, signal) =>
+      m === "getUpdates" ? new Promise<Response>((resolve) => (answer = (u) => resolve(ok(u)))) : getMe(m, b, signal),
+    );
+    writeNotify(["http://held.bind"]);
+    const code = codeOf((await startBinding("ivan")).url);
+    await until(() => answer !== null);
+    writeNotify(["http://held.bind"], "999888:HAND-token");
+    answer!([{ update_id: 1, message: { chat: { id: 901, type: "private" }, text: `/start ${code}` } }]);
+    await until(() => bindingStatus("ivan").status === "expired");
+    expect(readNotifyUsers()).toEqual({});
+    expect(calls.filter((c) => c.method === "sendMessage")).toEqual([]);
+  });
+
+  it("stops in the middle of a batch when the token changes while one update is handled", async () => {
+    const { bindingStatus, startBinding } = await import("@/lib/telegram");
+    const { readNotifyUsers } = await import("@/lib/notify");
+    const queue: { update_id: number; message: unknown }[] = [];
+    const server = updatesServer(queue);
+    // the owner edits the token while the first confirmation is on its way
+    hosts.set("mid.bind", (m, b, signal) => {
+      if (m === "sendMessage") writeNotify(["http://mid.bind"], "999777:MID-token");
+      return server(m, b, signal);
+    });
+    writeNotify(["http://mid.bind"]);
+    const jill = codeOf((await startBinding("jill")).url);
+    const kent = codeOf((await startBinding("kent")).url);
+    await until(() => polls("mid.bind") > 0);
+    queue.push(
+      { update_id: 1, message: { chat: { id: 1001, type: "private" }, text: `/start ${jill}` } },
+      { update_id: 2, message: { chat: { id: 1002, type: "private" }, text: `/start ${kent}` } },
+    );
+    await until(() => bindingStatus("kent").status === "expired");
+    expect(bindingStatus("jill")).toEqual({ status: "bound", chat: "1001" });
+    expect(readNotifyUsers()).toEqual({ jill: { telegram: { chat: "1001" } } });
+    expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+  });
+
+  it("waits out a notify.json that does not parse right now, keeping the codes", async () => {
+    const { bindingStatus, startBinding } = await import("@/lib/telegram");
+    const queue: { update_id: number; message: unknown }[] = [];
+    hosts.set("edit.bind", updatesServer(queue));
+    writeNotify(["http://edit.bind"]);
+    const code = codeOf((await startBinding("lena")).url);
+    await until(() => polls("edit.bind") > 0);
+    fs.writeFileSync(path.join(secrets, "notify.json"), '{ "telegram": { "token": ');
+    // a /start read while the file is broken waits too
+    queue.push({ update_id: 1, message: { chat: { id: 1101, type: "private" }, text: `/start ${code}` } });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(bindingStatus("lena")).toEqual({ status: "pending" });
+    writeNotify(["http://edit.bind"]);
+    let status = bindingStatus("lena");
+    await until(() => (status = bindingStatus("lena")).status !== "pending", 12_000);
+    expect(status).toEqual({ status: "bound", chat: "1101" });
+  }, 15_000);
 });
