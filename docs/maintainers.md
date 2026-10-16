@@ -35,6 +35,19 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 - **tag 和 Release**：每个版本一个带注释的 tag `vX.Y.Z`，打在发布时的 master 上，一个 GitHub Release，正文是 `CHANGELOG.md` 的那一节。
 - **issue 标签 `status:next-release`**：修复合进 dev 时巡检 bot 打上，并评论「已修复，下个版本上线」；发版时脚本去掉标签、评论「已在 vX.Y.Z 上线」、还开着的关掉。issue 的标签和评论都用巡检 bot 的身份（`GH_TOKEN=$(~/.local/share/hebi8/triage-token.sh)`），推送和 Release 用自己的 gh。
 
+### 审查
+
+每个分支——issue 修复、手动协调的改动、热补丁分支——合进 dev 或跑 `hotfix.sh` 之前，都要过两份只读审查：
+
+| 审查者 | Lody 里的配置 |
+|---|---|
+| Codex | agent config `b5021347-c361-4f9d-ba50-e3526aa4d3cd`，模型 `gpt-6.1-sol`，reasoning high，模式 `agent-auto-review` |
+| Argon | Google Antigravity，agent config `e641018b-df01-4323-a4d8-84c57d48acbe`，`model: gemini-4-argon-high`，`mode: yolo`（default 模式会卡在权限确认上，只读靠提示词：不改文件、不 commit、不 push、不跑部署脚本） |
+
+- **谁开**：每日巡检里由执行 session 开两个子会话（`useCurrentSessionAsParent`，共用它的 worktree）；自己协调的分支由协调者各开一个独立会话（`worktree: true`），两边用同一份审查提示词。
+- **审什么**：分支相对 dev 的改动（热补丁相对 master），按 blocking / suggestion 分级，结论原样交给协调者。
+- **怎么合并**：协调者把两份合在一起，筛掉只是「多加防御性检查」的意见；真问题修完后，由提出它的那个审查者复审，直到两边都没有 blocking。
+
 ### 发版
 
 在 checkout 了 dev 的那个目录里：
@@ -61,8 +74,11 @@ scripts/release.sh 0.3.0
 ```bash
 git worktree add -b hotfix/<名字> <目录> master
 # 在那里修，CHANGELOG.md 顶部加「## v0.3.1」一节（一行就够），提交
+# 先过 Codex + Argon 双审（见上面「审查」），没有 blocking 了再跑
 scripts/hotfix.sh 0.3.1
 ```
+
+急也不跳过审查：跑 `hotfix.sh` 之前，分支相对 master 的改动要先过两份审查。
 
 在热补丁分支上跑，版本必须正好是线上版本的下一个 patch（0.3.0 之后是 0.3.1）。版本提交 → `deploy.sh <这个分支>` → 打 tag、推 tag、Release，给提交里 `Fixes #n` 的 issue 评论并关掉 → **把 master 合回 dev 并推 dev**（在 checkout 了 dev 的目录里合，没有就开一个临时 worktree）。合并有冲突时脚本停下，说在哪个目录手动合；只差合回这一步时跑 `scripts/hotfix.sh merge-back`，部署之后别的步骤停了跑 `scripts/hotfix.sh publish 0.3.1`（同上，绑定版本提交，做完再合回）；推 master 失败的恢复和发版一样。
 
