@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { publicUrl } from "./app-info";
+import { callBot } from "./bot-api";
 import { fmtPrice } from "./format";
 import { sendPush, vapidKeys, type PushDevice, type PushPayload } from "./push";
 import { readJson, secretsDir, writeJson } from "./secrets";
@@ -22,7 +23,8 @@ export interface Webhook {
 
 export interface NotifyConfig {
   /** `chat` is where the root vault's alerts go; a bot without one only serves people who bind on the page */
-  telegram?: { token: string; chat?: string; api: string };
+  /** `apis`: the Bot API addresses to choose from (`bot-api.ts`), Telegram's own when none are given */
+  telegram?: { token: string; chat?: string; apis: string[] };
   webhook?: Webhook;
   /** Base URL of this app, for chart links in messages */
   link?: string;
@@ -65,6 +67,12 @@ const obj = (v: unknown): Record<string, unknown> | null =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : typeof v === "number" ? String(v) : null);
 
+/** `telegram.api` as written: one address, a list, or nothing for Telegram's own. */
+function botApis(value: unknown): string[] {
+  const list = Array.isArray(value) ? value : value ? [value] : [];
+  return list.length ? list.map((v) => httpUrl(str(v) ?? "", "telegram.api")) : [TELEGRAM_API];
+}
+
 export function httpUrl(value: string, where: string): string {
   let url: URL;
   try {
@@ -86,7 +94,7 @@ export function parseNotifyConfig(raw: unknown): NotifyConfig {
     const token = str(t?.token);
     const chat = str(t?.chat);
     if (!token) throw new Error("notify.json 的 telegram 需要 token");
-    out.telegram = { token, ...(chat ? { chat } : {}), api: t?.api ? httpUrl(str(t.api) ?? "", "telegram.api") : TELEGRAM_API };
+    out.telegram = { token, ...(chat ? { chat } : {}), apis: botApis(t?.api) };
   }
   if (root.webhook !== undefined) {
     const w = typeof root.webhook === "string" ? { url: root.webhook } : obj(root.webhook);
@@ -115,17 +123,16 @@ export interface BotSummary {
  * The owner sets the instance's bot from the page (§2.5): only the `telegram` section changes, every
  * other field of the hand-written file stays as it was. `token: null` removes the section.
  */
-export function setInstanceBot(bot: { token: string; api: string } | null): void {
+export function setInstanceBot(token: string | null): void {
   const raw = readNotifyFile();
-  if (bot) raw.telegram = { ...obj(raw.telegram), token: bot.token, ...(bot.api !== TELEGRAM_API ? { api: bot.api } : {}) };
+  if (token) raw.telegram = { ...obj(raw.telegram), token };
   else delete raw.telegram;
   writeJson(NOTIFY_FILE, raw);
 }
 
-/** The Bot API a new token is checked against: the file's `telegram.api`, else Telegram's. */
-export function instanceBotApi(): string {
-  const api = str(obj(readNotifyFile().telegram)?.api);
-  return api ? httpUrl(api, "telegram.api") : TELEGRAM_API;
+/** The Bot APIs a new token is checked against: the file's `telegram.api`, else Telegram's. */
+export function instanceBotApis(): string[] {
+  return botApis(obj(readNotifyFile().telegram)?.api);
 }
 
 /** notify.json as written; a file that is not a JSON object is not overwritten. */
@@ -281,23 +288,9 @@ export function formatDigest(events: AlertEvent[], link?: string): { title: stri
 
 const TIMEOUT = 15_000;
 
-export async function sendTelegram(cfg: { token: string; chat: string; api: string }, text: string): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch(`${cfg.api}/bot${cfg.token}/sendMessage`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: cfg.chat, text, disable_web_page_preview: true }),
-      signal: AbortSignal.timeout(TIMEOUT),
-    });
-  } catch (err) {
-    // the URL carries the token, so only the error name goes into logs
-    throw new Error(`Telegram 请求失败（${err instanceof Error ? err.name : "error"}）`);
-  }
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { description?: string } | null;
-    throw new Error(`Telegram ${res.status}${body?.description ? `：${body.description}` : ""}`);
-  }
+/** Through the bot's fastest address; when and where it moves on is in `bot-api.ts`. */
+export async function sendTelegram(cfg: { token: string; chat: string; apis: string[] }, text: string): Promise<void> {
+  await callBot(cfg, "sendMessage", { chat_id: cfg.chat, text, disable_web_page_preview: true });
 }
 
 async function sendWebhook(cfg: NonNullable<NotifyConfig["webhook"]>, title: string, text: string, events: AlertEvent[]): Promise<void> {

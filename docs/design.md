@@ -416,7 +416,7 @@ date,open,high,low,close,volume
 - `notify.json` 是**实例**的设置，由部署的人手写：bot 的 `token`、`api`，以及 `link`。其中 `telegram.chat` 和 `webhook` 是根 vault（单用户模式或 owner）的通道，和以前兼容。
 - owner 有几个账号时，根 vault 的通道记在第一个 owner 名下，用哪个账号登录绑定都是同一份。
 - 其他人的通道在 `notify-users.json`：`{ "<login>": { "telegram": { "chat": "..." }, "webhook": { "url": "...", "format": "text" }, "push": [{ "endpoint": "...", "keys": { "p256dh": "...", "auth": "..." }, "label": "Chrome · Android", "added": 1760000000000 }] } }`，由页面写入（原子写、600），不手改。`push` 是开了推送的设备（§2.7），只有页面能加，`notify.json` 里没有对应的段。owner 也可以在页面上绑定，写进这里时优先于 `notify.json` 里的 chat / webhook。
-- `telegram.api` 可省，指向自建 Bot API 服务时改它。
+- `telegram.api` 可省（默认 `https://api.telegram.org`），指向自建 Bot API 服务时改它；也可以是地址数组。几个地址时每 5 分钟对每个调一次 `getMe`（3 秒超时），可用与否和耗时只记在内存（`bot-api.ts`）。每次调用按「测过且可用的按耗时、没测过的按配置顺序、失败的最后」依次试：只在明确没送到时换下一个（连接没建立：拒绝、DNS、不可达、连接超时；或回 5xx），并把它记成失败直到下次测速；请求可能已经发出去（自己的超时到了、连接在回应前断开）时 `sendMessage` 不换地址重发，免得重复，只记失败、报错；`getMe` 不改任何东西，这种情况也换。Telegram 的业务错误（4xx）在哪个地址都一样，不换，原样报。
 - `webhook.format`：`text`（默认，正文就是摘要，带 `Title` 头，适合 ntfy）或 `json`（`{ title, text, events }`）。
 - `link` 可省；有的话每条事件后面带图表页链接。
 - `npm run notify:test` 往 `notify.json` 里的通道发一条测试消息。
@@ -424,7 +424,7 @@ date,open,high,low,close,volume
 
 **通知设置抽屉**（`AccountPanel`，和帮助抽屉同样的位置和尺寸，但不是它的页签：通知设置只有这一个入口）。页头的「登录」和账号菜单的「通知设置」都打开它：未登录时标题是「登录」，显示 device flow（从「登录」打开时直接开始）；登录后标题是「通知设置」，顶部是头像 + login +「退出」，下面是这个人的通道，owner 再多一块实例的 bot。只有共用实例有登录，所以单用户模式没有这个抽屉，通道和 bot 都手写 `notify.json`（[usage.md](usage.md#通知通道)「通知通道」）。
 
-- **绑定 Telegram**：服务端生成一次性码（10 分钟有效，内存里），用 `getMe` 拿 bot 用户名，返回 `https://t.me/<bot>?start=<码>`；面板显示「打开 Telegram 点 Start」和等待状态。有待绑定的码时，服务端用 `getUpdates` 长轮询（timeout 25 秒，只往外连）读 bot 收到的消息；私聊里收到 `/start <码>` 就把这个 chat id 记到对应 login，回一句「已绑定 hebi8：<login>」，确认 update 的 offset。没有待绑定的码时不轮询。
+- **绑定 Telegram**：服务端生成一次性码（10 分钟有效，内存里），用 `getMe` 拿 bot 用户名，返回 `https://t.me/<bot>?start=<码>`；面板显示「打开 Telegram 点 Start」和等待状态。有待绑定的码时，服务端用 `getUpdates` 长轮询（timeout 25 秒，只往外连）读 bot 收到的消息；私聊里收到 `/start <码>` 就把这个 chat id 记到对应 login，回一句「已绑定 hebi8：<login>」，确认 update 的 offset。没有待绑定的码时不轮询。`telegram.api` 有几个地址时每个地址各一个轮询循环、各自的 offset：bot 在云端和自建服务上都登录着时，Telegram 不保证 update 到哪一边，所以两边都读；两边的 update_id 各编各的，不拿来对比，去重靠一次性码：读到 `/start <码>` 时先把码标成已用，同一条消息从另一边再读到就不会再绑一次、再回一句。面板只在所有地址都出错时显示错误。
 - 实例的 bot 必须是 hebi8 专用的：同一个 token 被别的程序（比如 Hermes 网关）`getUpdates` 时两边会抢消息。
 - **webhook**：输入地址和格式，保存前校验 http(s)。
 - **推送**：「在此设备上接收推送」开关和已开启的设备列表，见 §2.7。

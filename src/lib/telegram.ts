@@ -4,25 +4,25 @@
  * waiting, the instance's bot is long-polled with getUpdates for a private `/start <code>`; with
  * no code waiting nothing reads the bot, so it never competes with anything else. Outbound only.
  * The token stays on the server: it is in every URL here, so errors carry only the error name.
+ * The bot's Bot API addresses are timed here every 5 minutes (`startProbes`); see `bot-api.ts`.
  */
 import crypto from "node:crypto";
+import { callAt, callBot, probe, type Bot } from "./bot-api";
 import { readNotifyConfig, sendTelegram, setUserChannel } from "./notify";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const LONG_POLL_S = 25;
 const RETRY_MS = 5000;
-
-interface Bot {
-  token: string;
-  api: string;
-}
+const PROBE_MS = 5 * 60 * 1000;
 
 interface Binding {
   /** As GitHub spells it, for the confirmation message */
   login: string;
   code: string;
   expiresAt: number;
-  /** Set once the `/start` arrived */
+  /** Set as soon as its `/start` is read, so the same message read through another address binds once */
+  used?: boolean;
+  /** Set once the binding is written and confirmed */
   chat?: string;
 }
 
@@ -34,50 +34,44 @@ interface Update {
 interface State {
   /** Pending and just-bound codes by lower-case login */
   bindings: Map<string, Binding>;
-  /** Next getUpdates offset: everything before it has been seen */
-  offset?: number;
-  /** The polling loop running now; another bot (or none) replaces it, see `resetBindings` */
-  run: { stop: AbortController } | null;
+  /** The polling loops running now, one per Bot API address; another bot (or none) replaces them, see `resetBindings` */
+  runs: Map<string, { stop: AbortController }>;
+  /** The last failure of each address's loop, until it answers again */
+  errors: Map<string, string>;
   /** Bot username by token, from getMe */
   botNames: Map<string, string>;
-  lastError: string | null;
   version: number;
+  probing: boolean;
 }
 
 const g = globalThis as unknown as { hebi8Telegram?: State };
-const state: State = (g.hebi8Telegram ??= { bindings: new Map(), run: null, botNames: new Map(), lastError: null, version: 0 });
+const state: State = (g.hebi8Telegram ??= { bindings: new Map(), runs: new Map(), errors: new Map(), botNames: new Map(), version: 0, probing: false });
 
 const log = (msg: string) => console.log(`[hebi8m] telegram: ${msg}`);
-
-async function call<T>(bot: Bot, method: string, body: Record<string, unknown>, timeoutMs = 15_000, stop?: AbortSignal): Promise<T> {
-  let res: Response;
-  try {
-    const timeout = AbortSignal.timeout(timeoutMs);
-    res = await fetch(`${bot.api}/bot${bot.token}/${method}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: stop ? AbortSignal.any([timeout, stop]) : timeout,
-    });
-  } catch (err) {
-    throw new Error(`Telegram ${method} 请求失败（${err instanceof Error ? err.name : "error"}）`);
-  }
-  const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: T; description?: string } | null;
-  if (!res.ok || !json?.ok) throw new Error(`Telegram ${method} ${res.status}${json?.description ? `：${json.description}` : ""}`);
-  return json.result as T;
-}
 
 /** The instance's bot from notify.json, or null when there is none to bind to. */
 export function instanceBot(): Bot | null {
   const t = readNotifyConfig().config.telegram;
-  return t ? { token: t.token, api: t.api } : null;
+  return t ? { token: t.token, apis: t.apis } : null;
+}
+
+/** Started once per process from instrumentation: a bot with more than one address has them timed every 5 minutes. */
+export function startProbes(): void {
+  if (state.probing) return;
+  state.probing = true;
+  const tick = () => {
+    const bot = instanceBot();
+    if (bot && bot.apis.length > 1) void probe(bot);
+  };
+  tick();
+  setInterval(tick, PROBE_MS);
 }
 
 /** The bot's @username from getMe, cached per token; throws when Telegram does not accept the token. */
 export async function botName(bot: Bot): Promise<string> {
   const known = state.botNames.get(bot.token);
   if (known) return known;
-  const me = await call<{ username?: string }>(bot, "getMe", {});
+  const me = await callBot<{ username?: string }>(bot, "getMe", {});
   if (!me.username) throw new Error("Telegram getMe 没有返回 bot 用户名");
   state.botNames.set(bot.token, me.username);
   return me.username;
@@ -93,7 +87,7 @@ export async function startBinding(login: string, now = Date.now()): Promise<{ u
   const code = crypto.randomBytes(9).toString("base64url");
   const expiresAt = now + CODE_TTL_MS;
   state.bindings.set(login.toLowerCase(), { login, code, expiresAt });
-  void pollUpdates(bot);
+  pollUpdates(bot);
   return { url: `https://t.me/${name}?start=${code}`, expiresAt };
 }
 
@@ -111,7 +105,9 @@ export function bindingStatus(login: string, now = Date.now()): BindingStatus {
     state.bindings.delete(key);
     return { status: "expired" };
   }
-  return state.lastError ? { status: "pending", error: state.lastError } : { status: "pending" };
+  // one address failing while another answers is not worth showing
+  const errors = [...state.errors.values()];
+  return errors.length && errors.length === state.runs.size ? { status: "pending", error: errors.join("；") } : { status: "pending" };
 }
 
 const waiting = () => [...state.bindings.values()].some((b) => !b.chat && b.expiresAt > Date.now());
@@ -129,55 +125,70 @@ export function cancelBinding(login: string): void {
 export function resetBindings(): void {
   state.version++;
   for (const [key, b] of state.bindings) if (!b.chat) state.bindings.delete(key);
-  state.lastError = null;
-  state.run?.stop.abort();
-  state.run = null;
+  for (const run of state.runs.values()) run.stop.abort();
+  state.runs.clear();
+  state.errors.clear();
 }
 
 /**
- * One loop per process while a code is waiting. An update is confirmed by asking for the next
- * offset; once nothing waits, a last `timeout: 0` call confirms the final batch (and whatever it
- * returns is handled like any other). A code started meanwhile keeps the same loop going.
+ * While a code is waiting, every address of the bot is long-polled, each in its own loop with its
+ * own offset. Once the bot has been used on Telegram's cloud server and on a self-hosted one,
+ * Telegram does not say which of them gets an update, so a `/start` is read wherever it arrives.
+ * Update ids are each server's own and are not compared; the code is what is used once (`receive`
+ * takes it before anything else), so the same `/start` read on both binds once.
  */
-async function pollUpdates(bot: Bot): Promise<void> {
-  if (state.run) return;
+function pollUpdates(bot: Bot): void {
+  for (const api of bot.apis) if (!state.runs.has(api)) void pollAt(bot, api);
+}
+
+/**
+ * One address's loop. An update is confirmed by asking for the next offset; once nothing waits, a
+ * last `timeout: 0` call confirms the final batch (and whatever it returns is handled like any
+ * other). A code started meanwhile keeps the same loop going.
+ */
+async function pollAt(bot: Bot, api: string): Promise<void> {
   const run = { stop: new AbortController() };
-  state.run = run;
-  const current = () => state.run === run;
+  state.runs.set(api, run);
+  const current = () => state.runs.get(api) === run;
   // update ids can restart after a quiet week, so an offset is only trusted within one run
-  state.offset = undefined;
+  let offset: number | undefined;
   let unconfirmed = false;
   try {
     for (;;) {
       const busy = waiting();
       if (!current() || (!busy && !unconfirmed)) break;
       try {
-        const updates: Update[] = await call<Update[]>(
-          bot,
+        const updates: Update[] = await callAt<Update[]>(
+          api,
+          bot.token,
           "getUpdates",
-          { offset: state.offset, timeout: busy ? LONG_POLL_S : 0, allowed_updates: ["message"] },
+          { offset, timeout: busy ? LONG_POLL_S : 0, allowed_updates: ["message"] },
           (LONG_POLL_S + 10) * 1000,
           run.stop.signal,
         );
         // the bot changed while this was in flight: its updates are not ours to confirm
         if (!current()) break;
-        state.lastError = null;
+        state.errors.delete(api);
         unconfirmed = updates.length > 0;
         for (const u of updates) {
-          state.offset = u.update_id + 1;
+          offset = u.update_id + 1;
           await receive(bot, u);
         }
       } catch (err) {
         if (!current()) break;
         // e.g. 409 when something else reads the same bot: shown in the panel, retried
-        state.lastError = err instanceof Error ? err.message : String(err);
-        log(state.lastError);
+        const msg = err instanceof Error ? err.message : String(err);
+        state.errors.set(api, bot.apis.length > 1 ? `${new URL(api).host} ${msg}` : msg);
+        log(state.errors.get(api)!);
         if (!waiting()) break;
         await new Promise((r) => setTimeout(r, RETRY_MS));
       }
     }
   } finally {
-    if (current()) state.run = null;
+    if (current()) {
+      state.runs.delete(api);
+      state.errors.delete(api);
+    }
   }
 }
 
@@ -185,8 +196,9 @@ async function receive(bot: Bot, u: Update): Promise<void> {
   const chat = u.message?.chat;
   const code = /^\/start\s+(\S+)$/.exec(u.message?.text?.trim() ?? "")?.[1];
   if (chat?.type !== "private" || chat.id === undefined || !code) return;
-  const binding = [...state.bindings.values()].find((b) => b.code === code && !b.chat && b.expiresAt > Date.now());
+  const binding = [...state.bindings.values()].find((b) => b.code === code && !b.used && b.expiresAt > Date.now());
   if (!binding) return;
+  binding.used = true;
   const id = String(chat.id);
   setUserChannel(binding.login, "telegram", { chat: id });
   log(`bound ${binding.login}`);

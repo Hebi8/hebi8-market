@@ -128,13 +128,13 @@ describe("alerts in hebi8.yaml", () => {
 describe("notify.json", () => {
   it("fills defaults and accepts a bare webhook url", () => {
     expect(parseNotifyConfig({ telegram: { token: "1:a", chat: 42 }, webhook: "https://ntfy.sh/x/", link: "http://h:8808/" })).toEqual({
-      telegram: { token: "1:a", chat: "42", api: "https://api.telegram.org" },
+      telegram: { token: "1:a", chat: "42", apis: ["https://api.telegram.org"] },
       webhook: { url: "https://ntfy.sh/x", format: "text" },
       link: "http://h:8808",
     });
     expect(parseNotifyConfig({})).toEqual({});
     // a bot without a chat: on a shared instance people bind their chats on the page
-    expect(parseNotifyConfig({ telegram: { token: "1:a" } })).toEqual({ telegram: { token: "1:a", api: "https://api.telegram.org" } });
+    expect(parseNotifyConfig({ telegram: { token: "1:a" } })).toEqual({ telegram: { token: "1:a", apis: ["https://api.telegram.org"] } });
   });
 
   it("reports sections that are present but broken", () => {

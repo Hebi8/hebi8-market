@@ -119,7 +119,7 @@ describe("per-person channels", () => {
   it("the root vault falls back to notify.json per channel; the owner's own binding wins", async () => {
     const { channelsFor, setUserChannel } = await import("@/lib/notify");
     expect(channelsFor("", "Owner").config).toEqual({
-      telegram: { token: TOKEN, chat: "1000001", api },
+      telegram: { token: TOKEN, chat: "1000001", apis: [api] },
       webhook: { url: `${api}/file-hook`, format: "text" },
       link: ORIGIN,
     });
@@ -134,7 +134,7 @@ describe("per-person channels", () => {
     const { channelNames, channelsFor, setUserChannel } = await import("@/lib/notify");
     expect(channelsFor("alice", "Owner").config).toEqual({ link: ORIGIN });
     setUserChannel("alice", "telegram", { chat: "3003" });
-    expect(channelsFor("alice", "Owner").config).toEqual({ telegram: { token: TOKEN, chat: "3003", api }, link: ORIGIN });
+    expect(channelsFor("alice", "Owner").config).toEqual({ telegram: { token: TOKEN, chat: "3003", apis: [api] }, link: ORIGIN });
     expect(channelsFor("bob", "Owner").config).toEqual({ link: ORIGIN });
     // no bot in notify.json: a bound chat cannot be reached
     writeNotify({ link: ORIGIN });

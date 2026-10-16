@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { instanceBotApi, readNotifyConfig, setInstanceBot, type BotSummary } from "@/lib/notify";
+import { instanceBotApis, readNotifyConfig, setInstanceBot, type BotSummary } from "@/lib/notify";
 import { botCaller } from "@/lib/notify-caller";
 import { botName, resetBindings } from "@/lib/telegram";
 
@@ -11,7 +11,7 @@ async function summary(): Promise<BotSummary> {
   const t = readNotifyConfig().config.telegram;
   if (!t) return { configured: false, username: null };
   try {
-    return { configured: true, username: await botName({ token: t.token, api: t.api }) };
+    return { configured: true, username: await botName(t) };
   } catch (err) {
     return { configured: true, username: null, error: err instanceof Error ? err.message : String(err) };
   }
@@ -30,20 +30,20 @@ export async function PUT(request: NextRequest) {
   const body = (await request.json().catch(() => null)) as { token?: unknown } | null;
   const token = typeof body?.token === "string" ? body.token.trim() : "";
   if (!/^\d+:[\w-]+$/.test(token)) return failed(new Error("token 的格式是 数字:字母数字，从 @BotFather 复制"), 400);
-  let api: string;
+  let apis: string[];
   try {
-    api = instanceBotApi();
+    apis = instanceBotApis();
   } catch (err) {
     return failed(err, 409);
   }
   let username: string;
   try {
-    username = await botName({ token, api });
+    username = await botName({ token, apis });
   } catch (err) {
     return failed(new Error(`Telegram 不接受这个 token：${err instanceof Error ? err.message : String(err)}`), 400);
   }
   try {
-    setInstanceBot({ token, api });
+    setInstanceBot(token);
   } catch (err) {
     return failed(err, 409);
   }

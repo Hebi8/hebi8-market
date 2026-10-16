@@ -203,7 +203,7 @@ alerts:
 }
 ```
 
-- `telegram`：找 @BotFather 建一个 hebi8/market 专用的 bot（用户名比如 `hebi8m_xxx_bot`）拿 token，给 bot 发一句话后从 `https://api.telegram.org/bot<token>/getUpdates` 里读 `chat.id`。用自建 Bot API 服务时加 `"api": "http://..."`。
+- `telegram`：找 @BotFather 建一个 hebi8/market 专用的 bot（用户名比如 `hebi8m_xxx_bot`）拿 token，给 bot 发一句话后从 `https://api.telegram.org/bot<token>/getUpdates` 里读 `chat.id`。用自建 Bot API 服务时加 `"api": "http://..."`；也可以给几个地址，比如 `"api": ["http://100.92.194.31:18081", "https://api.telegram.org"]`（不写就是 `https://api.telegram.org`）。几个地址时 hebi8 每 5 分钟对每个地址调一次 `getMe`（3 秒超时）测速，发消息先走能用且最快的那个（还没测过时按写的顺序）。一个地址明确没收到（连不上、DNS 失败、连接超时、回 5xx）就换下一个再发，到下次测速前它排到最后；请求可能已经发出去时（等回应超时、连接中途断开）不换地址重发，免得收到两条，这次 Telegram 算发送失败；Telegram 自己回的错（chat 不存在、bot 被拉黑等 4xx）换地址也一样，原样报出来。
 - **共用实例的 owner 也可以在页面上设置 bot**：页头菜单「通知设置」里的「实例的 Telegram bot」，粘贴 token 后先用 `getMe` 校验，通过才写进 `notify.json`（只改 `telegram` 段，其他字段原样保留），之后只显示 `@bot 用户名`，不再显示 token；「移除」删掉整个 `telegram` 段。单用户模式没有登录，也就没有这个页面，bot 和通道都直接写 `notify.json`。
 - `webhook`：字符串，或 `{ "url": ..., "format": "json" }`。默认 `text` 把摘要当正文 POST，带 `Title: hebi8` 头，ntfy 直接能用；`json` 发 `{ title, text, events }`。
 - `link`：可选，有的话每条后面带图表页链接。
@@ -220,7 +220,7 @@ npm run notify:test
 - **webhook**：填地址和格式（text / json）保存，同样替代 `notify.json` 里的 `webhook`。
 - **推送**：勾上「在此设备上接收推送」，这台手机或浏览器就会收到系统通知，点开是对应的图表；每台设备各开一次，下面列着开过的设备，可以移除。只能在 HTTPS 地址上开（局域网、Tailscale 的 http 不行）；iPhone / iPad 要先在 Safari 里「分享 → 添加到主屏幕」，从主屏幕打开再开（iOS 16.4 及以上）。
 - 「发测试消息」往自己的每个通道发一条，「解除绑定」「删除」去掉页面上设置的通道。
-- 绑定时 hebi8 用 `getUpdates` 读 bot 收到的消息（只在有待绑定的码时，只往外连）。所以这个 bot 要给 hebi8 专用：同一个 token 被别的程序 `getUpdates` 时两边会抢消息。
+- 绑定时 hebi8 用 `getUpdates` 读 bot 收到的消息（只在有待绑定的码时，只往外连）；`api` 有几个地址时每个都读，因为 bot 同时用着云端和自建服务时 Telegram 不保证消息到哪一边。所以这个 bot 要给 hebi8 专用：同一个 token 被别的程序 `getUpdates` 时两边会抢消息。
 
 ## 公式
 
