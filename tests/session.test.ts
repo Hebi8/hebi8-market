@@ -43,8 +43,8 @@ describe("the countdown to the bar's close", () => {
     expect(iso(barCloseAt("M", now, crypto))).toBe("2026-11-01T00:00");
     expect(iso(barCloseAt("Q", now, crypto))).toBe("2027-01-01T00:00");
     // three calendar days from Monday 1970-01-05: this one runs from Monday 10-05 to Wednesday 10-07
-    expect(iso(barCloseAt("3D", now, crypto))).toBe("2026-10-08T00:00");
-    expect(iso(barCloseAt("3D", utc("2026-10-08T00:00:01"), { ...crypto, quotedAt: utc("2026-10-08T00:00:00") }))).toBe("2026-10-11T00:00");
+    expect(iso(barCloseAt("3D", now, crypto, true))).toBe("2026-10-08T00:00");
+    expect(iso(barCloseAt("3D", utc("2026-10-08T00:00:01"), { ...crypto, quotedAt: utc("2026-10-08T00:00:00") }, true))).toBe("2026-10-11T00:00");
     // TradingView's 24x7 symbols report an ordinary open session
     expect(iso(barCloseAt("D", now, { ...plain("24x7", "Etc/UTC"), session: "open", quotedAt: now }))).toBe("2026-10-08T00:00");
   });
@@ -186,9 +186,14 @@ describe("the countdown to the bar's close", () => {
     // Monday 2026-11-23: the week ends on the half day after Thanksgiving
     const monday = open(NASDAQ, "2026-11-23T15:00:00");
     expect(iso(barCloseAt("W", utc("2026-11-23T15:01:00"), monday))).toBe("2026-11-27T18:00");
-    // ES on the Friday after Thanksgiving: its session from Wednesday evening is Thursday's bar, so
-    // the 3D bar of Tuesday to Thursday closes with it at 12:15 in Chicago, not with Tuesday's
-    expect(iso(barCloseAt("3D", utc("2026-11-27T16:01:00"), open(ES, "2026-11-27T16:00:00")))).toBe("2026-11-27T18:15");
+    // ES around Thanksgiving: Friday's sessions from Wednesday evening are Thursday's bar, so the 3D
+    // bar of Tuesday to Thursday closes with them at 12:15 in Chicago, whenever it is asked
+    for (const at of ["2026-11-24T16:00:00", "2026-11-25T16:00:00", "2026-11-27T16:00:00"]) {
+      expect(iso(barCloseAt("3D", utc(at) + 60_000, open(ES, at)))).toBe("2026-11-27T18:15");
+    }
+    // a market that trades Sunday to Thursday counts calendar days: Thursday to Saturday ends on Thursday
+    const tase = { ...plain("0959-1725:12345", "Asia/Jerusalem"), session: "open" as const, quotedAt: utc("2026-10-08T10:00:00") };
+    expect(iso(barCloseAt("3D", utc("2026-10-08T10:01:00"), tase, true))).toBe("2026-10-08T14:25");
     // the 3D bar of Tuesday to Thursday ends on Wednesday: Thanksgiving is a holiday
     expect(iso(barCloseAt("3D", utc("2026-11-24T15:01:00"), open(NASDAQ, "2026-11-24T15:00:00")))).toBe("2026-11-25T21:00");
     // Monday 2026-03-30: Good Friday is a holiday, so the week ends on Thursday April 2 (summer time: 20:00 UTC)

@@ -1013,7 +1013,7 @@ export function KChart({
     chart.setFormatter({
       formatExtendText: () => {
         const now = Date.now();
-        const close = barCloseAt(tfRef.current, now, clockRef.current);
+        const close = barCloseAt(tfRef.current, now, clockRef.current, weekendsRef.current);
         return close === null ? "" : fmtCountdown(close - now);
       },
     });
