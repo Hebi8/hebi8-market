@@ -41,7 +41,7 @@ src/
 │   ├── mcp/route.ts          MCP 入口（Streamable HTTP，带个人令牌）
 │   ├── tv-actions.ts         Server Actions：TradingView 导入（tv-import.ts / tv-drawings.ts / tv-layout.ts 在 lib）
 │   └── api/
-│       ├── bars/             日/周/月/季 K 线 + 对齐好的引用标的
+│       ├── bars/             日/3日/周/月/季 K 线 + 对齐好的引用标的
 │       ├── search/           外部搜索（Yahoo / TradingView / Binance），本地匹配在浏览器里
 │       ├── help/             帮助与登录抽屉的数据：登录状态、反馈设置（只读本地）
 │       ├── notify/           当前登录者的通知通道：摘要、Telegram 绑定、webhook、推送订阅、测试消息
@@ -64,7 +64,7 @@ src/
     ├── search-external.ts    外部搜索的联网部分，/api/search 和 MCP 共用
     ├── db.ts store.ts        SQLite 缓存（symbols、bars、stats、alert_state）
     ├── sync.ts scheduler.ts  同步、同步后算 stats 和通知、每日定时
-    ├── series.ts synth.ts    周/月/季线合成、对齐、合成标的
+    ├── series.ts synth.ts    3日/周/月/季线合成、对齐、合成标的
     ├── stats.ts conditions.ts 总览统计与公式警报的求值
     ├── alerts.ts notify.ts   通知：规则判定与状态（按 vault）、每个人的通道、Telegram / webhook / 推送投递
     ├── push.ts push-client.ts 网页推送：VAPID 密钥、发往推送服务；浏览器端的订阅和不能开的原因
