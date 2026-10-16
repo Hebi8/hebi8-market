@@ -70,20 +70,25 @@ bump() {
 
 # <ref> <version> <commit before the bump>: deploy.sh (the one in this checkout, so the version being shipped
 # brings its own). The version commit is undone only when deploy.sh says the live instance runs what it ran
-# before (status 1); when it cannot tell (3) the commit stays, since the live instance may run it.
+# before (status 1); when it cannot tell (3, or anything else before master moved) the commit stays, since the
+# live instance may run it.
 deploy() {
   STEP=deploy
   local rc=0
   "$LIB_DIR/deploy.sh" "$1" || rc=$?
   if ((rc == 0)); then return; fi
+  if ((rc == 3)); then unknown_outcome "$1" "$2"; fi
   if git merge-base --is-ancestor HEAD master; then
     fail "deploy.sh failed after master moved to v$2 (the push to origin?), so the live instance runs it and the version commit stays; in $HOME_REPO run git push origin master, then finish with: scripts/$SCRIPT publish $2"
   fi
-  if ((rc != 1)); then
-    fail "the deploy's outcome on the live machine is unknown (deploy.sh status $rc), so the version commit stays and nothing was tagged or pushed. Once the live machine answers, from this checkout run scripts/deploy.sh $1 (it finishes a deploy that went through or does it again), then: scripts/$SCRIPT publish $2"
-  fi
+  if ((rc != 1)); then unknown_outcome "$1" "$2"; fi
   git reset -q --hard "$3"
   fail "deploy failed and deploy.sh put the live instance back; the version commit is undone, nothing was tagged or pushed"
+}
+
+# <ref> <version>: deploy.sh could not tell whether the live instance runs it
+unknown_outcome() {
+  fail "the deploy's outcome on the live machine is unknown, so the version commit stays and nothing was tagged or pushed. Once the live machine answers, from this checkout run scripts/deploy.sh $1 (it finishes a deploy that went through or does it again), then: scripts/$SCRIPT publish $2"
 }
 
 stopped() {
