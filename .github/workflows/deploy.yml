@@ -9,7 +9,7 @@
 #     on the deployment); development also DEPLOY_COMMAND (run there with the commit appended)
 #   secret DEPLOY_SSH_KEY (production: the key whose authorized_keys line is scripts/deploy-gate.sh; development:
 #     optional, not needed for Tailscale SSH)
-# Shared (repository or Environment):
+# Either (better per Environment: only its branch's jobs see them; repository-wide works too):
 #   secrets TS_OAUTH_CLIENT_ID, TS_OAUTH_SECRET and variable TS_TAGS (default tag:ci): join the tailnet first;
 #     without them the hosts must be reachable directly
 #   variable TRIAGE_APP_CLIENT_ID and secret TRIAGE_APP_PRIVATE_KEY: issue comments as that GitHub App; without
