@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import Link from "next/link";
 import { AgentTokens } from "@/components/AgentTokens";
 import { ConfigErrorView } from "@/components/ConfigErrorView";
 import { TvExport, TvDrawingsImport, TvListImport } from "@/components/TvImport";
-import { publicUrl } from "@/lib/app-info";
+import { APP_INFO, publicUrl } from "@/lib/app-info";
 import { requestOrigin } from "@/lib/github";
 import { listTokens } from "@/lib/secrets";
 import { listSymbols } from "@/lib/store";
@@ -75,6 +76,13 @@ export default async function SettingsPage() {
         </div>
         <TvDrawingsImport groups={config.groups.map((g) => g.name)} canWrite={viewer.canWrite} />
       </section>
+
+      <p className="text-[11px] text-muted">
+        hebi8/market v{APP_INFO.version} ·{" "}
+        <Link href="/changelog" className="hover:text-fg">
+          更新记录
+        </Link>
+      </p>
     </main>
   );
 }

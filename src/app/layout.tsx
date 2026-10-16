@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import Link from "next/link";
+import { ChangelogLink } from "@/components/ChangelogLink";
 import { ErrorCapture } from "@/components/ErrorCapture";
 import { ServiceWorker } from "@/components/ServiceWorker";
 import { SiteFooter } from "@/components/SiteFooter";
@@ -74,6 +75,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
               <Link href="/settings" className="hover:text-fg">
                 设置
               </Link>
+              <ChangelogLink />
               {viewer?.shared && (
                 <Account user={viewer.login ? { login: viewer.login, avatarUrl: viewer.avatarUrl ?? "" } : null} enabled={Boolean(githubClientId())} owner={viewer.isOwner} />
               )}

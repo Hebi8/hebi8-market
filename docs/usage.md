@@ -297,6 +297,8 @@ KLineChart 内置的 MA、EMA、BOLL、VOL、MACD、RSI、KDJ、SAR、OBV 等指
 
 issue 的标签由仓库里的工作流加，见 [maintainers.md](maintainers.md#反馈-issue-的标签)。
 
+页头的「更新」打开更新记录，列着每个版本带来了什么；有新的功能版本时它右上角亮一个小点，打开看过就消失（只为功能版本亮，修复不亮；记在浏览器里）。设置页底部写着当前版本。
+
 ## 分享卡片
 
 链接贴到 X、Telegram 等处会展开成卡片：图表页是名称、最新收盘、近半年日线走势和 hebi8/market 标识，其他页面是站点卡片。卡片只读根 vault 和公共的 K 线缓存（抓取的一方没有登录），不会带出任何人的画线、笔记和自选。设置、复盘、使用情况页面标了 noindex，`robots.txt` 只挡接口，`sitemap.xml` 列出首页和根 vault 自选里的图表页。

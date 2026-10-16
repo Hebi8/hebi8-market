@@ -1096,6 +1096,12 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 - **`robots.txt`**：只禁止 `/api/` 和 `/mcp`，指向 `sitemap.xml`。设置、复盘、使用情况不在 Disallow 里：它们靠页面上的 noindex 不被收录，而爬虫只有能抓取才读得到 noindex（被 Disallow 的地址反而可能只以链接的形式进索引）。首页有 canonical 指向公开地址的根路径。**`sitemap.xml`**：首页 + 根 vault 自选里每个标的的图表页（`lastModified` 是同步时间）。两个都 `force-dynamic`，地址和自选在请求时读。
 - 这些元数据文件（图标、manifest、分享卡片、robots、sitemap）和 `sw.js` 不计入流量（proxy 的 matcher 排除，`pwa-icon/*.png` 和 `sw.js` 靠扩展名，§1.7）。
 
+
+### 5.10 更新记录 `/changelog`
+
+- 版本号只有 `package.json` 一处（`next.config.ts` 把它内联成 `APP_INFO.version`）。`/changelog`（RSC，`force-dynamic`）读运行目录里的 `CHANGELOG.md`，去掉它自己的 `# ` 标题，用 `marked` 渲染进 `.md` 样式，页头写当前版本。写法和发版流程见 [maintainers.md](maintainers.md#分支与发版)。
+- 页头「设置」后面是「更新」（`ChangelogLink`）。浏览器在 localStorage 的 `hebi8m:changelog-seen` 记着看过的版本：没有记录（第一次来）时直接记成当前版本，不亮；打开 `/changelog` 记成当前版本；当前版本的 major.minor 比记录的新时，「更新」右上角亮一个 6px 的强调色圆点（TradingView 菜单里「新功能」那样），patch 版本（热补丁）不亮。不写服务器、不进 vault。
+- 设置页底部写「hebi8/market v版本 · 更新记录」；MCP 的 `serverInfo.version` 和 `/usage` 也是这个版本号。
 ---
 
 ## 6. 接口
