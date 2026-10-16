@@ -32,7 +32,7 @@ import { barCloseAt, fmtCountdown, type SessionClock } from "@/lib/session";
 import type { Timeframe } from "@/lib/symbols";
 import type { CompareEntry, OverlaySpec } from "@/lib/vault";
 import { ChartLegend, createLegendStore, type ChartLegendProps } from "./ChartLegend";
-import { indicatorLines } from "./indicator-style";
+import { indicatorLines, styleRows } from "./indicator-style";
 import { IconAlarm } from "./chart-icons";
 import { registerDrawingTemplates, setOverlayChart, setOverlayTheme, snapToBar, textOf, textSizeOf } from "./chart-overlays";
 import { LOG_AXIS } from "./log-axis";
@@ -366,16 +366,10 @@ function restyleLines(chart: Chart, id: string | null, own: LineOverride[] | und
   if (lines) chart.overrideIndicator({ name: ind.name, paneId: ind.paneId, styles: { lines } });
 }
 
-/** An indicator's lines as the 样式 page lists them: the title each has in the legend and its default look. */
-function defaultLines(chart: Chart, name: string, titles?: string[]): IndicatorLine[] | null {
-  const defaults = chart.getStyles().indicator.lines;
-  const ind = chart.getIndicators({ name }).find((i) => !isCompare(i.name));
-  const names = titles ?? ind?.figures.filter((f) => f.type === "line").map((f) => String(f.title ?? f.key).replace(/:\s*$/, ""));
-  if (!names) return null;
-  return names.map((title, i) => {
-    const base = defaults[i % defaults.length];
-    return { title, color: base.color, size: base.size, dash: dashOf(base) };
-  });
+/** The 样式 page's rows of an indicator on the chart (with `params`: the lines those would draw), or of one drawing `titles`. */
+function defaultLines(chart: Chart, name: string, from: { params?: number[]; titles?: string[] }): IndicatorLine[] | null {
+  const ind = from.titles ? { figures: from.titles.map((title) => ({ key: title, title, type: "line" })) } : chart.getIndicators({ name }).find((i) => !isCompare(i.name));
+  return ind ? styleRows(chart.getStyles().indicator.lines, ind as Parameters<typeof styleRows>[1], from.params) : null;
 }
 
 /** Values at `idx` as KLineChart's own tooltip would show them: one per titled figure, in the figure's color. */
@@ -1202,7 +1196,7 @@ export function KChart({
         chart.scrollToRealTime();
         return space >= MIN_BAR_SPACE;
       },
-      indicatorLines: (name, titles) => (chartRef.current ? defaultLines(chartRef.current, name, titles) : null),
+      indicatorLines: (name, from = {}) => (chartRef.current ? defaultLines(chartRef.current, name, from) : null),
       undo: () => applyHistory(undo(historyRef.current)),
       redo: () => applyHistory(redo(historyRef.current)),
       dialogOpen: () => settingsOpenRef.current,

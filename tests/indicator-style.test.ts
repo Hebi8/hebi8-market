@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { indicatorLines } from "@/components/indicator-style";
+import { indicatorLines, styleRows } from "@/components/indicator-style";
 
 const DEFAULTS = ["#FF9600", "#935EBD", "#1677FF"].map((color) => ({ style: "solid" as const, smooth: false, size: 1, dashedValue: [2, 2], color }));
 
@@ -21,5 +21,28 @@ describe("indicatorLines", () => {
     const lines = indicatorLines(DEFAULTS, [{ color: "#000000" }], 4)!;
     expect(lines).toHaveLength(4);
     expect(lines[3].color).toBe("#FF9600");
+  });
+});
+
+describe("styleRows", () => {
+  const ma = {
+    figures: [1, 2, 3].map((i) => ({ key: `ma${i}`, title: `MA${[10, 40, 200][i - 1]}: `, type: "line" })),
+    regenerateFigures: (params: number[]) => [...params.map((p, i) => ({ key: `ma${i + 1}`, title: `MA${p}: `, type: "line" })), { key: "volume", title: "VOLUME: ", type: "bar" }],
+  };
+
+  it("lists the lines an indicator draws now, by their legend titles, in their default look", () => {
+    const rows = styleRows(DEFAULTS, ma);
+    expect(rows.map((r) => r.title)).toEqual(["MA10", "MA40", "MA200"]);
+    expect(rows[1]).toEqual({ title: "MA40", color: "#935EBD", size: 1, dash: "solid" });
+  });
+
+  it("follows periods typed but not saved yet, bars left out", () => {
+    expect(styleRows(DEFAULTS, ma, [5, 10, 20, 40, 200]).map((r) => r.title)).toEqual(["MA5", "MA10", "MA20", "MA40", "MA200"]);
+    expect(styleRows(DEFAULTS, ma, [])).toEqual([]);
+  });
+
+  it("keeps fixed lines when the indicator does not regenerate them", () => {
+    const macd = { figures: [{ key: "dif", title: "DIF: ", type: "line" }, { key: "dea", title: "DEA: ", type: "line" }, { key: "macd", title: "MACD: ", type: "bar" }], regenerateFigures: null };
+    expect(styleRows(DEFAULTS, macd, [12, 26, 9]).map((r) => r.title)).toEqual(["DIF", "DEA"]);
   });
 });

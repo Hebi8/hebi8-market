@@ -31,8 +31,8 @@ interface IndicatorDialogProps {
   /** A saved formula's lines for its 样式 tab; null while it does not compile */
   linesOf: (def: FormulaDef) => IndicatorLine[] | null;
   styles: Record<string, LineOverride[]>;
-  /** Shown on the chart while the 样式 tab is open, saved only by 确定 */
-  onPreviewStyles: (id: string, lines: LineOverride[]) => void;
+  /** Shown on the chart while the formula is being edited, saved only by 确定; null drops it */
+  onPreviewStyles: (id: string, lines: LineOverride[] | null) => void;
   onSaveStyles: (id: string, lines: LineOverride[] | null) => void;
   onClose: () => void;
 }
@@ -70,27 +70,31 @@ export function IndicatorDialog({
   if (editing) {
     // a formula's inputs are its source; its lines have a 样式 tab once it is saved and compiles
     const lines = editing === "new" ? null : linesOf(editing);
+    // however the editor is left, a style not confirmed leaves the chart
     const leave = () => {
+      if (editing !== "new") onPreviewStyles(editing.id, null);
       setEditing(null);
       setTab("inputs");
     };
     return (
       <Dialog title={editing === "new" ? "新建公式" : `编辑公式 · ${editing.label}`} onClose={onClose} className="max-w-[760px]">
         {lines && editing !== "new" && <SettingsTabs tab={tab} onTab={setTab} />}
-        {lines && editing !== "new" && tab === "style" && (
-          <StyleForm
-            key={editing.id}
-            lines={lines}
-            value={styles[editing.id] ?? []}
-            onPreview={(next) => onPreviewStyles(editing.id, next)}
-            onSave={(next) => {
-              onSaveStyles(editing.id, next);
-              leave();
-            }}
-            onClose={leave}
-          />
+        {/* both tabs stay mounted, only hidden: an edit not saved yet is still there on the way back */}
+        {lines && editing !== "new" && (
+          <div className={tab === "style" ? "" : "hidden"}>
+            <StyleForm
+              key={editing.id}
+              lines={lines}
+              value={styles[editing.id] ?? []}
+              onPreview={(next) => onPreviewStyles(editing.id, next)}
+              onSave={(next) => {
+                onSaveStyles(editing.id, next);
+                leave();
+              }}
+              onClose={leave}
+            />
+          </div>
         )}
-        {/* hidden, not unmounted, on the 样式 tab: an edit not saved yet is still there on the way back */}
         <div className={`overflow-y-auto p-3 ${tab === "style" && lines ? "hidden" : ""}`}>
           <FormulaEditor
             key={editing === "new" ? "new" : editing.id}
@@ -98,7 +102,7 @@ export function IndicatorDialog({
             scope={scope}
             onSave={async (def) => {
               const error = await onSaveFormula(def);
-              if (!error) setEditing(null);
+              if (!error) leave();
               return error;
             }}
             onDelete={
@@ -106,11 +110,11 @@ export function IndicatorDialog({
                 ? undefined
                 : async () => {
                     const error = await onDeleteFormula(editing.id);
-                    if (!error) setEditing(null);
+                    if (!error) leave();
                     return error;
                   }
             }
-            onClose={() => setEditing(null)}
+            onClose={leave}
           />
         </div>
       </Dialog>
@@ -371,7 +375,7 @@ export function ParamDialog({
   tf,
   value,
   overridden,
-  lines,
+  linesFor,
   styles,
   onSave,
   onPreviewStyles,
@@ -382,8 +386,8 @@ export function ParamDialog({
   tf: Timeframe;
   value: number[];
   overridden: boolean;
-  /** The lines it draws now */
-  lines: IndicatorLine[];
+  /** The lines it draws with these params */
+  linesFor: (params: number[]) => IndicatorLine[];
   styles: LineOverride[];
   onSave: (params: number[] | null) => void;
   /** Shown on the chart while the dialog is open, saved only by 确定 */
@@ -416,7 +420,8 @@ export function ParamDialog({
       >
         {tab === "style" ? (
           <StylePage
-            lines={lines}
+            // the periods typed on 输入, saved or not: five MAs have five rows
+            lines={linesFor(cleared ? [] : (parsed ?? value))}
             value={draft}
             onChange={(next) => {
               setDraft(next);

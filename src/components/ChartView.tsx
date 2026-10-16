@@ -48,7 +48,7 @@ import {
   IconWatchlist,
 } from "./chart-icons";
 import { renderSnapshot, snapshotFileName } from "./chart-snapshot";
-import { COMPARE_COLORS, DRAW_GROUPS, DRAW_TOOLS, MEASURE_TOOL, OPEN_DRAWINGS, RANGES, type ChartControl, type IndicatorLine, type IndicatorSpec } from "./chart-types";
+import { COMPARE_COLORS, DRAW_GROUPS, DRAW_TOOLS, MEASURE_TOOL, OPEN_DRAWINGS, RANGES, type ChartControl, type IndicatorSpec } from "./chart-types";
 import { DrawToolGroups, GroupMenuItems } from "./DrawToolGroups";
 import { AlertDialog, AlertLoginDialog } from "./AlertDialog";
 import { AlertsPanel } from "./AlertsPanel";
@@ -74,8 +74,7 @@ type Panel = "watchlist" | "details" | "notes" | "alerts";
 type DialogState =
   | { kind: "indicators"; formula?: FormulaDef | "new" }
   | { kind: "compare" }
-  /** `lines`: what the indicator draws now, for its 样式 tab */
-  | { kind: "params"; name: string; lines: IndicatorLine[] }
+  | { kind: "params"; name: string }
   | { kind: "clear" }
   /** 新建警报 at a price, or 编辑警报 */
   | { kind: "alert"; alert: AlertView | null; price: number | null }
@@ -464,7 +463,7 @@ export function ChartView({
       if (def) openIndicators(def);
     } else {
       setStylePreview(null);
-      setDialog({ kind: "params", name, lines: control.current?.indicatorLines(name) ?? [] });
+      setDialog({ kind: "params", name });
     }
   };
   const onCompare = (key: string, action: "toggle" | "remove") => {
@@ -1173,10 +1172,10 @@ export function ChartView({
           onDeleteFormula={deleteFormula}
           linesOf={(def) => {
             const outputs = compiled.find((f) => f.def.id === def.id)?.program?.outputs;
-            return outputs ? (control.current?.indicatorLines(formulaIndicatorName(def.id), outputs) ?? null) : null;
+            return outputs ? (control.current?.indicatorLines(formulaIndicatorName(def.id), { titles: outputs }) ?? null) : null;
           }}
           styles={styles}
-          onPreviewStyles={(id, lines) => setStylePreview({ id, lines })}
+          onPreviewStyles={(id, lines) => setStylePreview(lines ? { id, lines } : null)}
           onSaveStyles={saveStyles}
           onClose={() => setDialog(null)}
         />
@@ -1203,7 +1202,7 @@ export function ChartView({
           tf={dataTf}
           value={params[paramDef.name] ?? []}
           overridden={paramDef.name in tfOverrides}
-          lines={dialog?.kind === "params" ? dialog.lines : []}
+          linesFor={(p) => control.current?.indicatorLines(paramDef.name, { params: p }) ?? []}
           styles={styles[paramDef.name] ?? []}
           onSave={(p) => setParams(paramDef.name, p)}
           onPreviewStyles={(lines) => setStylePreview({ id: paramDef.name, lines })}
