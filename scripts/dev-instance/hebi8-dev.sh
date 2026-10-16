@@ -22,8 +22,9 @@ PORT=8809
 UPDATE_EVERY=600               # seconds between fetches
 SYNC_AT=04:30                  # daily copy from the live instance, SYNC_TZ clock; off the live 07:30 / 17:30 syncs
 SYNC_TZ=Asia/Tokyo
-LIVE_MACHINE=devNuc            # reached with `lody-lan lan shell`
+LIVE_MACHINE=homeN100          # reached with `lody-lan lan shell`
 LIVE_DIR='~/dev/hebi8-market'
+LIVE_NODE='~/.local/share/hebi8/node/bin/node' # the live service's node: its better-sqlite3 is built for it
 KEEP=3                         # releases kept on disk, the running one included
 # shellcheck source=/dev/null
 [[ -f $ROOT/config.env ]] && source "$ROOT/config.env"
@@ -199,7 +200,7 @@ do_sync() {
   tmp=$(mktemp -d "$ROOT/tmp/sync.XXXXXX")
   script=$(base64 -w0 "$ROOT/bin/export.mjs")
   # the script travels in the command line: stdin of `lan shell` is not a clean channel
-  cmd="f=\$(mktemp /tmp/hebi8-dev-export.XXXXXX.mjs) && echo $script | base64 -d > \$f && cd $LIVE_DIR && node \$f; s=\$?; rm -f \$f; exit \$s"
+  cmd="f=\$(mktemp /tmp/hebi8-dev-export.XXXXXX.mjs) && echo $script | base64 -d > \$f && cd $LIVE_DIR && $LIVE_NODE \$f; s=\$?; rm -f \$f; exit \$s"
   log "sync: exporting from $LIVE_MACHINE"
   if ! lody-lan lan shell "$LIVE_MACHINE" -- "$cmd" < /dev/null > "$tmp/raw" 2> "$tmp/err"; then
     log "sync: export failed: $(tail -c 300 "$tmp/err" "$tmp/raw" | tr '\n' ' ')"
