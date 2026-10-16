@@ -26,8 +26,9 @@ clean() {
   [[ -z $(git status --porcelain) ]] || fail "the checkout has local changes"
 }
 
-pkg_version() {
-  node -p 'require("./package.json").version'
+# <ref>: the version in its package.json
+version_at() {
+  git show "$1:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version'
 }
 
 # <a> <b>: a is a later version than b
@@ -89,21 +90,23 @@ gh_bot() {
 }
 
 # <branch> <base> <version> <release|hotfix> <command...>: the command in a temporary worktree of <branch>, cut
-# from <base> with the version commit on top. A rerun (the push or the pull request did not go through) finds the
-# branch with its version commit and goes on from there.
+# from <base> with the version commit on top. A rerun (the push, the pull request or the deploy did not go through)
+# finds the branch with its version commit and goes on from there.
 in_worktree() {
   local branch=$1 base=$2 version=$3 kind=$4 dir
   shift 4
   dir=$(mktemp -d)
   # shellcheck disable=SC2064 # the directory now: a stop anywhere below leaves no worktree holding the branch
   trap "git worktree remove --force '$dir'" EXIT
-  if git rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
+  if git rev-parse -q --verify "refs/heads/$branch" >/dev/null &&
+    [[ $(git log -1 --format=%s "$branch") == "chore($kind): v$version" ]]; then
     git worktree add -q "$dir" "$branch"
-    [[ $(git -C "$dir" log -1 --format=%s) == "chore($kind): v$version" ]] ||
-      fail "the branch $branch exists and does not end with the version commit; delete it or look at it"
-  else
-    git worktree add -q -b "$branch" "$dir" "$base"
+  elif ! git rev-parse -q --verify "refs/heads/$branch" >/dev/null || git merge-base --is-ancestor "$branch" "$base"; then
+    # new, or left with nothing of its own (a failed deploy undid the version commit)
+    git worktree add -q -B "$branch" "$dir" "$base"
     (cd "$dir" && bump "$version" "$kind")
+  else
+    fail "the branch $branch exists and does not end with the version commit; delete it or look at it"
   fi
   (cd "$dir" && "$@")
   trap - EXIT
@@ -126,17 +129,17 @@ open_pr() {
     } | gh_own pr create -R "$REPO" --base master --head "$branch" --title "$title" --body-file -)
   fi
   echo "pull request: $url"
-  echo "next: the two reviews, then merge it with 'Create a merge commit' (not squash or rebase)"
+  echo "next: you merge it on GitHub, with 'Create a merge commit' (not squash or rebase); that deploys it"
 }
 
-# <ref> <version> <commit before the bump>: deploy.sh (the one in this checkout, so the version being shipped
+# <ref> <version> <commit before the bump>: deploy.sh (the one in this checkout, the version being shipped, so it
 # brings its own). The version commit is undone only when deploy.sh says the live instance runs what it ran
 # before (status 1); when it cannot tell (3, or anything else before master moved) the commit stays, since the
 # live instance may run it.
 deploy() {
   STEP=deploy
   local rc=0
-  "$LIB_DIR/deploy.sh" "$1" || rc=$?
+  "$(git rev-parse --show-toplevel)/scripts/deploy.sh" "$1" || rc=$?
   if ((rc == 0)); then return; fi
   if ((rc == 3)); then unknown_outcome "$1" "$2"; fi
   if git merge-base --is-ancestor HEAD master; then
@@ -144,12 +147,12 @@ deploy() {
   fi
   if ((rc != 1)); then unknown_outcome "$1" "$2"; fi
   git reset -q --hard "$3"
-  fail "deploy failed and deploy.sh put the live instance back; the version commit is undone, nothing was tagged or pushed"
+  fail "deploy failed and deploy.sh put the live instance back; the version commit is undone, nothing was tagged or pushed. Fix it, then run the same command again"
 }
 
 # <ref> <version>: deploy.sh could not tell whether the live instance runs it
 unknown_outcome() {
-  fail "the deploy's outcome on the live machine is unknown, so the version commit stays and nothing was tagged or pushed. Once the live machine answers, from this checkout run scripts/deploy.sh $1 (it finishes a deploy that went through or does it again), then: scripts/$SCRIPT publish $2"
+  fail "the deploy's outcome on the live machine is unknown, so the version commit stays on $1 and nothing was tagged or pushed. Once the live machine answers, run scripts/$SCRIPT --deploy $2 again: it takes the same version commit, and deploy.sh finishes a deploy that went through or does it again"
 }
 
 stopped() {
@@ -175,7 +178,7 @@ release_commit() {
     c=$(git log master -n1 --format=%H -E --grep="^chore\((release|hotfix)\): v${version//./\\.}$")
     [[ -n $c ]] || fail "master has no version commit for v$version; was it deployed?"
   fi
-  [[ $(git show "$c:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version') == "$version" ]] ||
+  [[ $(version_at "$c") == "$version" ]] ||
     fail "package.json at ${c:0:7} is not $version"
   changelog=$(git show "$c:CHANGELOG.md") || fail "could not read CHANGELOG.md at ${c:0:7}"
   has_section "$version" <<<"$changelog" || fail "CHANGELOG.md at ${c:0:7} has no '## $tag' section"
@@ -185,10 +188,9 @@ release_commit() {
   RELEASE_CHANGELOG=$changelog
 }
 
-# <version> <release|hotfix> [<commit>]: after a successful deploy, tag what was deployed, push the tag, publish
-# the GitHub Release from its CHANGELOG section and tell the issues it fixed. Every step can run again. Without
-# a commit (a deploy from here, release.sh / hotfix.sh --deploy) a release also brings origin/dev up to the
-# version commit; with one (the deploy workflow) merging master back into dev is merge_back_ci's.
+# <version> <release|hotfix> [<commit>]: after a successful deploy, tag what was deployed (the commit given, else
+# the version's commit on master), push the tag, publish the GitHub Release from its CHANGELOG section and tell
+# the issues it fixed. Every step can run again. merge_back comes after it.
 publish() {
   local version=$1 mode=$2 tag=v$1 c
   check_version "$version"
@@ -202,10 +204,6 @@ publish() {
 
   STEP=push
   git push -q origin "refs/tags/$tag"
-  # a release also brings origin/dev up to the version commit, unless dev there has already gone past it
-  if [[ -z ${3:-} && $mode == release ]] && ! git merge-base --is-ancestor "$c" origin/dev 2>/dev/null; then
-    git push -q origin "$c:refs/heads/dev"
-  fi
 
   STEP=release
   if ! gh_own release view "$tag" -R "$REPO" >/dev/null 2>&1; then
@@ -268,27 +266,6 @@ announce() {
   rm -f "$err"
 }
 
-# Merge master into dev and push dev, so master stays an ancestor of dev and the next release fast-forwards.
-# Done in the checkout that has dev, or in a temporary worktree when none has it.
-merge_back() {
-  STEP=merge-back
-  local dir tmp=""
-  dir=$(git worktree list --porcelain | awk '/^worktree /{ w = substr($0, 10) } $0 == "branch refs/heads/dev" { print w }')
-  if [[ -z $dir ]]; then
-    tmp=$(mktemp -d)
-    git worktree add -q "$tmp" dev
-    dir=$tmp
-  fi
-  [[ -z $(git -C "$dir" status --porcelain) ]] || fail "the dev checkout $dir has local changes; commit them, then run: scripts/$SCRIPT merge-back"
-  if ! git -C "$dir" merge -q --no-ff --no-edit -m "Merge master ($(last_tag master)) into dev" master; then
-    git -C "$dir" merge --abort
-    fail "master does not merge cleanly into dev; in $dir run git merge master, resolve, commit and git push origin dev"
-  fi
-  git -C "$dir" push origin dev
-  if [[ -n $tmp ]]; then git worktree remove "$tmp"; fi
-  echo "dev: $(git log --oneline -1 dev)"
-}
-
 # <commit>: the deploy workflow, after <commit> (a push to master) went live. A version whose tag is not out yet
 # (or is on this very commit: a rerun) is published, as a hotfix when its version commit says chore(hotfix),
 # else as a release; a version already out elsewhere was only deployed. Then master goes back into dev.
@@ -296,26 +273,28 @@ deployed() {
   local c version t mode=release
   c=$(git rev-parse --verify "$1^{commit}")
   git fetch -q --tags origin
-  version=$(git show "$c:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+  version=$(version_at "$c")
   if t=$(git rev-parse -q --verify "refs/tags/v$version^{commit}") && [[ $t != "$c" ]]; then
     echo "v$version is out already (${t:0:7}); ${c:0:7} was only deployed"
   else
     if [[ -n $(git log -n1 --format=%H -E --grep="^chore\(hotfix\): v${version//./\\.}$" "$c") ]]; then mode=hotfix; fi
     publish "$version" "$mode" "$c"
   fi
-  merge_back_ci "$c"
+  merge_back "$c"
 }
 
-# <commit>: merge it into origin's dev and push dev, so master stays an ancestor of dev. When dev takes changes
-# only through pull requests the push is refused: then a pull request from master into dev, merged as soon as
-# GitHub lets it (auto-merge, else at once; when neither is allowed it waits for you). A push with the workflow's
-# token starts no workflow, so dev's deploy does not run for it; the dev instance's own fetch picks it up.
-merge_back_ci() {
+# [<commit>]: merge it (origin's master by default) into origin's dev and push dev, so master stays an ancestor of
+# dev. When dev takes changes only through pull requests the push is refused: then a pull request from master
+# into dev, merged as soon as GitHub lets it (auto-merge, else at once; when neither is allowed it waits for you).
+# A push with the workflow's token starts no workflow, so dev's deploy does not run for it; the dev instance's
+# own fetch picks it up.
+merge_back() {
   STEP=merge-back
-  local c=$1 tmp pr title
-  git fetch -q origin dev
+  local c tmp pr title
+  git fetch -q origin
+  c=$(git rev-parse --verify "${1:-origin/master}^{commit}")
   if git merge-base --is-ancestor "$c" origin/dev; then
-    echo "dev has ${c:0:7} already"
+    echo "dev has master (${c:0:7}) already"
     return
   fi
   title="Merge master ($(last_tag "$c" || git rev-parse --short "$c")) into dev"

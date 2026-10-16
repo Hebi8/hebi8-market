@@ -10,7 +10,8 @@
 #                                              tag, push, Release, issues, master merged back into dev
 #   scripts/hotfix.sh publish <x.y.z>          after such a deploy went through but a later step stopped: the rest
 #                                              again, from any checkout (it works on the version commit)
-#   scripts/hotfix.sh merge-back               only merge master into dev and push dev
+#   scripts/hotfix.sh merge-back               only merge origin/master into origin/dev (a push, or a pull request
+#                                              when dev takes only those)
 # The version is always the next patch of the one on master.
 # Everything runs inside main(), so bash has read the whole file before a checkout can change it.
 set -euo pipefail
@@ -32,10 +33,10 @@ main() {
   esac
 }
 
-# <version>: it is the next patch of <ref>'s package.json
+# <version> <ref>: it is the next patch of <ref>'s package.json
 next_patch() {
   local current
-  current=$(git show "$2:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+  current=$(version_at "$2")
   [[ $1 == "${current%.*}.$((${current##*.} + 1))" ]] || fail "the hotfix after $current is ${current%.*}.$((${current##*.} + 1)), not $1"
 }
 
@@ -51,7 +52,7 @@ start() {
 
 # <version> <pr|deploy>
 hotfix() {
-  local version=$1 how=$2 tag=v$1 branch before
+  local version=$1 how=$2 tag=v$1 branch
   check_version "$version"
   branch=$(git branch --show-current)
   [[ -n $branch && $branch != master && $branch != dev ]] || fail "run it on the hotfix branch, not on ${branch:-a detached HEAD}"
@@ -63,22 +64,20 @@ hotfix() {
   else
     master_current
     git merge-base --is-ancestor master HEAD || fail "$branch is not based on master; rebase it onto master"
-    git rev-parse -q --verify refs/heads/dev >/dev/null || fail "there is no dev branch to merge master back into"
+    git rev-parse -q --verify refs/remotes/origin/dev >/dev/null || fail "origin has no dev branch to merge master back into"
     next_patch "$version" master
   fi
   [[ -z $(git tag -l "$tag") ]] || fail "$tag already exists"
   has_section "$version" <CHANGELOG.md || fail "CHANGELOG.md has no '## $tag' section; add one line for the fix and commit it on $branch"
 
-  before=$(git rev-parse HEAD)
   STEP=bump
+  # a rerun after the push, the pull request or the deploy stopped: the version commit is there already
+  if [[ $(git log -1 --format=%s) != "chore(hotfix): $tag" ]]; then bump "$version" hotfix; fi
   if [[ $how == pr ]]; then
-    # a rerun after the push or the pull request stopped: the version commit is there already
-    if [[ $(git log -1 --format=%s) != "chore(hotfix): $tag" ]]; then bump "$version" hotfix; fi
     open_pr "$branch" "$version" "Hotfix $tag"
     return
   fi
-  bump "$version" hotfix
-  deploy "$branch" "$version" "$before"
+  deploy "$branch" "$version" "$(git rev-parse HEAD^)"
   publish "$version" hotfix
   merge_back
 }
