@@ -88,7 +88,13 @@ function nextUtcBucket(now: number, tf: Timeframe, weekends: boolean): number {
   const d = new Date(now);
   const [y, m, day] = [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()];
   if (tf === "D") return Date.UTC(y, m, day + 1);
-  if (tf === "3D") return (bucketStart(Date.UTC(y, m, day) / 1000, tf, weekends) + 3 * 86400) * 1000;
+  if (tf === "3D") {
+    // the next day that starts another 3D bar, counted the chart's way (weekdays: over the weekend)
+    const start = bucketStart(Date.UTC(y, m, day) / 1000, tf, weekends);
+    let next = Date.UTC(y, m, day + 1) / 1000;
+    while (bucketStart(next, tf, weekends) === start) next += 86400;
+    return next * 1000;
+  }
   if (tf === "W") return Date.UTC(y, m, day + 7 - ((d.getUTCDay() + 6) % 7));
   return tf === "M" ? Date.UTC(y, m + 1, 1) : Date.UTC(y, Math.floor(m / 3) * 3 + 3, 1);
 }

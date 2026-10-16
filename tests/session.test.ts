@@ -45,6 +45,9 @@ describe("the countdown to the bar's close", () => {
     // three calendar days from Monday 1970-01-05: this one runs from Monday 10-05 to Wednesday 10-07
     expect(iso(barCloseAt("3D", now, crypto, true))).toBe("2026-10-08T00:00");
     expect(iso(barCloseAt("3D", utc("2026-10-08T00:00:01"), { ...crypto, quotedAt: utc("2026-10-08T00:00:00") }, true))).toBe("2026-10-11T00:00");
+    // counted in weekdays (a coin whose kind and hours are not synced yet): Thursday, Friday and Monday end on Tuesday
+    const monday = { ...crypto, quotedAt: utc("2026-10-12T12:00:00") };
+    expect(iso(barCloseAt("3D", utc("2026-10-12T12:01:00"), monday, false))).toBe("2026-10-13T00:00");
     // TradingView's 24x7 symbols report an ordinary open session
     expect(iso(barCloseAt("D", now, { ...plain("24x7", "Etc/UTC"), session: "open", quotedAt: now }))).toBe("2026-10-08T00:00");
   });
