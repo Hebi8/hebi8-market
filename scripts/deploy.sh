@@ -13,8 +13,9 @@
 #
 # State in the live checkout's .git: refs/hebi8/live is the commit last confirmed running (healthy after a
 # deploy or a rollback), never HEAD, which moves before the build and the check. hebi8-deploy.pending is
-# written before HEAD moves and removed only once the new commit is recorded, or the old one is back and
-# healthy; while it is there nothing is known. hebi8-deploy.lock: one deploy at a time. Whenever the live side
+# written before HEAD moves (target, the commit it started from, its backup) and removed only once the new
+# commit is recorded, or the old one is back and healthy; while it is there nothing is known, and a rerun
+# resumes from it rather than starting over. hebi8-deploy.lock: one deploy at a time. Whenever the live side
 # does not end with 0, `deploy.sh status` decides, and only a clear "runs what it ran before" is a 1.
 # A new live machine needs a baseline before its first deploy: in the live checkout, while the instance runs
 # healthy, git update-ref refs/hebi8/live <the full commit it runs>.
@@ -113,28 +114,48 @@ live() {
     echo "live: already runs $(git log --oneline -1)"
     return
   fi
-  # what runs: where an unfinished deploy started, else the record; empty when nothing says (no baseline yet)
+  # An unfinished deploy (the marker) started from its `from` and already took its backup: both are reused,
+  # so a resume needs nothing of what it left half-done (an emptied node_modules cannot be loaded for a backup).
+  # Otherwise what runs is the record, empty when nothing says (no baseline yet).
+  local ptarget="" backup="" resuming=""
   base=$rec
-  if [[ -e $pending ]]; then base=$(sed -n 's/^from //p' "$pending"); fi
+  if [[ -e $pending ]]; then
+    resuming=1
+    ptarget=$(field "$pending" target)
+    base=$(field "$pending" from)
+    base=${base:-$rec}
+    backup=$(field "$pending" backup)
+    echo "live: resuming the unfinished deploy to ${ptarget:0:7} from ${base:0:7}"
+  fi
   # what to go back to; without a record that is the checkout as it is
   prev=${base:-$(git rev-parse HEAD)}
   git merge-base --is-ancestor "$prev" "$sha" || fail "${sha:0:7} is not a fast-forward of what runs (${prev:0:7})"
   git merge-base --is-ancestor HEAD "$sha" ||
     fail "the live checkout is at $(git rev-parse --short HEAD), not on the way from ${prev:0:7} to ${sha:0:7}"
 
-  local ts backup
+  local ts
   ts=$(date +%Y%m%d-%H%M%S)
-  backup=$HOME/backups/hebi8/$ts-deploy
-  mkdir -p "$backup"
-  cp -a vault "$backup/vault"
-  cp -a "$secrets" "$backup/secrets"
-  node -e "new (require('better-sqlite3'))('data/hebi8.db', { readonly: true }).backup(process.argv[1])" "$backup/hebi8.db"
-  echo "backup: $(hostname):$backup"
+  if [[ -n $resuming ]]; then
+    echo "backup: ${backup:-none recorded in the marker}, from before the unfinished deploy; not taking another"
+  else
+    backup=$HOME/backups/hebi8/$ts-deploy
+    mkdir -p "$backup"
+    cp -a vault "$backup/vault"
+    cp -a "$secrets" "$backup/secrets"
+    node -e "new (require('better-sqlite3'))('data/hebi8.db', { readonly: true }).backup(process.argv[1])" "$backup/hebi8.db"
+    echo "backup: $(hostname):$backup"
+  fi
 
-  printf 'target %s\nfrom %s\nstarted %s\n' "$sha" "$prev" "$(date -Is)" >"$pending"
+  # the marker for the same target stays as it is; a new one, or a new target, replaces it whole
+  if [[ ! -e $pending || $ptarget != "$sha" ]]; then
+    write_pending "$pending" "$sha" "$prev" "$backup"
+  fi
   git merge --ff-only "$sha"
   echo "live master: $(git log --oneline -1)"
-  if build_and_start "$base" "$unit" "$health" "$ts"; then
+  # a resume reinstalls whatever the lockfiles say: the unfinished run may have left node_modules half done
+  local deps=$base
+  if [[ -n $resuming ]]; then deps=""; fi
+  if build_and_start "$deps" "$unit" "$health" "$ts"; then
     git update-ref "$LIVE_REF" "$sha"
     rm -f "$pending"
     return
@@ -182,6 +203,17 @@ status() {
   else
     echo "unclear (checkout at ${head:0:7}, recorded ${rec:0:7})"
   fi
+}
+
+# <marker> <target> <from> <backup>: written next to it and renamed over it, so it is never half there
+write_pending() {
+  printf 'target %s\nfrom %s\nbackup %s\nstarted %s\n' "$2" "$3" "$4" "$(date -Is)" >"$1.tmp"
+  mv -f "$1.tmp" "$1"
+}
+
+# <marker> <name>: one field of it
+field() {
+  sed -n "s/^$2 //p" "$1"
 }
 
 # cd into the live checkout
