@@ -19,7 +19,7 @@ npm run dev        # http://localhost:3000
 
 已经作为 systemd 用户服务跑着的实例，用 `scripts/deploy.sh <分支或 commit>` 更新：备份 `vault/`、密钥目录和数据库到 `~/backups/hebi8/<时间>-deploy/`，把 master 快进到这个分支，依赖有变就 `npm ci`，重新构建并重启，页面返回 200 后推送 master；构建或检查失败就退回原来的 commit 重新构建。分支必须是 master 的快进，线上目录必须干净。构建用服务 unit 里 `PATH` 的 Node（没写就用当前的）。
 
-实例和仓库可以不在一台机器上：在仓库所在的机器上跑，`HEBI8_LIVE_HOST=<user@host>` 时 commit 经 ssh 推进那台的线上目录，构建、重启、检查和回滚都在那台做，成功后才在本地快进 master 并推送；只在一台机器上就设 `HEBI8_LIVE_HOST=local`（脚本的默认值是本仓库线上实例的地址），这时 `HEBI8_LIVE` 就是线上目录兼仓库，默认 `~/dev/hebi8-market`。分两台时 `HEBI8_REPO` 是本地仓库目录，`HEBI8_LIVE`（线上目录，相对那台的 home）、`HEBI8_UNIT`、`HEBI8_SECRETS` 是线上那台的目录、服务名和密钥目录。检查地址 `HEBI8_HEALTH_URL` 默认取服务 unit 里 `next start -H … -p …` 的地址。退出码 0 是部署了，1 是没部署（线上还是原来的），3 是连不上、不知道结果：等那台连得上再跑一次同样的部署，做完了的它会认出来。
+实例和仓库可以不在一台机器上：在仓库所在的机器上跑，`HEBI8_LIVE_HOST=<user@host>` 时 commit 经 ssh 推进那台的线上目录，构建、重启、检查和回滚都在那台做，成功后才在本地快进 master 并推送；只在一台机器上就设 `HEBI8_LIVE_HOST=local`（脚本的默认值是本仓库线上实例的地址），这时 `HEBI8_LIVE` 就是线上目录兼仓库，默认 `~/dev/hebi8-market`。分两台时 `HEBI8_REPO` 是本地仓库目录，`HEBI8_LIVE`（线上目录，相对那台的 home）、`HEBI8_UNIT`、`HEBI8_SECRETS` 是线上那台的目录、服务名和密钥目录。检查地址 `HEBI8_HEALTH_URL` 默认取服务 unit 里 `next start -H … -p …` 的地址。退出码 0 是部署了，1 是没部署（线上还是原来的），3 是连不上、不知道结果：等那台连得上再跑一次同样的部署，做完了的它会认出来。它靠线上目录 `.git` 里的记录 `refs/hebi8/live` 认出线上跑的是哪个版本，第一次部署前要在实例正常运行时设好：`git update-ref refs/hebi8/live <正在跑的完整 commit>`（细节见 [maintainers.md](maintainers.md#正式环境)）。
 
 本仓库的线上实例不直接调它：发版用 `scripts/release.sh`，热补丁用 `scripts/hotfix.sh`，两者都经 `deploy.sh` 部署（见 [maintainers.md](maintainers.md#分支与发版)）。自己部署的实例跟着 `master` 更新就是跟着发布过的版本，每个版本的 tag 和变化见 [CHANGELOG.md](../CHANGELOG.md)。
 
