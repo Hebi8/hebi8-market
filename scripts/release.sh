@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Release dev: the version commit, deploy.sh dev (master fast-forwards to it), tag, push, GitHub Release, issues.
-# Usage, in the checkout that has dev:
-#   scripts/release.sh notes             what changed since the last tag, to rewrite into CHANGELOG.md
-#   scripts/release.sh <x.y.z>           release it (CHANGELOG.md needs a `## v<x.y.z>` section, committed on dev)
-#   scripts/release.sh publish <x.y.z>   after a deploy went through but a later step stopped: the rest again,
-#                                        from any checkout (it works on the version commit, wherever dev is now)
+# Release dev (docs/maintainers.md §发版). The usual way is a pull request: merging it into master deploys it
+# (.github/workflows/deploy.yml), and the workflow tags, publishes and tells the issues.
+# Usage, from any checkout of the repository:
+#   scripts/release.sh notes                what changed since the last tag, to rewrite into CHANGELOG.md
+#   scripts/release.sh <x.y.z>              the release pull request: release/v<x.y.z> from origin's dev plus the
+#                                           version commit, pushed, a pull request into master (CHANGELOG.md on dev
+#                                           needs a `## v<x.y.z>` section)
+#   scripts/release.sh --deploy <x.y.z>     without GitHub Actions, in the checkout that has dev: the version
+#                                           commit, deploy.sh dev (master fast-forwards to it), tag, push, Release,
+#                                           issues
+#   scripts/release.sh publish <x.y.z>      after such a deploy went through but a later step stopped: the rest
+#                                           again, from any checkout (it works on the version commit)
+#   scripts/release.sh deployed <commit>    the deploy workflow, after <commit> went live
 # Everything runs inside main(), so bash has read the whole file before a checkout can change it.
 set -euo pipefail
 SCRIPT=release.sh
@@ -15,8 +22,10 @@ main() {
   case ${1:-} in
     notes) notes ;;
     publish) publish "${2:?usage: release.sh publish <x.y.z>}" release ;;
-    [0-9]*) release "$1" ;;
-    *) fail "usage: release.sh notes | <x.y.z> | publish <x.y.z>" ;;
+    deployed) deployed "${2:?usage: release.sh deployed <commit>}" ;;
+    --deploy) release "${2:?usage: release.sh --deploy <x.y.z>}" ;;
+    [0-9]*) release_pr "$1" ;;
+    *) fail "usage: release.sh notes | <x.y.z> | --deploy <x.y.z> | publish <x.y.z>" ;;
   esac
 }
 
@@ -28,7 +37,7 @@ on_dev() {
 # commits that touch the vault, hebi8.yaml, the secrets dir or MCP tools (for 升级注意), the issues waiting,
 # and the version that follows from them.
 notes() {
-  local prev range current next bot
+  local prev range current next
   current=$(pkg_version)
   if prev=$(last_tag); then range=$prev..HEAD; else range=HEAD; fi
   local log
@@ -47,8 +56,8 @@ notes() {
   echo "${upgrade:-(none)}"
   echo
   echo "## issues labelled $NEXT_LABEL"
-  bot=$("$HOME/.local/share/hebi8/triage-token.sh")
-  GH_TOKEN=$bot gh issue list -R "$REPO" --label "$NEXT_LABEL" --state all --limit 500 --json number,title --jq '.[] | "- #\(.number) \(.title)"'
+  bot_init
+  gh_bot issue list -R "$REPO" --label "$NEXT_LABEL" --state all --limit 500 --json number,title --jq '.[] | "- #\(.number) \(.title)"'
   echo
   local major=${current%%.*} rest=${current#*.}
   local minor=${rest%%.*} patch=${rest#*.}
@@ -58,9 +67,27 @@ notes() {
     next=$major.$minor.$((patch + 1))
   fi
   echo "suggested version: $next (minor for a feature or a change to the vault, hebi8.yaml or MCP tools; patch for fixes only)"
-  echo "next: write '## v$next — 日期' at the top of CHANGELOG.md (one line per change, for the people who use it; the date is filled in on release), commit it on dev, then run scripts/release.sh $next"
+  echo "next: write '## v$next — 日期' at the top of CHANGELOG.md (one line per change, for the people who use it; the date is filled in on release), get it into dev, then run scripts/release.sh $next"
 }
 
+# <x.y.z>: release/v<x.y.z> is cut from origin's dev in a worktree of its own (no checkout of yours moves, and dev
+# itself takes only pull requests), gets the version commit there, and goes to master as a pull request.
+release_pr() {
+  local version=$1 tag=v$1 branch=release/v$1 current changelog
+  check_version "$version"
+  git fetch -q origin
+  git merge-base --is-ancestor origin/master origin/dev ||
+    fail "origin's master is not an ancestor of its dev: merge the open master-into-dev pull request first"
+  [[ -z $(git tag -l "$tag") ]] || fail "$tag already exists"
+  current=$(git show origin/master:package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+  version_gt "$version" "$current" || fail "$version does not come after $current"
+  changelog=$(git show origin/dev:CHANGELOG.md)
+  has_section "$version" <<<"$changelog" ||
+    fail "CHANGELOG.md on origin's dev has no '## $tag' section; run scripts/release.sh notes and get one into dev"
+  in_worktree "$branch" origin/dev "$version" release open_pr "$branch" "$version" "Release $tag"
+}
+
+# <x.y.z>, --deploy: everything from here, as before there was a workflow
 release() {
   local version=$1 tag=v$1 before
   check_version "$version"
@@ -77,7 +104,7 @@ release() {
 
   before=$(git rev-parse HEAD)
   STEP=bump
-  bump "$version"
+  bump "$version" release
   deploy dev "$version" "$before"
   publish "$version" release
 }
