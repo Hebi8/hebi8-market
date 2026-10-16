@@ -1,6 +1,6 @@
 # 维护者说明
 
-给改这个仓库的人看：文档放哪、反馈用的 GitHub App、issue 的标签、分支与发版、源码结构和验证命令。数据模型和各模块的设计见 [design.md](design.md)，给 agent 的约定见 [`AGENTS.md`](../AGENTS.md)。
+给改这个仓库的人看：文档放哪、反馈用的 GitHub App、issue 的标签、分支与发版、dev 实例、源码结构和验证命令。数据模型和各模块的设计见 [design.md](design.md)，给 agent 的约定见 [`AGENTS.md`](../AGENTS.md)。
 
 ## 文档放哪
 
@@ -9,7 +9,7 @@
 | [`README.md`](../README.md) | 给第一次来的人：一句话介绍、核心功能各一两句、快速开始、数据源概览、文档索引。不写操作细节 |
 | [`docs/usage.md`](usage.md) | 每项功能的完整操作、快捷键、公式、警报和通知、代码指标、MCP 接入 |
 | [`docs/self-hosting.md`](self-hosting.md) | 生产运行、`deploy.sh`、环境变量、vault、实例状态、多人共用、网页登录 |
-| `docs/maintainers.md`（本文） | 文档约定、GitHub App、反馈标签、源码结构、验证 |
+| `docs/maintainers.md`（本文） | 文档约定、GitHub App、反馈标签、dev 实例、源码结构、验证 |
 | [`docs/design.md`](design.md) | 设计：数据模型、同步、接口、页面行为的规格 |
 | [`CHANGELOG.md`](../CHANGELOG.md) | 每个版本的更新记录，给用的人看；写法见[分支与发版](#分支与发版) |
 
@@ -72,6 +72,51 @@ scripts/hotfix.sh 0.3.1
 - 每个版本一节 `## vX.Y.Z — YYYY-MM-DD`，最新的在最上面，日期发版时由脚本填；按需分「新功能」「修复」「升级注意」小节。
 - 「升级注意」写给自己部署的人：vault / `hebi8.yaml` 的格式、要手动迁移的东西、密钥目录里的文件、MCP 工具的增删改。
 - 不写相对链接：在 `/changelog` 页上会指错地方。
+
+## dev 实例
+
+平时的开发合进 `dev`，`dev` 快进到 master 才上线。在那之前想先用上新功能，就开 dev 实例：**http://100.107.245.93:8809/**（memoh-codex 的 Tailscale 地址，没有公网入口）。它跟着 `dev` 分支自动更新，每天用线上 owner 的 vault 覆盖一遍，所以看到的是自己的自选、警报和画线。
+
+- **单用户模式**：yaml 里的 `owner` 去掉了，经 Tailscale 打开就能改，不用登录。改动第二天被覆盖，这是有意的：只单向从线上到 dev。
+- **不发通知**：密钥目录是它自己的、空的（`/data/hebi8-dev/secrets`），没有任何通道，警报照常判断但不发出，不会和线上重复推送。不要把线上的 `~/.config/hebi8/market` 拷过去。
+- **行情自己同步**：按 yaml 里的 `sync.at` 自己拉 K 线、每 5 分钟取报价，走的是 memoh 的出口 IP，不占线上的配额。
+
+脚本在 `scripts/dev-instance/`，memoh 上用的是装进 `/data/hebi8-dev/bin/` 的那份。memoh 没有 systemd 和 cron，`hebi8-dev.sh daemon` 自己当看门狗：每 15 秒看一眼应用，没在跑就拉起来；每 10 分钟 fetch 一次；到了每天的同步时间就同步。开机时 memoh 的自启项（`~/.config/autostart` → `/data/services/start.sh`）最后一步调 `hebi8-dev.sh start`。
+
+| 路径（`/data/hebi8-dev/`） | 是什么 |
+|---|---|
+| `config.env` | 跟踪的分支 `BRANCH`，以及 `HOST`、`PORT`、`SYNC_AT` / `SYNC_TZ`（默认 04:30 Asia/Tokyo，避开线上 07:30 / 17:30 的同步）、`UPDATE_EVERY`；缺省值在脚本开头 |
+| `repo/` | 仓库的 clone；每个版本是它的一个 worktree |
+| `releases/<commit>/`、`current` | 构建好的版本，`current` 指向正在跑的那个；保留最近 3 个 |
+| `vault/`、`data/hebi8.db`、`datasets/` | 每天从线上换进来的 vault、缓存快照和本机数据集 |
+| `logs/daemon.log` | 更新、回滚、同步、重启，一行一件事 |
+| `logs/app.log`、`logs/build-<commit>.log` | `next start` 的输出（`[hebi8m]` 调度日志也在这里）；每次构建的输出 |
+| `state/failed` | 构建失败或起不来的 commit，分支动了之前不再重试 |
+
+**自动更新**：分支动了，就在 `releases/<新 commit>/` 里另建一份：`package-lock.json` 和正在跑的版本一样就硬链接它的 `node_modules`，否则 `npm ci`（better-sqlite3 要现场编译，缺编译器时自动 `apt-get install build-essential`）；`npm run build` 的时候旧版本照常服务。构建成功才停旧的、起新的，60 秒内首页不返回 200 就切回旧的。构建或启动失败都记进 `state/failed`，旧版本一直在跑。不推送，不备份。
+
+**每天同步**：由 memoh 拉，经 `lody-lan lan shell devNuc` 在线上目录里跑 `export.mjs`（只读），带回三样，换进去后重启：
+
+- 根 vault（owner 的）：`hebi8.yaml`、`notes/`、`journal/`、`charts/`。**`users/` 不带**，别人的 vault 不离开线上。到了 dev 上由 `prepare-vault.mjs` 去掉 `owner`、把本机数据集改指 `datasets/<名字>`。
+- 数据库快照（`db.backup()`），省得冷启动全量拉：`stats`、`alert_state` 只留根 vault（`vault = ''`）的行，`traffic`、`visitors`、`upstream`、`usage_alerts` 清空；K 线、标的、报价、标的资料原样。
+- 本机目录数据集（如 `cnCDIY`）的清单和 CSV；远端仓库的数据集 dev 自己克隆。
+
+没同步的：线上的密钥目录（会话、通知通道、Telegram、网页推送、GitHub App、MCP 令牌）一概不碰。memoh 那时不在线就在它回来后补一次；失败了半小时后再试。
+
+常用命令（在 memoh 上；从 devNuc 是 `lody-lan lan shell memoh-codex -- /data/hebi8-dev/bin/hebi8-dev.sh status`）：
+
+```bash
+H=/data/hebi8-dev/bin/hebi8-dev.sh
+$H status                       # 地址、分支、正在跑的 commit、上次检查和同步
+tail -f /data/hebi8-dev/logs/daemon.log
+$H branch dev                   # 改跟踪的分支（写进 config.env）并立刻更新；也可以填某个 commit
+$H update [--force]             # 立刻 fetch；--force 连 state/failed 里的也重试
+$H sync                         # 立刻从线上同步一次
+$H restart                      # 只重启应用
+$H stop | start                 # 停 / 起看门狗和应用；stop 之后到下次开机或 start 之前都不会自己起来
+```
+
+脚本本身不随分支自动更新（看门狗不替换自己）。改了 `scripts/dev-instance/`、dev 实例跑上那个版本之后：`$H install /data/hebi8-dev/current/scripts/dev-instance && $H stop && $H start`。
 
 ## 源码结构
 
