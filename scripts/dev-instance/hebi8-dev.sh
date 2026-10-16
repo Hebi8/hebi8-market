@@ -5,7 +5,10 @@
 # checks the branch every UPDATE_EVERY seconds and runs the daily sync. /data/services/start.sh runs
 # `hebi8-dev.sh start` at boot. See docs/maintainers.md §dev 实例.
 #
-# Usage: hebi8-dev.sh start | stop | status | update [--force] | sync | restart | branch <name> | install <dir> | daemon
+# Usage: hebi8-dev.sh start | stop | status | update [--force] | deploy <commit> | sync | restart | branch <name>
+#        | install <dir> | daemon
+# `deploy <commit>` is for the deploy workflow after a push to dev: an update now, failed commits retried, that
+# ends 0 only when what runs contains <commit> (or the branch followed does not).
 #
 # Each release is a git worktree in releases/<sha>, built while the old one keeps serving; `current`
 # points at the one that runs. A commit that fails to build or to answer 200 is remembered in
@@ -283,6 +286,19 @@ daemon() {
   done
 }
 
+# <commit>: update now and say whether it runs
+deploy() {
+  local sha=$1 cur
+  do_update --force || return 1
+  if ! git -C "$ROOT/repo" merge-base --is-ancestor "$sha" "$(target_commit)" 2>/dev/null; then
+    echo "$BRANCH does not contain ${sha:0:7}; running $(commit_of current), as $BRANCH says"
+    return 0
+  fi
+  cur=$(basename "$(readlink -f "$ROOT/current")")
+  git -C "$ROOT/repo" merge-base --is-ancestor "$sha" "$cur" || { echo "${sha:0:7} is not running (${cur:0:7} is)"; return 1; }
+  echo "running ${cur:0:7} ($BRANCH), which has ${sha:0:7}"
+}
+
 status() {
   local pid
   echo "url:      $URL"
@@ -312,6 +328,7 @@ case ${1:-} in
     ;;
   status) status ;;
   update) locked wait do_update "${2:-}" ;;
+  deploy) locked wait deploy "${2:?usage: hebi8-dev.sh deploy <commit>}" ;;
   sync) locked wait do_sync ;;
   restart) locked wait restart_app ;;
   branch)
@@ -332,7 +349,7 @@ case ${1:-} in
     echo "installed into $ROOT/bin; restart the daemon (stop, start) to use the new hebi8-dev.sh"
     ;;
   *)
-    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
