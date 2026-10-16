@@ -782,7 +782,7 @@ describe("quote polling", () => {
       const day = await status("D", `&with=${encodeURIComponent(SPY)}`);
       expect(day).toMatchObject({ session: "always", quotedAt: quote.fetchedAt });
       // `prev` lets a chart that stopped before Tuesday see that it missed a bar
-      expect(day.tail).toEqual({ bar: { timestamp: wednesday, open: 102, high: 151, low: 98, close: 150, volume: 7, bench: 410 }, prev: wednesday - DAY * 1000, refs: { [SPY]: { o: 410, h: 410, l: 410, c: 410, v: 1 } }, lastDay: wednesday });
+      expect(day.tail).toEqual({ bar: { timestamp: wednesday, open: 102, high: 151, low: 98, close: 150, volume: 7, bench: 410 }, prev: wednesday - DAY * 1000, refs: { [SPY]: { o: 410, h: 410, l: 410, c: 410, v: 1 } }, lastDay: wednesday, weekends: false });
       // the week and the month so far: Monday's open, the range of all three days, the quote's close
       const week = { open: 100, high: 151, low: 98, close: 150, volume: 9, bench: 410 };
       expect((await status("W")).tail).toMatchObject({ bar: { timestamp: T0 * 1000, ...week }, prev: null, lastDay: wednesday });

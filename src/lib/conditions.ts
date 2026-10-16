@@ -1,6 +1,6 @@
 import { compile, evaluate, type OhlcvBar } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
-import { loadRefs, loadSeries, type DailyReader } from "./bars";
+import { loadRefs, loadSeries, tradesWeekends, type DailyReader } from "./bars";
 import { findItem, type Config } from "./config";
 import type { Bar } from "./series";
 import type { ConditionResult } from "./stats";
@@ -28,7 +28,7 @@ export function evalRule(key: string, formula: string, tf: Timeframe, cfg: Confi
       bars = loadSeries(key, tf, cfg.prices, cfg, read);
       cache.set(tf, bars);
     }
-    const refs = loadRefs(bars, program.refs, tf, cfg.prices, cfg, read);
+    const refs = loadRefs(bars, tradesWeekends(key, cfg, read), program.refs, tf, cfg.prices, cfg, read);
     const line = evaluate(program, { bars: toOhlcv(bars), refs }).at(-1)!;
     const t = bars.at(-1)?.t;
     return { now: holds(line.at(-1)), prev: holds(line.at(-2)), ...(t !== undefined ? { t } : {}) };

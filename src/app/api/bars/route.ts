@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
   }
-  const { daily, bars, refs } = chart;
+  const { daily, weekends, bars, refs } = chart;
   if (daily.length === 0) {
     const why = isSynthetic(key) ? synthNoData(key, config, (k) => getSymbol(k)?.syncError ?? null) : (row?.syncError ?? "暂无数据，等待同步");
     return NextResponse.json({ error: why }, { status: 404 });
@@ -54,6 +54,7 @@ export async function GET(request: NextRequest) {
     pricePrecision: pricePrecision(daily[daily.length - 1].c),
     bars,
     refs,
+    weekends,
   };
   // per person (names, benchmarks and synthetic aliases come from their yaml), so never reused
   return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });

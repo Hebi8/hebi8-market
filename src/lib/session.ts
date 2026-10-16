@@ -67,6 +67,17 @@ export function sessionsOn({ hours, holidays, corrections }: TradingCalendar, da
   return (parts.find((p) => p.days?.includes(String(dow + 1))) ?? parts.find((p) => !p.days && dow >= 1 && dow <= 5))?.part ?? null;
 }
 
+/**
+ * Whether the market has sessions on Saturday or Sunday by its current hours (around the clock, or
+ * a day named in them), or null while its hours are not known. Holidays and earlier hours do not count.
+ */
+export function weekendTrading({ hours }: TradingCalendar): boolean | null {
+  if (!hours) return null;
+  if (hours === "24x7") return true;
+  // the last version is the current one; `:` names days, 1 = Sunday and 7 = Saturday
+  return hours.split("/").at(-1)!.split("|").some((part) => /:\d*[17]\d*$/.test(part));
+}
+
 /** The clock time a day's last session ends, or null when the day has no trading (or hours that do not parse). */
 export function closeOn(calendar: TradingCalendar, day: Parts): { hh: number; mm: number } | null {
   const m = /^\d{4}(?:F\d*)?-(\d{2})(\d{2})/.exec(sessionsOn(calendar, day)?.split(/[,SU]/).at(-1) ?? "");
@@ -129,7 +140,10 @@ export function barCloseAt(tf: Timeframe, now: number, clock: SessionClock): num
   // the session is the quote's: counted from when it was taken, so a close that has passed since ends the countdown
   let day = dayOf(partsIn(new Date(quotedAt), timezone));
   for (let i = 0; (closeAt(day) ?? 0) <= quotedAt; i++, day = dayOf(day, 1)) if (i === LOOKAHEAD_DAYS) return null;
-  const close = closeAt(lastTradingDay(clock, day, tf))!;
+  // the sessions that close on `day` may be an earlier day's bar (from two evenings back after a
+  // holiday): when that day is in an earlier 3D bar, week, month or quarter, they end it
+  const sameBar = bucketStart(secondsOf(barDayOf(clock, day)), tf) === bucketStart(secondsOf(day), tf);
+  const close = closeAt(sameBar ? lastTradingDay(clock, day, tf) : day)!;
   return close > now ? close : null;
 }
 
@@ -173,6 +187,11 @@ export function scheduledSession(now: number, calendar: TradingCalendar): QuoteS
   return "open";
 }
 
+/** The trading day whose bar a day's sessions make: that day, or the one before when they start two evenings back (`1700F2`). */
+function barDayOf(calendar: TradingCalendar, day: Parts): Parts {
+  return dayOf(day, 1 - (eveningStart(sessionsOn(calendar, day))?.back ?? 1));
+}
+
 /**
  * The day of the daily bar a trade at `at` (ms) belongs to, on the exchange's calendar. An
  * overnight session counts for the day it ends on: the trade is in the nearest coming day's
@@ -189,7 +208,7 @@ export function tradingDayAt(at: number, calendar: TradingCalendar): Parts {
   const timezone = calendar.timezone ?? "UTC";
   const today = dayOf(partsIn(new Date(at), timezone));
   const startOf = (day: Parts) => eveningStart(sessionsOn(calendar, day));
-  const barDay = (day: Parts) => dayOf(day, 1 - (startOf(day)?.back ?? 1));
+  const barDay = (day: Parts) => barDayOf(calendar, day);
   // `F6` is as far back as a start goes
   for (let ahead = 1; ahead <= 6; ahead++) {
     const day = dayOf(today, ahead);

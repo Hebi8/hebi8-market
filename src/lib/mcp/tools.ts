@@ -9,7 +9,7 @@ import { z } from "zod";
 import { ALERT_CONDS, type AlertCond, type AlertCondition } from "../alert-conds";
 import { alertBadges, alertViews } from "../alert-view";
 import { adoptConditionState, alertKeys, readState, stateId } from "../alerts";
-import { barClosed, loadDaily, synthNoData } from "../bars";
+import { barClosed, loadDaily, synthNoData, tradesWeekends } from "../bars";
 import { allItems, findItem, resolveKey, type Config } from "../config";
 import { fmtDate } from "../format";
 import { nameOf } from "../names";
@@ -139,7 +139,7 @@ export const TOOLS: Tool[] = [
       const daily = loadDaily(key, cfg.prices, cfg, live);
       const last = daily.at(-1);
       if (!last) throw new Error(isSynthetic(key) ? synthNoData(key, cfg, (k) => getSymbol(k)?.syncError ?? null) : (getSymbol(key)?.syncError ?? "没有缓存的日线：这个标的不在自选里，也没有被引用过"));
-      const bars = aggregate(daily, args.tf);
+      const bars = aggregate(daily, args.tf, tradesWeekends(key, cfg, live));
       return {
         key,
         name: nameOf(cfg, key, getSymbol(key)?.name),

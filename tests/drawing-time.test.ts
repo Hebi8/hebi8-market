@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Chart, Period } from "klinecharts";
-import { tradesWeekends, tradingDayOffset, tradingDayTimestamp } from "@/components/drawing-time";
+import { tradingDayOffset, tradingDayTimestamp } from "@/components/drawing-time";
 import { setOverlayChart, snapToBar } from "@/components/chart-overlays";
 
 vi.mock("klinecharts", () => ({ getOverlayClass: vi.fn(), registerOverlay: vi.fn(), utils: {} }));
@@ -9,14 +9,6 @@ const day = (date: string) => Date.parse(`${date}T00:00:00Z`);
 const barsOf = (...dates: string[]) => dates.map((date) => ({ timestamp: day(date) }));
 
 describe("daily trading calendar", () => {
-  it("infers weekends from recent bars, including either Saturday or Sunday", () => {
-    expect(tradesWeekends(barsOf("2026-05-14", "2026-05-15"))).toBe(false);
-    expect(tradesWeekends(barsOf("2026-05-15", "2026-05-16"))).toBe(true);
-    expect(tradesWeekends(barsOf("2026-05-17", "2026-05-18"))).toBe(true);
-    const recent = Array.from({ length: 60 }, (_, i) => ({ timestamp: tradingDayTimestamp(day("2026-05-18"), i, false) }));
-    expect(tradesWeekends([...barsOf("2026-05-17"), ...recent])).toBe(false);
-  });
-
   it("skips weekends from Friday and counts one day after Monday, regardless of the preceding gap", () => {
     expect(tradingDayTimestamp(day("2026-05-15"), 1, false)).toBe(day("2026-05-18"));
     expect(tradingDayTimestamp(day("2026-05-18"), 1, false)).toBe(day("2026-05-19"));
@@ -57,7 +49,7 @@ describe("daily trading calendar", () => {
 });
 
 /** Real chart entry point with a small store: sentinel methods expose any unintended delegation. */
-function chartWith(dates: string[]) {
+function chartWith(dates: string[], weekends = false) {
   let bars = barsOf(...dates);
   let period: Period = { type: "day", span: 1 };
   const originals = {
@@ -68,8 +60,16 @@ function chartWith(dates: string[]) {
   };
   const store = { ...originals };
   const chart = { getChartStore: () => store, getDataList: () => bars, getPeriod: () => period } as unknown as Chart;
-  setOverlayChart(chart);
-  return { chart, store, originals, setBars: (next: string[]) => (bars = barsOf(...next)), setPeriod: (next: Period) => (period = next), bars: () => bars };
+  setOverlayChart(chart, undefined, () => weekends);
+  return {
+    chart,
+    store,
+    originals,
+    setBars: (next: string[]) => (bars = barsOf(...next)),
+    setPeriod: (next: Period) => (period = next),
+    setWeekends: (next: boolean) => (weekends = next),
+    bars: () => bars,
+  };
 }
 
 describe("chart store daily mapping", () => {
@@ -118,17 +118,30 @@ describe("chart store daily mapping", () => {
     }
   });
 
-  it("reads the current data after reloads and live appends, with no stored calendar", () => {
-    const { store, setBars, bars } = chartWith([]);
+  it("places 3D bars past the data by three trading days, counted the way the server says", () => {
+    // a coin with ten days of history: its 3D bars start on weekdays, but it counts calendar days
+    const coin = chartWith(["2026-10-05", "2026-10-08"], true);
+    coin.setPeriod({ type: "day", span: 3 });
+    expect(coin.store.dataIndexToTimestamp(2)).toBe(day("2026-10-11"));
+    expect(coin.store.timestampToDataIndex(day("2026-10-11"))).toBe(2);
+    const stock = chartWith(["2026-10-05", "2026-10-08"]);
+    stock.setPeriod({ type: "day", span: 3 });
+    expect(stock.store.dataIndexToTimestamp(2)).toBe(day("2026-10-13"));
+  });
+
+  it("reads the current data and calendar after reloads and live appends", () => {
+    const { store, setBars, setWeekends, bars } = chartWith([]);
     expect(store.dataIndexToTimestamp(2)).toBe(123);
     expect(store.timestampToFloatIndex(day("2026-05-18"))).toBe(42.5);
     setBars(["2026-05-15"]);
     expect(store.dataIndexToTimestamp(1)).toBe(day("2026-05-18"));
     bars().push({ timestamp: day("2026-05-16") });
+    setWeekends(true);
     expect(store.dataIndexToTimestamp(2)).toBe(day("2026-05-17"));
     expect(store.timestampToDataIndex(day("2026-05-18"))).toBe(3);
     expect(store.floatIndexToTimestamp(-0.5)).toBe(day("2026-05-15") - 12 * 3600000);
     setBars(["2026-05-15", "2026-05-18"]);
+    setWeekends(false);
     expect(store.dataIndexToTimestamp(2)).toBe(day("2026-05-19"));
   });
 });

@@ -7,7 +7,7 @@
 import { compile, evaluate, type Program } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
 import type { AlertCheck } from "./alert-conds";
-import { closedReader, loadRefs, loadSeries, type DailyReader } from "./bars";
+import { closedReader, loadRefs, loadSeries, tradesWeekends, type DailyReader } from "./bars";
 import { holds, toOhlcv } from "./conditions";
 import { findItem, type Config } from "./config";
 import { fmtDate } from "./format";
@@ -42,7 +42,7 @@ function run(key: string, formula: string, tf: Timeframe, cfg: Config, read: Dai
   const program = checked(formula, cfg, findItem(cfg, key)?.bench ?? null);
   const bars = loadSeries(key, tf, cfg.prices, cfg, read);
   if (bars.length === 0) throw new Error(isSynthetic(key) ? "合成不出数据：操作数没有缓存的日线或日期不重叠" : "没有缓存的日线");
-  const refs = loadRefs(bars, program.refs, tf, cfg.prices, cfg, read);
+  const refs = loadRefs(bars, tradesWeekends(key, cfg, read), program.refs, tf, cfg.prices, cfg, read);
   return { bars, line: evaluate(program, { bars: toOhlcv(bars), refs }).at(-1)! };
 }
 

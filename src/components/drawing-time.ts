@@ -1,15 +1,5 @@
 /** Daily positions outside the loaded bars; type-only imports keep the math usable without a chart. */
-import type { KLineData } from "klinecharts";
-
 const DAY = 86400000;
-
-/** A weekend bar in the last sixty sessions means this series also trades on weekends. */
-export function tradesWeekends(bars: Pick<KLineData, "timestamp">[]): boolean {
-  return bars.slice(-60).some(({ timestamp }) => {
-    const day = new Date(timestamp).getUTCDay();
-    return day === 0 || day === 6;
-  });
-}
 
 /** Integer offsets land on trading days; fractions interpolate between those days, as inside the data. */
 export function tradingDayTimestamp(anchor: number, offset: number, weekends: boolean): number {

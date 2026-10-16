@@ -2,8 +2,8 @@
 import type { RefSeries } from "@/indicators/formula";
 import type { BarsTail, ChartBar } from "./api-types";
 import { findItem, type Config } from "./config";
-import { aggregate, align, applyPrices, tradesWeekends, type Bar, type Prices } from "./series";
-import { dayCloseAt } from "./session";
+import { aggregate, align, applyPrices, hasWeekendBars, type Bar, type Prices } from "./series";
+import { dayCloseAt, weekendTrading } from "./session";
 import { calendarOfRow, getSymbol, readDaily } from "./store";
 import { isSynthetic, parseKey, type Timeframe } from "./symbols";
 import { evalSynth, parseSynth } from "./synth";
@@ -56,18 +56,30 @@ export function synthNoData(key: string, cfg: Config, syncError: (key: string) =
   return missing.map((k) => `${k}：${syncError(k) ?? "暂无数据，等待同步"}`).join("；");
 }
 
-export function loadSeries(key: string, tf: Timeframe, prices: Prices, cfg: Config, read: DailyReader = readDaily, weekends?: boolean): Bar[] {
+/**
+ * Whether a key's 3D bars count calendar days rather than weekdays (§3.2), from what the symbol is,
+ * not from its latest bars: crypto and a market with weekend sessions do; with no hours known (a
+ * dataset, a symbol not synced yet), a series with any weekend bar does. A synthetic key counts the
+ * way its first operand does, whose days it has.
+ */
+export function tradesWeekends(key: string, cfg: Config, read: DailyReader = readDaily): boolean {
+  if (isSynthetic(key)) return tradesWeekends(parseSynth(key.slice(1), cfg.aliases).keys[0], cfg, read);
+  const row = getSymbol(key);
+  if (row?.kind === "crypto" || row?.kind === "cryptocurrency") return true;
+  return weekendTrading(calendarOfRow(row)) ?? hasWeekendBars(read(key));
+}
+
+/** A key's bars on `tf`; on 3D counted its own way, or as given (another symbol on a chart counts the chart's way). */
+export function loadSeries(key: string, tf: Timeframe, prices: Prices, cfg: Config, read: DailyReader = readDaily, weekends = tradesWeekends(key, cfg, read)): Bar[] {
   return aggregate(loadDaily(key, prices, cfg, read), tf, weekends);
 }
 
 /**
  * Other symbols aligned to `bars`, as the columns the formula engine and the chart consume. On 3D
- * they count days the way `bars` does (a 3D bar starting on a weekend means calendar days), so
- * their bars start on the same days.
+ * they count days the way the chart's symbol does (`weekends`), so their bars start on the same days.
  */
-export function loadRefs(bars: Bar[], keys: string[], tf: Timeframe, prices: Prices, cfg: Config, read: DailyReader = readDaily): Record<string, RefSeries> {
+export function loadRefs(bars: Bar[], weekends: boolean, keys: string[], tf: Timeframe, prices: Prices, cfg: Config, read: DailyReader = readDaily): Record<string, RefSeries> {
   const refs: Record<string, RefSeries> = {};
-  const weekends = tradesWeekends(bars);
   for (const key of new Set(keys)) {
     let other: Bar[];
     try {
@@ -92,6 +104,8 @@ const round = (x: number) => Number(x.toPrecision(8));
 
 export interface ChartData {
   daily: Bar[];
+  /** How its 3D bars count days (`tradesWeekends`) */
+  weekends: boolean;
   bars: ChartBar[];
   refs: Record<string, RefSeries>;
 }
@@ -100,8 +114,9 @@ export interface ChartData {
 export function loadChart(key: string, tf: Timeframe, prices: Prices, withKeys: string[], cfg: Config, read: DailyReader = readDaily): ChartData {
   const daily = loadDaily(key, prices, cfg, read);
   const bench = findItem(cfg, key)?.bench ?? null;
-  const series = aggregate(daily, tf);
-  const refs = loadRefs(series, [...withKeys, ...(bench && bench !== key ? [bench] : [])], tf, prices, cfg, read);
+  const weekends = tradesWeekends(key, cfg, read);
+  const series = aggregate(daily, tf, weekends);
+  const refs = loadRefs(series, weekends, [...withKeys, ...(bench && bench !== key ? [bench] : [])], tf, prices, cfg, read);
   const benchCloses = bench ? refs[bench]?.c : undefined;
   const bars = series.map((b, i) => ({
     timestamp: b.t * 1000,
@@ -112,11 +127,11 @@ export function loadChart(key: string, tf: Timeframe, prices: Prices, withKeys: 
     volume: b.v ?? undefined,
     bench: benchCloses?.[i] != null ? round(benchCloses[i]!) : undefined,
   }));
-  return { daily, bars, refs };
+  return { daily, weekends, bars, refs };
 }
 
 /** The last bar of a chart and the other symbols at it, for updating an open chart after a quote round. */
-export function chartTail({ daily, bars, refs }: ChartData): BarsTail | null {
+export function chartTail({ daily, weekends, bars, refs }: ChartData): BarsTail | null {
   const i = bars.length - 1;
   if (i < 0) return null;
   return {
@@ -124,5 +139,6 @@ export function chartTail({ daily, bars, refs }: ChartData): BarsTail | null {
     prev: bars[i - 1]?.timestamp ?? null,
     refs: Object.fromEntries(Object.entries(refs).map(([k, r]) => [k, { o: r.o?.[i] ?? null, h: r.h?.[i] ?? null, l: r.l?.[i] ?? null, c: r.c[i], v: r.v?.[i] ?? null }])),
     lastDay: daily[daily.length - 1].t * 1000,
+    weekends,
   };
 }

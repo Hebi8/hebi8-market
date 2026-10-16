@@ -53,6 +53,8 @@ interface KChartProps {
   symbolKey: string;
   tf: Timeframe;
   bars: ChartBar[] | null;
+  /** Whether the symbol counts calendar days rather than weekdays (its 3D bars, drawings past the bars) */
+  weekends: boolean;
   /** The last bar after a quote round: it replaces the chart's last one (or follows it on a new day) without loading the bars again */
   tail: BarsTail | null;
   /** What the countdown under the last price needs: the quote's session and the exchange's hours */
@@ -419,6 +421,7 @@ export function KChart({
   symbolKey,
   tf,
   bars,
+  weekends,
   pricePrecision,
   log,
   percentAxis,
@@ -451,6 +454,7 @@ export function KChart({
   const pushBarRef = useRef<((bar: KLineData) => void) | null>(null);
   const clockRef = useRef(clock);
   const tfRef = useRef(tf);
+  const weekendsRef = useRef(weekends);
   const precisionRef = useRef(pricePrecision);
   const styleRef = useRef(chartStyle);
   const compareRef = useRef(compare);
@@ -993,7 +997,7 @@ export function KChart({
     });
     if (!chart) return;
     chartRef.current = chart;
-    setOverlayChart(chart, (id) => flagsRef.current.get(id)?.scale);
+    setOverlayChart(chart, (id) => flagsRef.current.get(id)?.scale, () => weekendsRef.current);
     applyTheme(chart, styleRef.current);
     sizePanes();
     // The full history arrives in one response, so there is never more to load.
@@ -1227,6 +1231,7 @@ export function KChart({
     if (!chart || !bars) return;
     barsRef.current = bars;
     tfRef.current = tf;
+    weekendsRef.current = weekends;
     chart.setBarSpace(initialBarSpace(containerRef.current?.clientWidth ?? 1000, tf, bars.length));
     // Both calls reset the data and pull it from barsRef through the loader above.
     chart.setSymbol({ ticker: symbolKey, pricePrecision, volumePrecision: 0 });
@@ -1251,7 +1256,7 @@ export function KChart({
     crosshairRef.current = null;
     scheduleLegend();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers are stable refs
-  }, [bars, symbolKey, tf, pricePrecision]);
+  }, [bars, weekends, symbolKey, tf, pricePrecision]);
 
   // A quote round moved the last bar. The chart's list is the `bars` array itself and the formula
   // and compare lines read `refs`, so both are updated in place: a new `bars` would reset the view.

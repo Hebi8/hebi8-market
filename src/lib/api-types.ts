@@ -34,6 +34,8 @@ export interface BarsTail {
   refs: Record<string, RefPoint>;
   /** The last daily bar's day (ms, UTC midnight) */
   lastDay: number;
+  /** How the chart's 3D bars count days: when it differs from the loaded bars', they are grouped differently and are loaded again */
+  weekends: boolean;
 }
 
 /** How fresh a symbol's data is: the daily sync and the quote polling (a synthetic key: the oldest quote its operands' prices come from) */
@@ -71,5 +73,6 @@ export interface BarsResponse {
   pricePrecision: number;
   bars: ChartBar[];
   /** Other symbols aligned to `bars`: compare targets, formula references, the benchmark */
-  refs: Record<string, RefSeries>;
+  refs: Record<string, RefSeries>;  /** Whether its 3D bars count calendar days rather than weekdays; drawings past the bars count days the same way */
+  weekends: boolean;
 }

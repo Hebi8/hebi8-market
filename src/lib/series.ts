@@ -25,12 +25,9 @@ export function dedupeBars(bars: Bar[]): Bar[] {
 /** Days from 1970-01-01 to Monday 1970-01-05, where 3D bars start counting. */
 const EPOCH_MONDAY = 4;
 
-/**
- * A weekend bar in the last sixty means the series also trades on weekends, so its 3D bars count
- * calendar days; the chart's drawing positions go by the same rule (`drawing-time.ts`).
- */
-export function tradesWeekends(bars: Bar[]): boolean {
-  return bars.slice(-60).some(({ t }) => {
+/** Whether any of the bars is on a Saturday or Sunday: how 3D counts a series nothing else is known of (`tradesWeekends` in bars.ts). */
+export function hasWeekendBars(bars: Bar[]): boolean {
+  return bars.some(({ t }) => {
     const day = new Date(t * 1000).getUTCDay();
     return day === 0 || day === 6;
   });
@@ -66,9 +63,9 @@ export function bucketStart(t: number, tf: Timeframe, weekends = false): number 
 
 /**
  * Aggregate ascending daily bars into 3D, weekly (Monday-start), monthly or quarterly bars. `weekends`
- * says how 3D counts days; another symbol compared on a chart is given the chart's.
+ * says how 3D counts days: the symbol's own way, or for another symbol compared on a chart the chart's.
  */
-export function aggregate(daily: Bar[], tf: Timeframe, weekends = tradesWeekends(daily)): Bar[] {
+export function aggregate(daily: Bar[], tf: Timeframe, weekends = hasWeekendBars(daily)): Bar[] {
   if (tf === "D") return daily;
   const out: Bar[] = [];
   let cur: Bar | null = null;

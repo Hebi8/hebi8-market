@@ -1,7 +1,17 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterAll, describe, expect, it } from "vitest";
 import { chartTail, loadChart } from "@/lib/bars";
+import { evalRule } from "@/lib/conditions";
 import { normalizeConfig } from "@/lib/config";
 import type { Bar } from "@/lib/series";
+import { ensureSymbol, markSynced } from "@/lib/store";
+
+// symbols' calendars come from the cache; a scratch one, never data/hebi8.db
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hebi8-3d-"));
+process.env.HEBI8_DB = path.join(dir, "hebi8.db");
+afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 const day = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 1000;
 const iso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -37,6 +47,40 @@ describe("3D charts", () => {
     const coin = loadChart(COIN, "3D", "split", [STOCK], cfg, read);
     expect(coin.bars.map((b) => iso(b.timestamp))).toEqual(["2026-10-02", "2026-10-05", "2026-10-08", "2026-10-11", "2026-10-14"]);
     expect(coin.refs[STOCK].c).toEqual([null, 7, 9, 13, 16]);
+  });
+
+  it("counts the chart's days for what it compares, however few bars it has", () => {
+    // ten days of a coin: two 3D bars, both starting on a weekday, still counted in calendar days
+    const short = (key: string) => (key === COIN ? series("2026-10-05", "2026-10-10", true) : read(key));
+    const coin = loadChart(COIN, "3D", "split", [STOCK], cfg, short);
+    expect(coin.weekends).toBe(true);
+    expect(coin.bars.map((b) => iso(b.timestamp))).toEqual(["2026-10-05", "2026-10-08"]);
+    // Thursday 10-08 to Saturday 10-10: the stock closed on Friday the 9th
+    expect(coin.refs[STOCK].c).toEqual([7, 9]);
+    expect(evalRule(COIN, `close("${STOCK}") > 10`, "3D", cfg, new Map(), short).now).toBe(false);
+    // a synthetic symbol counts the way its first operand does
+    const synth = loadChart(`=${COIN}/${STOCK}`, "3D", "split", [], cfg, short);
+    expect([synth.weekends, synth.bars.map((b) => iso(b.timestamp))]).toEqual([true, ["2026-10-05", "2026-10-08"]]);
+  });
+
+  it("counts by the symbol's trading hours, so a stray weekend bar does not regroup its history", () => {
+    const key = "yahoo:QQQ";
+    ensureSymbol(key);
+    markSynced(key, { hours: "0930-1600", timezone: "America/New_York" });
+    const weekdays = series("2026-09-28", "2026-10-09", false);
+    const before = loadChart(key, "3D", "split", [], cfg, () => weekdays);
+    const after = loadChart(key, "3D", "split", [], cfg, () => [...weekdays, { ...weekdays.at(-1)!, t: day("2026-10-10") }]);
+    expect(after.weekends).toBe(false);
+    expect(after.bars.map((b) => iso(b.timestamp))).toEqual(["2026-09-25", "2026-09-30", "2026-10-05", "2026-10-08"]);
+    expect(after.bars.slice(0, -1)).toEqual(before.bars.slice(0, -1));
+  });
+
+  it("tells an open chart when a series without hours starts counting calendar days, so it loads again", () => {
+    const key = "data:gpu/4090";
+    const weekdays = series("2026-09-28", "2026-10-09", false);
+    expect(chartTail(loadChart(key, "3D", "split", [], cfg, () => weekdays))!.weekends).toBe(false);
+    const saturday = chartTail(loadChart(key, "3D", "split", [], cfg, () => [...weekdays, { ...weekdays.at(-1)!, t: day("2026-10-10") }]))!;
+    expect(saturday.weekends).toBe(true);
   });
 
   it("puts today's unfinished day into the last bar, or starts a new one", () => {

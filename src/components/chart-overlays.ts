@@ -24,7 +24,7 @@ import { lineOf, withAlpha } from "./drawing-style";
 import { BOX_HANDLES, boxHandleAt, channelHandles, dragBoxBy, dragChannel, drawable, yAt, type ChannelHandle } from "./drawing-edit";
 import { FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
 import { measureLines, pct, priceChangeText, volumeBetween } from "./measure";
-import { tradesWeekends, tradingDayOffset, tradingDayTimestamp } from "./drawing-time";
+import { tradingDayOffset, tradingDayTimestamp } from "./drawing-time";
 
 type Params = OverlayCreateFiguresCallbackParams<unknown>;
 type Figures = OverlayFigure[];
@@ -40,9 +40,15 @@ export function setOverlayTheme(next: typeof theme) {
 let activeChart: Chart | null = null;
 /** The scale each drawing was drawn on (KChart keeps it with the drawing); older drawings have none. */
 let scaleOf: (id: string) => PriceScale | undefined = () => undefined;
-export function setOverlayChart(chart: Chart | null, scales: typeof scaleOf = () => undefined) {
+/**
+ * Whether the chart's symbol counts calendar days rather than weekdays past its daily and 3D bars:
+ * the server's answer (`BarsResponse.weekends`), the way its 3D bars are grouped.
+ */
+let weekendsOf: () => boolean = () => false;
+export function setOverlayChart(chart: Chart | null, scales: typeof scaleOf = () => undefined, weekends: typeof weekendsOf = () => false) {
   activeChart = chart;
   scaleOf = scales;
+  weekendsOf = weekends;
   if (chart) patchDailyTime(chart);
 }
 
@@ -236,7 +242,7 @@ function patchDailyTime(chart: Chart) {
     if (period?.type !== "day" || !bars.length) return null;
     const last = bars.length - 1;
     const index = value < (time ? bars[0].timestamp : 0) ? 0 : value > (time ? bars[last].timestamp : last) ? last : null;
-    return index === null ? null : { index, timestamp: bars[index].timestamp, span: period.span, weekends: tradesWeekends(bars) };
+    return index === null ? null : { index, timestamp: bars[index].timestamp, span: period.span, weekends: weekendsOf() };
   };
   for (const method of ["timestampToDataIndex", "timestampToFloatIndex"] as const) {
     const original = store[method];

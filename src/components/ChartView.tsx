@@ -310,9 +310,10 @@ export function ChartView({
         .then(async (res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const s = (await res.json()) as StatusResponse;
-          // the page slept through more than one bar: the tail alone would leave a hole, so load them all
+          // the page slept through more than one bar: the tail alone would leave a hole, so load them all;
+          // the same when the 3D bars are now counted the other way (a dataset's first weekend row)
           // (the next round is still scheduled: when the reload fails, this effect is not started again)
-          if (s.tail?.prev != null && s.tail.prev > (data.bars.at(-1)?.timestamp ?? 0)) setReloadTick((n) => n + 1);
+          if ((s.tail?.prev != null && s.tail.prev > (data.bars.at(-1)?.timestamp ?? 0)) || (s.tail && s.tail.weekends !== data.weekends)) setReloadTick((n) => n + 1);
           else setLive(s);
           schedule(s);
         })
@@ -1036,6 +1037,7 @@ export function ChartView({
                 symbolKey={symbolKey}
                 tf={dataTf}
                 bars={bars ?? null}
+                weekends={data?.weekends ?? false}
                 tail={tail}
                 clock={clock}
                 pricePrecision={data?.pricePrecision ?? 2}
