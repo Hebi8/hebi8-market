@@ -40,12 +40,14 @@ master_current() {
   git merge-base --is-ancestor origin/master master || fail "origin/master has commits the local master lacks"
 }
 
-# <version>, CHANGELOG.md on stdin: it has a section for the version.
+# <version>, CHANGELOG.md on stdin: it has a section for the version. Feed it a file or a variable, never a
+# pipe: grep -q stops at the first match, and under pipefail the writer's SIGPIPE would fail the pipeline.
 has_section() {
   grep -qE "^## v${1//./\\.}( — .*)?$"
 }
 
-# <version>, CHANGELOG.md on stdin: the body of the version's section, without its heading.
+# <version>, CHANGELOG.md on stdin: the body of the version's section, without its heading. awk stops at the
+# next section, so the same goes as for has_section.
 changelog_section() {
   awk -v h="## v$1" '$0 == h || index($0, h " ") == 1 { on = 1; next } on && /^## / { exit } on' | sed '/./,$!d'
 }
@@ -76,9 +78,9 @@ stopped() {
 
 # <version>: sets RELEASE_COMMIT to what was deployed as that version, read from the commit itself and not
 # from whatever this checkout or dev has moved on to: the tag once it exists, else the version commit on master.
-# Its package.json must say the version and its CHANGELOG.md must have the section.
+# Its package.json must say the version and its CHANGELOG.md, kept in RELEASE_CHANGELOG, must have the section.
 release_commit() {
-  local version=$1 tag=v$1 c
+  local version=$1 tag=v$1 c changelog
   if [[ -n $(git tag -l "$tag") ]]; then
     c=$(git rev-parse "$tag^{commit}")
   else
@@ -87,10 +89,12 @@ release_commit() {
   fi
   [[ $(git show "$c:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version') == "$version" ]] ||
     fail "package.json at ${c:0:7} is not $version"
-  git show "$c:CHANGELOG.md" | has_section "$version" || fail "CHANGELOG.md at ${c:0:7} has no '## $tag' section"
+  changelog=$(git show "$c:CHANGELOG.md") || fail "could not read CHANGELOG.md at ${c:0:7}"
+  has_section "$version" <<<"$changelog" || fail "CHANGELOG.md at ${c:0:7} has no '## $tag' section"
   git merge-base --is-ancestor "$c" master || fail "${c:0:7} (v$version) is not on master; it was not deployed"
   git merge-base --is-ancestor "$c" origin/master || fail "origin/master lacks v$version; in $LIVE run git push origin master first"
   RELEASE_COMMIT=$c
+  RELEASE_CHANGELOG=$changelog
 }
 
 # <version> <release|hotfix>: after a successful deploy, tag the version commit, push the tag, publish the
@@ -115,7 +119,7 @@ publish() {
 
   STEP=release
   if ! env -u GH_TOKEN gh release view "$tag" -R "$REPO" >/dev/null 2>&1; then
-    git show "$c:CHANGELOG.md" | changelog_section "$version" | env -u GH_TOKEN gh release create "$tag" -R "$REPO" --verify-tag --title "$tag" --notes-file -
+    changelog_section "$version" <<<"$RELEASE_CHANGELOG" | env -u GH_TOKEN gh release create "$tag" -R "$REPO" --verify-tag --title "$tag" --notes-file -
   fi
 
   STEP=issues
