@@ -3,8 +3,14 @@
 # Issue labels and comments are the triage bot's; pushes and the GitHub Release are the user's own gh.
 
 REPO=Hebi8/hebi8-market
+# this directory, absolute: deploy.sh beside it is the one the version being shipped brings
+LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # the checkout whose master is what is live; deploy.sh moves it after the live instance runs the new version
-HOME_REPO=${HEBI8_REPO:-$HOME/dev/hebi8-market}
+if [[ ${HEBI8_LIVE_HOST:-} == local ]]; then
+  HOME_REPO=${HEBI8_LIVE:-$HOME/dev/hebi8-market}
+else
+  HOME_REPO=${HEBI8_REPO:-$HOME/dev/hebi8-market}
+fi
 NEXT_LABEL=status:next-release
 STEP=checks
 
@@ -63,12 +69,18 @@ bump() {
 }
 
 # <ref> <version> <commit before the bump>: deploy.sh (the one in this checkout, so the version being shipped
-# brings its own), or undo the version commit when it did not go live.
+# brings its own). The version commit is undone only when deploy.sh says the live instance runs what it ran
+# before (status 1); when it cannot tell (3) the commit stays, since the live instance may run it.
 deploy() {
   STEP=deploy
-  if "$(dirname "${BASH_SOURCE[0]}")/deploy.sh" "$1"; then return; fi
+  local rc=0
+  "$LIB_DIR/deploy.sh" "$1" || rc=$?
+  if ((rc == 0)); then return; fi
   if git merge-base --is-ancestor HEAD master; then
     fail "deploy.sh failed after master moved to v$2 (the push to origin?), so the live instance runs it and the version commit stays; in $HOME_REPO run git push origin master, then finish with: scripts/$SCRIPT publish $2"
+  fi
+  if ((rc != 1)); then
+    fail "the deploy's outcome on the live machine is unknown (deploy.sh status $rc), so the version commit stays and nothing was tagged or pushed. Once the live machine answers, from this checkout run scripts/deploy.sh $1 (it finishes a deploy that went through or does it again), then: scripts/$SCRIPT publish $2"
   fi
   git reset -q --hard "$3"
   fail "deploy failed and deploy.sh put the live instance back; the version commit is undone, nothing was tagged or pushed"
