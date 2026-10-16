@@ -29,11 +29,12 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 ## 分支与发版
 
-- **`dev`**：日常开发和每日 issue 巡检的修复都经 PR 合进这里，不上线；合并后 Deploy 工作流把 [dev 实例](#dev-实例)更新到它。
-- **`master`**：线上版本，只经两种 PR 进来：Release PR（`release/vX.Y.Z` → master）和热补丁 PR（`hotfix/vX.Y.Z` → master），**都用 Create a merge commit 合并**（squash / rebase 会让 master 不再是 dev 的祖先）。**合并就是批准**：推到 master 就触发 Deploy 工作流部署到线上，没有额外的审批。每次部署后工作流把 master 合回 dev，所以 master 永远是 dev 的祖先。GitHub 默认分支仍是 master，提交里的 `Fixes #n` 在合进 master 时关掉 issue。
+- **`dev`**：日常开发和每日 issue 巡检的修复都经 PR 合进这里，不上线；合并后 Deploy 工作流把 [dev 实例](#dev-实例)更新到它。**进 dev 的 PR** 由巡检协调者在 Codex + Argon 两份审查都通过后自己合并（`gh pr merge <n> --merge --delete-branch`，用户的 gh 身份），用户也可以随时手动合。dev 在 GitHub 上合并，本地的 `dev` 分支会落后：要「基于 dev」或「和 dev 比」的地方一律先 `git fetch origin`，再用 `origin/dev`（脚本都这样做），不要 checkout 或更新本地的 `dev`。
+- **`master`**：线上版本，只经两种 PR 进来：Release PR（`release/vX.Y.Z` → master）和热补丁 PR（`hotfix/vX.Y.Z` → master），**只由用户手动合并**（协调者和 agent 不合），**都用 Create a merge commit 合并**（squash / rebase 会让 master 不再是 dev 的祖先）。**合并就是批准**：推到 master 就触发 Deploy 工作流部署到线上，没有额外的审批。每次部署后工作流把 master 合回 dev，所以 master 永远是 dev 的祖先。GitHub 默认分支仍是 master，提交里的 `Fixes #n` 在合进 master 时关掉 issue。
 - **版本号**：semver 0.x。minor（`0.Y.0`）= 有新功能，或 vault / `hebi8.yaml` / 密钥目录 / MCP 工具有变化；patch（`0.y.Z`）= 只有修复，热补丁总是 patch。版本号只写在 `package.json`：设置页底部、`/usage`、MCP 的 `serverInfo.version` 和页头「更新」的小圆点都读它。小圆点只为 minor 版本亮，记在浏览器的 localStorage 里，第一次来不亮。
 - **tag 和 Release**：每个版本一个带注释的 tag `vX.Y.Z`，打在部署上线的那个提交上（PR 的合并提交），一个 GitHub Release，正文是 `CHANGELOG.md` 的那一节。由工作流在部署成功后做，身份是 github-actions。
-- **issue 标签 `status:next-release`**：修复合进 dev 时巡检 bot 打上，并评论「已修复，下个版本上线」；发版部署成功后工作流去掉标签、评论「已在 vX.Y.Z 上线」、还开着的关掉。issue 的标签和评论都用巡检 bot 的身份（GitHub App「hebi8/market triage」，只有 Issues 读写；工作流里用 Secrets 里的私钥现取 token，本机用 `~/.local/share/hebi8/triage-token.sh`），tag、Release、合回 dev 用工作流自己的 `GITHUB_TOKEN`。
+- **issue 标签 `status:next-release`**：修复合进 dev 时巡检 bot 打上，并评论「已修复，下个版本上线」；发版部署成功后工作流去掉标签、评论「已在 vX.Y.Z 上线」、还开着的关掉。
+- **用谁的身份**：开 PR、PR 上的评论（包括审查结论）、合并 PR 都用用户自己的 gh；issue 的标签和评论用巡检 bot（GitHub App「hebi8/market triage」，只有 Issues 读写，不加 Contents / Pull requests 权限；工作流里用 Secrets 里的私钥现取 token，本机用 `~/.local/share/hebi8/triage-token.sh`）。部署工作流里的 tag、Release、合回 dev（含它开的 master → dev PR）用工作流自己的 `GITHUB_TOKEN`。
 
 ### 部署工作流
 
@@ -66,15 +67,17 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 | Argon | Google Antigravity，agent config `e641018b-df01-4323-a4d8-84c57d48acbe`，`model: gemini-4-argon-high`，`mode: yolo`（default 模式会卡在权限确认上，只读靠提示词：不改文件、不 commit、不 push、不跑部署脚本） |
 
 - **谁开**：每日巡检里由执行 session 开两个子会话（`useCurrentSessionAsParent`，共用它的 worktree）；自己协调的分支由协调者各开一个独立会话（`worktree: true`），两边用同一份审查提示词。
-- **审什么**：分支相对 dev 的改动（热补丁相对 master），按 blocking / suggestion 分级，结论原样交给协调者。
-- **怎么合并**：协调者把两份合在一起，筛掉只是「多加防御性检查」的意见；真问题修完后，由提出它的那个审查者复审，直到两边都没有 blocking。
+- **审什么**：先 `git fetch origin`，审分支相对 `origin/dev` 的改动（热补丁相对 `origin/master`），按 blocking / suggestion 分级，结论原样交给协调者。
+- **怎么处理意见**：协调者把两份合在一起，筛掉只是「多加防御性检查」的意见；真问题修完后，由提出它的那个审查者复审，直到两边都没有 blocking。
+- **结论贴在 PR 上**：两份审查（最后一轮的结论，以及修过什么）作为 PR 评论贴上，用户的 gh 身份（`gh pr comment <n> --body-file …`）。
+- **谁合并**：进 dev 的 PR，两边都没有 blocking 后协调者 `gh pr merge <n> --merge --delete-branch`；用户也可以随时自己合。热补丁 PR 和 Release PR 进 master，只由用户手动合并。
 
 ### 发版
 
 在仓库的任意一个 checkout 里：
 
 ```bash
-scripts/release.sh notes    # 上一个 tag 以来的 feat / fix、可能要写「升级注意」的提交、等着上线的 issue、建议的版本号
+scripts/release.sh notes    # origin/dev 上一个 tag 以来的 feat / fix、可能要写「升级注意」的提交、等着上线的 issue、建议的版本号
 # 改写成 CHANGELOG.md 顶部的「## vX.Y.Z — 日期」一节，经 PR 合进 dev
 scripts/release.sh 0.3.0    # 开 Release PR
 # 在 GitHub 上看一遍 PR，用 Create a merge commit 合并 → Deploy 工作流部署、发布
@@ -102,12 +105,12 @@ scripts/hotfix.sh 0.3.1         # 版本提交 chore(hotfix): v0.3.1，推分支
 
 `release.sh --deploy 0.3.0` / `hotfix.sh --deploy 0.3.1` 是有工作流之前的路：在本机做版本提交、调 `scripts/deploy.sh`（部署到 `deploy.env` 里的那台，见[正式环境](#正式环境)）、成功后推 master、打 tag、发 Release、处理 issue（热补丁再合回 dev）。给不用 Actions 的自部署者；本仓库只在工作流跑不了时应急用，推 master 之后工作流照样会对同一个提交跑一遍：部署那一步认出已经在跑，tag 和 Release 已经有了就跳过。master 平时只在 GitHub 上动，所以先把仓库主目录的 master 快进到 origin/master（`git -C ~/dev/hebi8-market merge --ff-only origin/master`），不然脚本会因为「origin/master 有本地缺的提交」拒绝。
 
-`--deploy` 发版在 checkout 了 dev 的目录里跑（检查：在 dev 上、工作区干净、master 是 dev 的祖先、origin 上没有本地缺的提交），热补丁在热补丁分支上。停下来时脚本都会说停在哪一步、接下来跑什么：
+`--deploy` 发版和 Release PR 一样从 origin/dev 切 `release/vX.Y.Z`（临时 worktree 里，任意 checkout 都能跑；检查同上，再加上主目录的 master 有 origin/master 的全部提交），部署的是这个分支；热补丁在热补丁分支上跑。合回 dev 也和工作流一样：合进 origin/dev 推上去，dev 只收 PR 时改开 master → dev 的 PR（用你自己的 gh）。停下来时脚本都会说停在哪一步、接下来跑什么：
 
 - **构建或健康检查失败**：`deploy.sh` 已经把线上退回原来的版本，脚本撤掉版本提交，什么都没推，修好再跑一次。
-- **不知道线上成没成**（`deploy.sh` 退出码 3）：版本提交**保留**，什么都没推，master 没动，因为线上可能已经跑着它了。等那台连得上，在同一个目录里再跑一次 `scripts/deploy.sh dev`（热补丁是那个分支）：已经部署完的就只快进、推 master，没部署完的重新做一遍；然后跑 `scripts/release.sh publish 0.3.0`（热补丁是 `scripts/hotfix.sh publish 0.3.1`）。这期间别在版本提交下面再提交，也别手动撤掉它。
+- **不知道线上成没成**（`deploy.sh` 退出码 3）：版本提交**保留**在 release / 热补丁分支上，什么都没推，master 没动，因为线上可能已经跑着它了。等那台连得上，**再跑一次同样的命令**（`scripts/release.sh --deploy 0.3.0` / `scripts/hotfix.sh --deploy 0.3.1`）：它认出分支上的版本提交接着用，`deploy.sh` 已经部署完的就只快进、推 master，没部署完的重新做一遍。这期间别在版本提交下面再提交，也别手动撤掉它。
 - **构建、重启都成功，只是 `deploy.sh` 最后推 master 失败**：线上已经是新版本，本地 master 和版本提交都保留。在仓库的主目录里手动 `git push origin master`，再跑 `publish`。
-- **部署成功之后的步骤停了**（打 tag、推送、Release、issue）：跑 `scripts/release.sh publish 0.3.0`。它按版本找发布的那个提交（有 tag 用 tag，没有就用 master 上的版本提交），从那个提交读 `package.json` 和 CHANGELOG 核对版本，所以在哪个目录跑都行；版本号对不上或没部署过就拒绝，做过的步骤跳过。只差合回 dev 时跑 `scripts/hotfix.sh merge-back`。
+- **部署成功之后的步骤停了**（打 tag、推送、Release、issue、合回 dev）：跑 `scripts/release.sh publish 0.3.0`（热补丁 `scripts/hotfix.sh publish 0.3.1`），做完再合回 dev。它按版本找发布的那个提交（有 tag 用 tag，没有就用 master 上的版本提交），从那个提交读 `package.json` 和 CHANGELOG 核对版本，所以在哪个目录跑都行；版本号对不上或没部署过就拒绝，做过的步骤跳过。只差合回 dev 时跑 `scripts/hotfix.sh merge-back`。
 
 ### CHANGELOG 怎么写
 
