@@ -98,7 +98,7 @@ scripts/hotfix.sh 0.3.1
 **线上跑的是哪个版本看 `refs/hebi8/live`，不看 HEAD**：HEAD 在快进时就动了，那时还没构建、没检查。N100 线上目录的 `.git` 里有三样：
 
 - `refs/hebi8/live`：最后一次确认在跑的 commit，部署的健康检查通过、或者回滚后旧版本的检查通过才写。**新机器第一次部署前要手动设基线**：确认实例正在跑而且页面 200，在线上目录 `git update-ref refs/hebi8/live <它跑的完整 commit>`。没有基线时部署照常走（每次都 `npm ci`），但不会跳过，`status` 也只说「不清楚」。
-- `hebi8-deploy.pending`（进行中标记）：动 HEAD 之前写下，内容是目标、从哪个版本出发、开始时间；只有两种情况才删：新版本检查通过并写好记录之后，或者回滚完、旧版本检查通过之后。它还在，就说明有一次部署或回滚没做完，不管 HEAD 和记录是什么都当作说不清。
+- `hebi8-deploy.pending`（进行中标记）：动 HEAD 之前写下（写临时文件再改名，不会只写了一半），内容是目标、从哪个版本出发、这次的备份目录、开始时间；只有两种情况才删：新版本检查通过并写好记录之后，或者回滚完、旧版本检查通过之后。它还在，就说明有一次部署或回滚没做完，不管 HEAD 和记录是什么都当作说不清。
 - `hebi8-deploy.lock`：同一时间只有一个部署，`status` 也看它。
 
 `deploy.sh` 的退出码：0 已部署（master 已快进；之后推送失败是 git 自己的退出码）；1 没部署，线上跑的还是原来的；3 不知道。N100 那边只要不是正常返回 0（不管是部署失败、ssh 断了、还是 ssh 包装自己出错），都再连一次问 `deploy.sh status`，由它定：
@@ -109,7 +109,7 @@ scripts/hotfix.sh 0.3.1
 | not-live | 没有标记、没人持锁、有记录且不是这个 commit、HEAD 等于记录、页面 200 | 1，`release.sh` / `hotfix.sh` 撤掉版本提交 |
 | busy / unclear / 连不上 | 有人持锁、有标记、没有记录、页面不通、HEAD 和记录对不上，或者问不到 | 3，版本提交保留 |
 
-回滚时旧版本也起不来、或者新版本已经是记录里的那个却不通（没有更早的可退），都留着标记退出 3。续跑同一个部署：没有标记、记录和 HEAD 都是它、页面 200 才跳过构建；否则从「出发的版本」（有标记看标记，没有看记录）重新来：备份、写标记、快进、按出发的版本判断要不要 `npm ci`、构建、检查。上一次断线后还在跑的会先等它跑完（最多 15 分钟）。`HEBI8_LIVE_HOST`（默认 `dreaife@100.102.150.101`，`local` = 在本机部署）、`HEBI8_LIVE`（线上目录，相对 N100 的 home）、`HEBI8_UNIT`、`HEBI8_HEALTH_URL`、`HEBI8_SECRETS` 可改；后四个设了会一起带到 N100。
+回滚时旧版本也起不来、或者新版本已经是记录里的那个却不通（没有更早的可退），都留着标记退出 3。续跑同一个部署：没有标记、记录和 HEAD 都是它、页面 200 才跳过构建；没有标记就从记录的版本正常走一遍。**有标记就是接着那次没做完的**：出发的版本和备份都用标记里的，不再备份（那次的 `npm ci` 可能已经清空了 `node_modules`，加载不了 better-sqlite3 也不影响续跑），一律 `npm ci`；目标相同就不动标记，换了目标（之后又有新提交）才整个换掉，出发的版本和备份照旧。上一次断线后还在跑的会先等它跑完（最多 15 分钟）。`HEBI8_LIVE_HOST`（默认 `dreaife@100.102.150.101`，`local` = 在本机部署）、`HEBI8_LIVE`（线上目录，相对 N100 的 home）、`HEBI8_UNIT`、`HEBI8_HEALTH_URL`、`HEBI8_SECRETS` 可改；后四个设了会一起带到 N100。
 
 **日志**：在 N100 上 `journalctl --user -u hebi8-market -f`（`[hebi8m]` 是调度和同步）；隧道 `docker logs hebi8-tunnel`。从 devNuc：`ssh dreaife@100.102.150.101 'journalctl --user -u hebi8-market -n 100'`。
 
@@ -123,7 +123,8 @@ cd ~/dev/hebi8-market
 export PATH=$HOME/.local/share/hebi8/node/bin:$PATH   # 服务用的 Node 22；用别的版本 npm ci 会弄坏 better-sqlite3
 exec 9>.git/hebi8-deploy.lock && flock 9
 old=$(git rev-parse 'v0.3.0^{commit}')               # 上一个版本；^{commit}：tag 本身是附注 tag 对象，不是 commit
-printf 'target %s\nfrom %s\nstarted %s\n' "$old" "$(git rev-parse refs/hebi8/live)" "$(date -Is)" > .git/hebi8-deploy.pending
+printf 'target %s\nfrom %s\nbackup\nstarted %s\n' "$old" "$(git rev-parse refs/hebi8/live)" "$(date -Is)" > .git/hebi8-deploy.pending.tmp
+mv .git/hebi8-deploy.pending.tmp .git/hebi8-deploy.pending
 git reset --hard "$old"
 systemctl --user stop hebi8-market && npm ci && npm run build && systemctl --user start hebi8-market
 curl -s -o /dev/null -w '%{http_code}\n' http://100.102.150.101:8808/   # 200 才做下一行；不是 200 就先修，标记留着
