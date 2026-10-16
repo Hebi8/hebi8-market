@@ -1,6 +1,6 @@
 # 维护者说明
 
-给改这个仓库的人看：文档放哪、反馈用的 GitHub App、issue 的标签、分支与发版、dev 实例、源码结构和验证命令。数据模型和各模块的设计见 [design.md](design.md)，给 agent 的约定见 [`AGENTS.md`](../AGENTS.md)。
+给改这个仓库的人看：文档放哪、反馈用的 GitHub App、issue 的标签、分支与发版、正式环境、dev 实例、源码结构和验证命令。数据模型和各模块的设计见 [design.md](design.md)，给 agent 的约定见 [`AGENTS.md`](../AGENTS.md)。
 
 ## 文档放哪
 
@@ -9,7 +9,7 @@
 | [`README.md`](../README.md) | 给第一次来的人：一句话介绍、核心功能各一两句、快速开始、数据源概览、文档索引。不写操作细节 |
 | [`docs/usage.md`](usage.md) | 每项功能的完整操作、快捷键、公式、警报和通知、代码指标、MCP 接入 |
 | [`docs/self-hosting.md`](self-hosting.md) | 生产运行、`deploy.sh`、环境变量、vault、实例状态、多人共用、网页登录 |
-| `docs/maintainers.md`（本文） | 文档约定、GitHub App、反馈标签、dev 实例、源码结构、验证 |
+| `docs/maintainers.md`（本文） | 文档约定、GitHub App、反馈标签、分支与发版、正式环境、dev 实例、源码结构、验证 |
 | [`docs/design.md`](design.md) | 设计：数据模型、同步、接口、页面行为的规格 |
 | [`CHANGELOG.md`](../CHANGELOG.md) | 每个版本的更新记录，给用的人看；写法见[分支与发版](#分支与发版) |
 
@@ -45,12 +45,12 @@ scripts/release.sh notes    # 上一个 tag 以来的 feat / fix、可能要写�
 scripts/release.sh 0.3.0
 ```
 
-先检查：在 dev 上、工作区干净、master 是 dev 的祖先、origin 上没有本地缺的提交、tag 还不存在、版本号比 `package.json` 的大、CHANGELOG 有这一节。然后改 `package.json` 和 lockfile 的版本、把这一节的日期填成今天，提交 `chore(release): vX.Y.Z` → `deploy.sh dev`（master 快进到 dev，构建、重启、推 master）→ 打 tag、推 dev 和 tag → `gh release create` → 处理 issue。
+先检查：在 dev 上、工作区干净、master 是 dev 的祖先、origin 上没有本地缺的提交、tag 还不存在、版本号比 `package.json` 的大、CHANGELOG 有这一节。然后改 `package.json` 和 lockfile 的版本、把这一节的日期填成今天，提交 `chore(release): vX.Y.Z` → `deploy.sh dev`（在 homeN100 上快进、构建、重启，成功后本地 master 快进到 dev 并推送，见[正式环境](#正式环境)）→ 打 tag、推 dev 和 tag → `gh release create` → 处理 issue。
 
 停下来时分三种情况，脚本都会说停在哪一步、接下来跑什么：
 
 - **构建或健康检查失败**：`deploy.sh` 已经把线上退回原来的版本，脚本撤掉版本提交，什么都没推，修好再跑一次。
-- **构建、重启都成功，只是 `deploy.sh` 最后推 master 失败**：线上已经是新版本，本地 master 和 dev 上的版本提交都保留。在线上目录 `~/dev/hebi8-market` 里手动 `git push origin master`，再跑 `scripts/release.sh publish 0.3.0`。
+- **构建、重启都成功，只是 `deploy.sh` 最后推 master 失败**：线上已经是新版本，本地 master 和 dev 上的版本提交都保留。在 devNuc 的 `~/dev/hebi8-market`（仓库的主目录）里手动 `git push origin master`，再跑 `scripts/release.sh publish 0.3.0`。
 - **部署成功之后的步骤停了**（打 tag、推送、Release、issue）：跑 `scripts/release.sh publish 0.3.0`。它按版本找发布的那个提交（有 tag 用 tag，没有就用 master 上的 `chore(release): v0.3.0`），从那个提交读 `package.json` 和 CHANGELOG 核对版本，所以在哪个目录跑都行，dev 之后又有新提交也不影响；版本号对不上或没部署过就拒绝。做过的步骤会跳过：issue 的公告评论带一个隐藏标记，有了就不再评论；评论和关闭都成功后才去掉 `status:next-release`，所以中途停下的 issue 下次还会被找到。GitHub 请求失败（不是「没有这个 issue」或「这是 PR」）就停下，不会当成做完。
 
 ### 热补丁
@@ -72,6 +72,33 @@ scripts/hotfix.sh 0.3.1
 - 每个版本一节 `## vX.Y.Z — YYYY-MM-DD`，最新的在最上面，日期发版时由脚本填；按需分「新功能」「修复」「升级注意」小节。
 - 「升级注意」写给自己部署的人：vault / `hebi8.yaml` 的格式、要手动迁移的东西、密钥目录里的文件、MCP 工具的增删改。
 - 不写相对链接：在 `/changelog` 页上会指错地方。
+
+## 正式环境
+
+线上实例跑在 **homeN100**（家里的 N100 小机，Ubuntu 24.04）：**https://market-hebi8.dreaife.tokyo**，Tailscale 上是 http://100.102.150.101:8808。2026-10-16 之前在 devNuc（开发机，agent 在上面构建、会重启），所以搬了出来。
+
+| 在哪（homeN100） | 是什么 |
+|---|---|
+| `~/dev/hebi8-market` | 线上目录：master 的 checkout，`vault/`、`data/hebi8.db` 在里面 |
+| `~/.config/hebi8/market/` | 密钥目录（700 / 600） |
+| systemd 用户服务 `hebi8-market` | `next start -H 100.102.150.101 -p 8808`；Node 22 来自 unit 里的 `PATH`（`~/.local/share/hebi8/node` 链到 nvm 的 v22.22.3），`deploy.sh` 构建时也用它，better-sqlite3 是给它编译的 |
+| `~/services/hebi8-tunnel` | 只管这个域名的 Cloudflare Tunnel（`hebi8-market`，容器 `hebi8-tunnel`），和 N100 自己的 `cloudflared.service` 互不相干 |
+| `~/dev/hebi8-gpu-prices` | 数据集 `cnCDIY` 的 clone；用户 timer `hebi8-gpu-prices-pull`（06:50 / 08:50 JST）从 devNuc 拉，OCR 更新仍在 devNuc 上跑 |
+| `~/backups/hebi8/` | 每次部署前的备份 |
+
+还留在 devNuc 上的：仓库的主目录 `~/dev/hebi8-market`（各个 worktree 都挂在它上面，它的 master 就是发布过的版本；服务已停用）；Telegram 走 devNuc 上共用的本地 Bot API（`~/services/telegram-bot-api`），由 devNuc 的 `hebi8-telegram-forward` 把 100.92.194.31:18081 转给它，只放 N100 的地址进来，所以 **Telegram 推送依赖 devNuc 在线**；旧地址 http://100.92.194.31:8808 由 `hebi8-old-address` 308 到新地址（过渡用）。两个都在 devNuc 的 `~/services/hebi8-n100-bridge/`。
+
+**部署**：只经 `release.sh` / `hotfix.sh`，它们在 devNuc 的 dev（或热补丁）checkout 里调同目录的 `scripts/deploy.sh <分支>`：
+
+1. 在 devNuc 的 `~/dev/hebi8-market`（`HEBI8_REPO`）检查：在 master、干净、分支是 master 的快进。
+2. 把那个 commit 用 git 经 ssh 直接推进 N100 线上目录的 `refs/hebi8/deploy`（不经 GitHub，没上线的版本提交不会出现在 origin），再用 ssh 在 N100 上跑**同一个** `deploy.sh live <commit>`：备份 → 快进 master → 依赖有变就 `npm ci` → 构建 → 重启 → 健康检查（默认 http://100.102.150.101:8808/），构建或检查失败就退回原来的 commit 重新构建，非零退出。
+3. N100 成功后，devNuc 的 master 快进到这个 commit，由 devNuc 推 master（推送只在 devNuc，用自己的身份）。
+
+续跑：N100 上已经是这个 commit 而且页面 200，就直接算成功（比如 ssh 断在部署之后）；ssh 报错时也先问 N100 的 HEAD，是这个 commit 就接着推 master。`HEBI8_LIVE_HOST`（默认 `dreaife@100.102.150.101`，`local` = 在本机部署）、`HEBI8_LIVE`（线上目录，相对 N100 的 home）、`HEBI8_UNIT`、`HEBI8_HEALTH_URL`、`HEBI8_SECRETS` 可改；后四个设了会一起带到 N100。
+
+**日志**：在 N100 上 `journalctl --user -u hebi8-market -f`（`[hebi8m]` 是调度和同步）；隧道 `docker logs hebi8-tunnel`。从 devNuc：`ssh dreaife@100.102.150.101 'journalctl --user -u hebi8-market -n 100'`。
+
+**回滚一个版本**：在 N100 的线上目录 `git reset --hard <上一个版本的 tag>`，`systemctl --user stop hebi8-market && npm ci && npm run build && systemctl --user start hebi8-market`；数据要退回就从 `~/backups/hebi8/<时间>-deploy/` 拷回 `vault/`、密钥目录，`hebi8.db` 放回 `data/`（先停服务）。然后 devNuc 的 master 也 `git reset --hard` 到同一个 commit（origin 上的 master 不能倒退：往前修一个热补丁）。
 
 ## dev 实例
 
@@ -95,7 +122,7 @@ scripts/hotfix.sh 0.3.1
 
 **自动更新**：分支动了，就在 `releases/<新 commit>/` 里另建一份：`package-lock.json` 和正在跑的版本一样就硬链接它的 `node_modules`，否则 `npm ci`（better-sqlite3 要现场编译，缺编译器时自动 `apt-get install build-essential`）；`npm run build` 的时候旧版本照常服务。构建成功才停旧的、起新的，60 秒内首页不返回 200 就切回旧的。构建或启动失败都记进 `state/failed`，旧版本一直在跑。不推送，不备份。
 
-**每天同步**：由 memoh 拉，经 `lody-lan lan shell devNuc` 在线上目录里跑 `export.mjs`（只读），带回三样，换进去后重启：
+**每天同步**：由 memoh 拉，经 `lody-lan lan shell homeN100` 在线上目录里用线上服务的 Node（`~/.local/share/hebi8/node`）跑 `export.mjs`（只读），带回三样，换进去后重启：
 
 - 根 vault（owner 的）：`hebi8.yaml`、`notes/`、`journal/`、`charts/`。**`users/` 不带**，别人的 vault 不离开线上。到了 dev 上由 `prepare-vault.mjs` 去掉 `owner`、把本机数据集改指 `datasets/<名字>`。
 - 数据库快照（`db.backup()`），省得冷启动全量拉：`stats`、`alert_state` 只留根 vault（`vault = ''`）的行，`traffic`、`visitors`、`upstream`、`usage_alerts` 清空；K 线、标的、报价、标的资料原样。
