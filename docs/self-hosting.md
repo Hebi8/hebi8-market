@@ -19,6 +19,8 @@ npm run dev        # http://localhost:3000
 
 已经作为 systemd 用户服务跑着的实例，用 `scripts/deploy.sh <分支或 commit>` 更新：备份 `vault/`、密钥目录和数据库到 `~/backups/hebi8/<时间>-deploy/`，把 master 快进到这个分支，依赖有变就 `npm ci`，重新构建并重启，页面返回 200 后推送 master；构建或检查失败就退回原来的 commit 重新构建。分支必须是 master 的快进，线上目录必须干净。`HEBI8_LIVE`、`HEBI8_UNIT`、`HEBI8_HEALTH_URL` 可改目录、服务名和检查地址。
 
+本仓库的线上实例不直接调它：发版用 `scripts/release.sh`，热补丁用 `scripts/hotfix.sh`，两者都经 `deploy.sh` 部署（见 [maintainers.md](maintainers.md#分支与发版)）。自己部署的实例跟着 `master` 更新就是跟着发布过的版本，每个版本的 tag 和变化见 [CHANGELOG.md](../CHANGELOG.md)。
+
 ## 环境变量
 
 | 环境变量 | 默认值 | 作用 |

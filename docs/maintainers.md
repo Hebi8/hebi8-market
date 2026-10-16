@@ -1,6 +1,6 @@
 # 维护者说明
 
-给改这个仓库的人看：文档放哪、反馈用的 GitHub App、issue 的标签、源码结构和验证命令。数据模型和各模块的设计见 [design.md](design.md)，给 agent 的约定见 [`AGENTS.md`](../AGENTS.md)。
+给改这个仓库的人看：文档放哪、反馈用的 GitHub App、issue 的标签、分支与发版、源码结构和验证命令。数据模型和各模块的设计见 [design.md](design.md)，给 agent 的约定见 [`AGENTS.md`](../AGENTS.md)。
 
 ## 文档放哪
 
@@ -11,6 +11,7 @@
 | [`docs/self-hosting.md`](self-hosting.md) | 生产运行、`deploy.sh`、环境变量、vault、实例状态、多人共用、网页登录 |
 | `docs/maintainers.md`（本文） | 文档约定、GitHub App、反馈标签、源码结构、验证 |
 | [`docs/design.md`](design.md) | 设计：数据模型、同步、接口、页面行为的规格 |
+| [`CHANGELOG.md`](../CHANGELOG.md) | 每个版本的更新记录，给用的人看；写法见[分支与发版](#分支与发版) |
 
 新功能或改了行为时，操作说明写进 `usage.md`（运维相关写进 `self-hosting.md`），规格写进 `design.md`；README 只在功能列表需要多一行、或快速开始变了时才改。
 
@@ -26,6 +27,48 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 所有新 issue 还会由 `.github/workflows/issue-triage.yml` 分诊（模型走 OpenAI 兼容接口，项目背景在 `.github/triage-context.md`）：打一个类型、`area:*`，以及 `triage:simple` 或 `triage:judgment`。
 
+## 分支与发版
+
+- **`dev`**：日常开发和每日 issue 巡检的修复都合进这里，不上线。
+- **`master`**：线上版本，只进两种东西：发版（dev 快进进来）和热补丁。master 永远是 dev 的祖先，所以发版总能快进；`deploy.sh` 的快进检查保证这一点。GitHub 默认分支仍是 master，提交里的 `Fixes #n` 在推到 master 时关掉 issue。
+- **版本号**：semver 0.x。minor（`0.Y.0`）= 有新功能，或 vault / `hebi8.yaml` / 密钥目录 / MCP 工具有变化；patch（`0.y.Z`）= 只有修复，热补丁总是 patch。版本号只写在 `package.json`：设置页底部、`/usage`、MCP 的 `serverInfo.version` 和页头「更新」的小圆点都读它。小圆点只为 minor 版本亮，记在浏览器的 localStorage 里，第一次来不亮。
+- **tag 和 Release**：每个版本一个带注释的 tag `vX.Y.Z`，打在发布时的 master 上，一个 GitHub Release，正文是 `CHANGELOG.md` 的那一节。
+- **issue 标签 `status:next-release`**：修复合进 dev 时巡检 bot 打上，并评论「已修复，下个版本上线」；发版时脚本去掉标签、评论「已在 vX.Y.Z 上线」、还开着的关掉。issue 的标签和评论都用巡检 bot 的身份（`GH_TOKEN=$(~/.local/share/hebi8/triage-token.sh)`），推送和 Release 用自己的 gh。
+
+### 发版
+
+在 checkout 了 dev 的那个目录里：
+
+```bash
+scripts/release.sh notes    # 上一个 tag 以来的 feat / fix、可能要写「升级注意」的提交、等着上线的 issue、建议的版本号
+# 改写成 CHANGELOG.md 顶部的「## vX.Y.Z — 日期」一节，在 dev 上提交
+scripts/release.sh 0.3.0
+```
+
+先检查：在 dev 上、工作区干净、master 是 dev 的祖先、origin 上没有本地缺的提交、tag 还不存在、版本号比 `package.json` 的大、CHANGELOG 有这一节。然后改 `package.json` 和 lockfile 的版本、把这一节的日期填成今天，提交 `chore(release): vX.Y.Z` → `deploy.sh dev`（master 快进到 dev，构建、重启、推 master）→ 打 tag、推 dev 和 tag → `gh release create` → 处理 issue。
+
+部署失败时 `deploy.sh` 已经把线上退回去，脚本也撤掉版本提交，什么都没推。部署成功之后哪一步停了，脚本会说停在哪，照提示跑 `scripts/release.sh publish 0.3.0` 把剩下的做完（做过的会跳过）。
+
+### 热补丁
+
+线上的急 bug 不等发版：
+
+```bash
+git worktree add -b hotfix/<名字> <目录> master
+# 在那里修，CHANGELOG.md 顶部加「## v0.3.1」一节（一行就够），提交
+scripts/hotfix.sh 0.3.1
+```
+
+在热补丁分支上跑，版本必须是线上版本的下一个 patch。版本提交 → `deploy.sh <这个分支>` → 打 tag、推 tag、Release，给提交里 `Fixes #n` 的 issue 评论并关掉 → **把 master 合回 dev 并推 dev**（在 checkout 了 dev 的目录里合，没有就开一个临时 worktree）。合并有冲突时脚本停下，说在哪个目录手动合；只差合回这一步时跑 `scripts/hotfix.sh merge-back`，部署之后别的步骤停了跑 `scripts/hotfix.sh publish 0.3.1`。
+
+### CHANGELOG 怎么写
+
+- `CHANGELOG.md` 是唯一的更新记录：`/changelog` 页和 GitHub Release 的正文都取它。
+- 中文，站在用的人的角度，一行一条：现在能做什么、什么不再出错；不写实现、不写 commit 号，不逐条抄 commit。
+- 每个版本一节 `## vX.Y.Z — YYYY-MM-DD`，最新的在最上面，日期发版时由脚本填；按需分「新功能」「修复」「升级注意」小节。
+- 「升级注意」写给自己部署的人：vault / `hebi8.yaml` 的格式、要手动迁移的东西、密钥目录里的文件、MCP 工具的增删改。
+- 不写相对链接：在 `/changelog` 页上会指错地方。
+
 ## 源码结构
 
 ```text
@@ -35,6 +78,7 @@ src/
 │   ├── chart/[key]/page.tsx  图表页 /chart/yahoo%3ASPY
 │   ├── review/page.tsx       复盘
 │   ├── settings/page.tsx     设置：agent 的接入令牌；从 TradingView 导入自选和画线、导出自选
+│   ├── changelog/page.tsx    更新记录：渲染仓库根的 CHANGELOG.md（页头「更新」和它的小圆点是 ChangelogLink）
 │   ├── claim/page.tsx        「在其他设备上登录」的确认页
 │   ├── actions.ts            Server Actions：写 yaml / 笔记 / 日志 / 图表状态，刷新；和 agent 共用的写操作是 lib/ops.ts 的薄壳
 │   ├── token-actions.ts      Server Actions：生成 / 吊销 agent 的令牌

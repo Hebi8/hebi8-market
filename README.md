@@ -64,8 +64,9 @@ npm run dev        # http://localhost:3000
 |---|---|
 | [docs/usage.md](docs/usage.md) | 各功能的完整操作、快捷键、公式、警报和通知、代码指标、MCP 接入 |
 | [docs/self-hosting.md](docs/self-hosting.md) | 生产运行和更新、环境变量、vault、查看实例状态、多人共用、网页登录 |
-| [docs/maintainers.md](docs/maintainers.md) | 文档约定、反馈用的 GitHub App、issue 标签、源码结构、验证命令 |
+| [docs/maintainers.md](docs/maintainers.md) | 文档约定、反馈用的 GitHub App、issue 标签、分支与发版、源码结构、验证命令 |
 | [docs/design.md](docs/design.md) | 设计文档：数据模型、同步、接口、页面行为 |
+| [CHANGELOG.md](CHANGELOG.md) | 每个版本的更新记录，升级前看「升级注意」 |
 
 ## License
 
