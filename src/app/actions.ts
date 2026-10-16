@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
-import { CHART_STYLES, USAGE_LIMITS, resolveKey, type ChartPrefs, type FormulaDef, type UsageLimits } from "@/lib/config";
+import { CHART_STYLES, USAGE_LIMITS, parseLineStyles, resolveKey, type ChartPrefs, type LineOverride, type FormulaDef, type UsageLimits } from "@/lib/config";
 import * as ops from "@/lib/ops";
 import type { AddSymbolInput, AlertInput } from "@/lib/ops";
 import { CHANGE_PERIODS, MAX_PERIODS } from "@/lib/periods";
@@ -286,7 +286,9 @@ export async function saveChartState(key: string, state: ChartState): Promise<Ac
   });
 }
 
-export async function setChartPrefs(partial: Partial<Omit<ChartPrefs, "panes">> & { prices?: Prices; panes?: Record<string, "main" | "sub" | null> }): Promise<ActionResult> {
+export async function setChartPrefs(
+  partial: Partial<Omit<ChartPrefs, "panes" | "styles">> & { prices?: Prices; panes?: Record<string, "main" | "sub" | null>; styles?: Record<string, LineOverride[] | null> },
+): Promise<ActionResult> {
   return attempt(({ dir, vault }) => {
     const cfg = readConfig(dir);
     updateConfig(dir, (doc) => {
@@ -317,6 +319,16 @@ export async function setChartPrefs(partial: Partial<Omit<ChartPrefs, "panes">> 
           else if (doc.hasIn(["chart", "panes"])) setScalar(doc, ["chart", "panes", name], pane);
           else doc.setIn(["chart", "panes"], flowNode(doc, { [name]: pane }));
         }
+      }
+      if (partial.styles !== undefined) {
+        // an indicator back at its defaults leaves, and so does an empty `styles`
+        for (const [name, lines] of Object.entries(partial.styles)) {
+          const parsed = parseLineStyles(lines);
+          if (parsed.length) setList(doc, ["chart", "styles", name], parsed);
+          else doc.deleteIn(["chart", "styles", name]);
+        }
+        const styles = doc.getIn(["chart", "styles"]);
+        if (isMap(styles) && !styles.items.length) doc.deleteIn(["chart", "styles"]);
       }
       if (partial.prices !== undefined) {
         if (partial.prices !== "split" && partial.prices !== "total") throw new Error("无效的价格模式");

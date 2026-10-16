@@ -48,7 +48,7 @@ describe("normalizeConfig", () => {
     expect(cfg.groups[3].symbols[1]).toEqual({ key: "yahoo:600519.SS", name: "贵州茅台", bench: "tv:SSE:000300", group: "港 A" });
     expect(cfg.groups[4].symbols[0].key).toBe("=BTC/GOLD");
     expect(cfg.periods).toEqual(["1W", "1M", "1Y"]);
-    expect(cfg.chart).toEqual({ tf: "W", log: true, style: "candle_solid", indicators: ["MA", "VOL"], params: { W: { MA: [10, 40, 200] } }, panes: {} });
+    expect(cfg.chart).toEqual({ tf: "W", log: true, style: "candle_solid", indicators: ["MA", "VOL"], params: { W: { MA: [10, 40, 200] } }, panes: {}, styles: {} });
     // nothing is assigned: alerts are each person's own
     expect(cfg.alerts).toEqual([]);
   });
@@ -73,6 +73,20 @@ describe("normalizeConfig", () => {
   it("keeps only main or sub for moved indicators", () => {
     const cfg = normalizeConfig({ chart: { panes: { VOL: "main", MA: "sub", RSI: "left" } } });
     expect(cfg.chart.panes).toEqual({ VOL: "main", MA: "sub" });
+  });
+
+  it("keeps each line's valid color, width and dash by its index, dropping the rest", () => {
+    const cfg = normalizeConfig({
+      chart: {
+        styles: {
+          MA: [{ color: "#F23645", size: 2 }, null, { size: 9, dash: "dotted", color: "red" }, {}],
+          F_x: [{ color: "#abc", dash: "wavy" }],
+          EMA: [{}, { size: 0 }],
+          RSI: "thick",
+        },
+      },
+    });
+    expect(cfg.chart.styles).toEqual({ MA: [{ color: "#f23645", size: 2 }, {}, { dash: "dotted" }], F_x: [{ color: "#aabbcc" }] });
   });
 
   it.each([

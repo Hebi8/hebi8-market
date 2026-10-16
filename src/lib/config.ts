@@ -1,4 +1,5 @@
 /** Typed view of `vault/hebi8.yaml`; pure so it can be tested without a file system. */
+import type { LineDash } from "@/components/drawing-style";
 import { compile } from "@/indicators/formula";
 import { ALERT_CHECKS, ALERT_CONDS, defaultCheck, describeCondition, parseCondition, type AlertCheck, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { CHANGE_PERIODS, DEFAULT_PERIODS, MAX_PERIODS, type ChangePeriod } from "./periods";
@@ -73,6 +74,17 @@ export const isLive = (a: Pick<AlertDef, "enabled" | "draft">) => a.enabled && !
 
 export type ParamOverrides = Partial<Record<Timeframe, Record<string, number[]>>>;
 
+/** One line of an indicator as restyled on its 样式 page; what is left out is KLineChart's default for that line. */
+export interface LineOverride {
+  /** `#rrggbb` */
+  color?: string;
+  /** 1–4 px */
+  size?: number;
+  dash?: LineDash;
+}
+
+export const LINE_WIDTHS = [1, 2, 3, 4];
+
 export interface ChartPrefs {
   tf: Timeframe;
   log: boolean;
@@ -82,6 +94,8 @@ export interface ChartPrefs {
   params: ParamOverrides;
   /** Indicators moved off their usual pane (legend ⋯ → 移动到), by the same names as `indicators` */
   panes: Record<string, "main" | "sub">;
+  /** Line styles by the same names as `indicators`, one entry per line in the order it is drawn; not per timeframe */
+  styles: Record<string, LineOverride[]>;
 }
 
 export interface Config {
@@ -123,7 +137,7 @@ export const USAGE_LIMITS: Record<keyof UsageLimits, string> = { visitors: "每�
 
 export class ConfigError extends Error {}
 
-export const DEFAULT_CHART: ChartPrefs = { tf: "W", log: true, style: "candle_solid", indicators: ["MA", "VOL"], params: {}, panes: {} };
+export const DEFAULT_CHART: ChartPrefs = { tf: "W", log: true, style: "candle_solid", indicators: ["MA", "VOL"], params: {}, panes: {}, styles: {} };
 
 const obj = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -183,6 +197,37 @@ function parseParams(raw: unknown): ParamOverrides {
     out[tf] = params;
   }
   return out;
+}
+
+/** `#abc` or `#aabbcc`, as lower-case `#aabbcc`; anything else is null. */
+function hexColor(v: unknown): string | null {
+  const m = typeof v === "string" ? /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v.trim()) : null;
+  if (!m) return null;
+  const hex = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
+  return `#${hex.toLowerCase()}`;
+}
+
+/** An indicator's line styles with the invalid values dropped; trailing lines left at their defaults go too. */
+export function parseLineStyles(raw: unknown): LineOverride[] {
+  const lines = list(raw).map((entry) => {
+    const d = obj(entry);
+    const color = hexColor(d.color);
+    const size = Number(d.size);
+    return {
+      ...(color ? { color } : {}),
+      ...(LINE_WIDTHS.includes(size) ? { size } : {}),
+      ...(d.dash === "solid" || d.dash === "dashed" || d.dash === "dotted" ? { dash: d.dash as LineDash } : {}),
+    };
+  });
+  while (lines.length && !Object.keys(lines.at(-1)!).length) lines.pop();
+  return lines;
+}
+
+function parseStyles(raw: unknown): Record<string, LineOverride[]> {
+  return Object.fromEntries(Object.entries(obj(raw)).flatMap(([name, lines]) => {
+    const parsed = parseLineStyles(lines);
+    return parsed.length ? [[name, parsed]] : [];
+  }));
 }
 
 /** What GitHub allows in a login: letters, digits and single inner hyphens, at most 39 characters. */
@@ -291,6 +336,7 @@ export function normalizeConfig(raw: unknown): Config {
       indicators: Array.isArray(chart.indicators) ? chart.indicators.map(String) : DEFAULT_CHART.indicators,
       params: parseParams(chart.params),
       panes: Object.fromEntries(Object.entries(obj(chart.panes)).filter((e): e is [string, "main" | "sub"] => e[1] === "main" || e[1] === "sub")),
+      styles: parseStyles(chart.styles),
     },
     usage,
     ignored: [],
