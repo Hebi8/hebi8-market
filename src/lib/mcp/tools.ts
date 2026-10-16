@@ -46,7 +46,7 @@ function tool<S extends z.ZodRawShape>(def: { name: string; description: string;
 }
 
 const KEY = "an alias from the user's yaml (`BTC`), a full key `source:ticker` (`yahoo:NVDA`, `binance:BTCUSDT`, `tv:TVC:GOLD`, `data:gpu/4090-xianyu`) or a synthetic `=expression` (`=BTC/GOLD`)";
-const tf = z.enum(TIMEFRAMES).default("D").describe("Timeframe: D daily (default), W weekly, M monthly, Q quarterly. There is nothing below daily.");
+const tf = z.enum(TIMEFRAMES).default("D").describe("Timeframe: D daily (default), 3D three trading days, W weekly, M monthly, Q quarterly. There is nothing below daily.");
 const check = z
   .enum(["price", "close"])
   .default("price")
@@ -126,7 +126,7 @@ export const TOOLS: Tool[] = [
   tool({
     name: "get_bars",
     description:
-      "OHLCV bars of one symbol from the cache, oldest first, the newest `limit` of them. Daily bars are the smallest unit (no intraday bars); W, M and Q are aggregated from them and their last bar is the period so far. The last daily bar is today's unfinished one when a quote is newer than the last sync; `last_daily_bar.closed` says whether that bar's trading day is over (the exchange has closed, or the UTC day ended for crypto), whatever its price came from. Prices follow the user's `prices` setting. Only cached symbols have bars: every watched symbol, its benchmark and anything an alert or formula refers to; add_symbol caches a new one.",
+      "OHLCV bars of one symbol from the cache, oldest first, the newest `limit` of them. Daily bars are the smallest unit (no intraday bars); 3D, W, M and Q are aggregated from them (dated by the first day of the period) and their last bar is the period so far. The last daily bar is today's unfinished one when a quote is newer than the last sync; `last_daily_bar.closed` says whether that bar's trading day is over (the exchange has closed, or the UTC day ended for crypto), whatever its price came from. Prices follow the user's `prices` setting. Only cached symbols have bars: every watched symbol, its benchmark and anything an alert or formula refers to; add_symbol caches a new one.",
     input: {
       key: z.string().describe(`The symbol: ${KEY}`),
       tf,

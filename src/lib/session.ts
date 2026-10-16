@@ -2,6 +2,7 @@
  * When the unfinished bar of a timeframe closes, for the countdown under the last price (design
  * §5.2), TradingView's way. Pure, shared by the server's tests and the chart.
  */
+import { bucketStart } from "./series";
 import type { QuoteSession } from "./sources/types";
 import type { Timeframe } from "./symbols";
 import { dayOf, partsIn, zonedToUtc, type Parts } from "./tz";
@@ -72,21 +73,33 @@ export function closeOn(calendar: TradingCalendar, day: Parts): { hh: number; mm
   return m ? { hh: Number(m[1]), mm: Number(m[2]) } : null;
 }
 
-/** The start of the next UTC day, week (Monday), month or quarter after `now`. */
+/** The start of the next UTC day, three days, week (Monday), month or quarter after `now`. */
 function nextUtcBucket(now: number, tf: Timeframe): number {
   const d = new Date(now);
   const [y, m, day] = [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()];
   if (tf === "D") return Date.UTC(y, m, day + 1);
+  if (tf === "3D") return (bucketStart(Date.UTC(y, m, day) / 1000, tf, true) + 3 * 86400) * 1000;
   if (tf === "W") return Date.UTC(y, m, day + 7 - ((d.getUTCDay() + 6) % 7));
   return tf === "M" ? Date.UTC(y, m + 1, 1) : Date.UTC(y, Math.floor(m / 3) * 3 + 3, 1);
 }
 
-/** The last day with trading in the week (Monday to Sunday), month or quarter a trading day is in: holidays and weekends at the end are stepped over. */
+/** Unix seconds at UTC midnight of a day. */
+const secondsOf = (p: Parts) => Date.UTC(p.y, p.m - 1, p.d) / 1000;
+
+/** The last day of the 3D bar (three weekdays, the weekend after a Friday with it) a day is in. */
+function lastOfThreeDays(day: Parts): Parts {
+  const start = bucketStart(secondsOf(day), "3D");
+  let last = day;
+  while (bucketStart(secondsOf(dayOf(last, 1)), "3D") === start) last = dayOf(last, 1);
+  return last;
+}
+
+/** The last day with trading in the 3D bar, week (Monday to Sunday), month or quarter a trading day is in: holidays and weekends at the end are stepped over. */
 function lastTradingDay(calendar: TradingCalendar, day: Parts, tf: Timeframe): Parts {
   if (tf === "D") return day;
   const endMonth = tf === "M" ? day.m : Math.floor((day.m - 1) / 3) * 3 + 3;
   // day 0 of the next month is the last day of this one
-  let last = tf === "W" ? dayOf(day, (7 - weekday(day)) % 7) : dayOf({ ...day, m: endMonth + 1, d: 0 });
+  let last = tf === "3D" ? lastOfThreeDays(day) : tf === "W" ? dayOf(day, (7 - weekday(day)) % 7) : dayOf({ ...day, m: endMonth + 1, d: 0 });
   while (!sameOrAfter(day, last) && !closeOn(calendar, last)) last = dayOf(last, -1);
   return last;
 }
@@ -97,9 +110,10 @@ const LOOKAHEAD_DAYS = 14;
 /**
  * When the bar of `tf` that is forming now closes (ms), or null when there is nothing to count
  * down to: no quote that is still current, the market is not in its regular session, or its hours
- * are unknown. Around the clock (crypto) bars end with the UTC day, week, month or quarter. An
- * exchange's daily bar ends at the first close after the quote, at the earlier time on a half
- * day; a weekly, monthly or quarterly one at the close of the period's last day with trading.
+ * are unknown. Around the clock (crypto) bars end with the UTC day, three days, week, month or
+ * quarter. An exchange's daily bar ends at the first close after the quote, at the earlier time on
+ * a half day; a 3D, weekly, monthly or quarterly one at the close of the period's last day with
+ * trading.
  * Without holidays and corrections every weekday counts as a full trading day.
  */
 export function barCloseAt(tf: Timeframe, now: number, clock: SessionClock): number | null {

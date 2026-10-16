@@ -2,7 +2,7 @@
 import type { RefSeries } from "@/indicators/formula";
 import type { BarsTail, ChartBar } from "./api-types";
 import { findItem, type Config } from "./config";
-import { aggregate, align, applyPrices, type Bar, type Prices } from "./series";
+import { aggregate, align, applyPrices, tradesWeekends, type Bar, type Prices } from "./series";
 import { dayCloseAt } from "./session";
 import { calendarOfRow, getSymbol, readDaily } from "./store";
 import { isSynthetic, parseKey, type Timeframe } from "./symbols";
@@ -56,17 +56,22 @@ export function synthNoData(key: string, cfg: Config, syncError: (key: string) =
   return missing.map((k) => `${k}：${syncError(k) ?? "暂无数据，等待同步"}`).join("；");
 }
 
-export function loadSeries(key: string, tf: Timeframe, prices: Prices, cfg: Config, read: DailyReader = readDaily): Bar[] {
-  return aggregate(loadDaily(key, prices, cfg, read), tf);
+export function loadSeries(key: string, tf: Timeframe, prices: Prices, cfg: Config, read: DailyReader = readDaily, weekends?: boolean): Bar[] {
+  return aggregate(loadDaily(key, prices, cfg, read), tf, weekends);
 }
 
-/** Other symbols aligned to `bars`, as the columns the formula engine and the chart consume. */
+/**
+ * Other symbols aligned to `bars`, as the columns the formula engine and the chart consume. On 3D
+ * they count days the way `bars` does (a 3D bar starting on a weekend means calendar days), so
+ * their bars start on the same days.
+ */
 export function loadRefs(bars: Bar[], keys: string[], tf: Timeframe, prices: Prices, cfg: Config, read: DailyReader = readDaily): Record<string, RefSeries> {
   const refs: Record<string, RefSeries> = {};
+  const weekends = tradesWeekends(bars);
   for (const key of new Set(keys)) {
     let other: Bar[];
     try {
-      other = loadSeries(key, tf, prices, cfg, read);
+      other = loadSeries(key, tf, prices, cfg, read, weekends);
     } catch {
       continue;
     }

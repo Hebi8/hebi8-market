@@ -27,7 +27,7 @@ export function formulaReference(): string {
   const examples = FORMULA_EXAMPLES.map((e) => `- ${e.label}: \`${e.formula.replace(/\n/g, "; ")}\``);
   return `# Formulas
 
-A formula is evaluated over a whole series of bars of one symbol on one timeframe: ${TIMEFRAMES.map((tf) => `${tf} (${TF_LABELS[tf]}线)`).join(", ")}. Daily bars are the smallest unit; there are no intraday bars. W, M and Q are aggregated from daily bars (weeks start on Monday), and their last bar is the period so far.
+A formula is evaluated over a whole series of bars of one symbol on one timeframe: ${TIMEFRAMES.map((tf) => `${tf} (${TF_LABELS[tf]}线)`).join(", ")}. Daily bars are the smallest unit; there are no intraday bars. 3D, W, M and Q are aggregated from daily bars, and their last bar is the period so far. Weeks start on Monday. 3D counts weekdays in threes from Monday 1970-01-05 (calendar days for a symbol that trades on weekends, such as crypto), so its bars never shift as days come in and symbols counted alike share them; a holiday leaves its bar a day short, and \`close(X)\` on 3D counts days the way the formula's own symbol does.
 
 ## Syntax
 
@@ -63,7 +63,7 @@ An alert is one entry of \`alerts\` in the user's yaml: either a formula (\`when
 |---|---|
 | \`key\` | The symbol (alias or full key, synthetic ones too). Without it the alert covers every watched symbol, each judged on its own with its own \`bench\`. |
 | \`when\` | A boolean formula. It fires when it turns true (false on the previous check, true now), at most once per bar of its timeframe. |
-| \`tf\` | Timeframe of \`when\`: D (default), W, M or Q. |
+| \`tf\` | Timeframe of \`when\`: D (default), 3D, W, M or Q. |
 | \`cond\` + \`value\` | A condition on the daily close / latest price, see below. Needs \`key\`, except the two \`moving_*_pct\` conditions. |
 | \`trigger\` | \`once\` (default: the alert switches itself off after firing) or \`bar\` (at most once per daily bar). Always \`bar\` on the whole watchlist. |
 | \`check\` | When it is judged. \`price\`: after every quote round (about every 5 minutes while the market is open), on daily bars whose last one is today's unfinished bar. \`close\`: only after a daily sync, on closed daily bars. Default \`price\` with a \`key\`, \`close\` without. |

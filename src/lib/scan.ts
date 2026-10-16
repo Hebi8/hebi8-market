@@ -55,7 +55,7 @@ export interface ScanRow {
   /** Whether it is true on the last bar and was on the one before, as an alert judges it (`holds`); null without a value */
   holds: boolean | null;
   held: boolean | null;
-  /** The last bar's date (the start of its week, month or quarter) */
+  /** The last bar's date (the start of its 3D bar, week, month or quarter) */
   date: string | null;
   error?: string;
 }

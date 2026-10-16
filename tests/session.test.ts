@@ -42,6 +42,9 @@ describe("the countdown to the bar's close", () => {
     expect(iso(barCloseAt("W", now, crypto))).toBe("2026-10-12T00:00");
     expect(iso(barCloseAt("M", now, crypto))).toBe("2026-11-01T00:00");
     expect(iso(barCloseAt("Q", now, crypto))).toBe("2027-01-01T00:00");
+    // three calendar days from Monday 1970-01-05: this one runs from Monday 10-05 to Wednesday 10-07
+    expect(iso(barCloseAt("3D", now, crypto))).toBe("2026-10-08T00:00");
+    expect(iso(barCloseAt("3D", utc("2026-10-08T00:00:01"), { ...crypto, quotedAt: utc("2026-10-08T00:00:00") }))).toBe("2026-10-11T00:00");
     // TradingView's 24x7 symbols report an ordinary open session
     expect(iso(barCloseAt("D", now, { ...plain("24x7", "Etc/UTC"), session: "open", quotedAt: now }))).toBe("2026-10-08T00:00");
   });
@@ -54,6 +57,10 @@ describe("the countdown to the bar's close", () => {
     expect(iso(barCloseAt("M", now, nyse))).toBe("2026-10-30T20:00"); // Oct 31 is a Saturday
     // winter time by then: 16:00 in New York is 21:00 UTC
     expect(iso(barCloseAt("Q", now, nyse))).toBe("2026-12-31T21:00");
+    // three weekdays from Monday 1970-01-05: Monday 10-05 to Wednesday 10-07, then Thursday to Monday 10-12
+    expect(iso(barCloseAt("3D", now, nyse))).toBe("2026-10-07T20:00");
+    const friday = { ...nyse, quotedAt: utc("2026-10-09T15:00:00") };
+    expect(iso(barCloseAt("3D", utc("2026-10-09T15:01:00"), friday))).toBe("2026-10-12T20:00");
     // a lunch break: the last session closes the day
     const sse: SessionClock = { ...plain("0930-1130,1300-1500", "Asia/Shanghai"), session: "open", quotedAt: utc("2026-10-09T02:00:00") };
     expect(iso(barCloseAt("D", utc("2026-10-09T02:01:00"), sse))).toBe("2026-10-09T07:00");
@@ -169,6 +176,8 @@ describe("the countdown to the bar's close", () => {
     // Monday 2026-11-23: the week ends on the half day after Thanksgiving
     const monday = open(NASDAQ, "2026-11-23T15:00:00");
     expect(iso(barCloseAt("W", utc("2026-11-23T15:01:00"), monday))).toBe("2026-11-27T18:00");
+    // the 3D bar of Tuesday to Thursday ends on Wednesday: Thanksgiving is a holiday
+    expect(iso(barCloseAt("3D", utc("2026-11-24T15:01:00"), open(NASDAQ, "2026-11-24T15:00:00")))).toBe("2026-11-25T21:00");
     // Monday 2026-03-30: Good Friday is a holiday, so the week ends on Thursday April 2 (summer time: 20:00 UTC)
     const beforeEaster = open(NASDAQ, "2026-03-30T15:00:00");
     expect(iso(barCloseAt("W", utc("2026-03-30T15:01:00"), beforeEaster))).toBe("2026-04-02T20:00");

@@ -123,7 +123,7 @@ describe("vault files", () => {
       doc.setIn(["indicators", 2], flowNode(doc, { id: "x", label: "x", pane: "sub", formula: "close" }));
     });
     const text = fs.readFileSync(path.join(dir, "hebi8.yaml"), "utf8");
-    expect(text).toContain("tf: M # D | W | M | Q");
+    expect(text).toContain("tf: M # D | 3D | W | M | Q");
     expect(text).toContain("periods: [ 1M, YTD ] # 总览显示的涨跌周期");
     expect(text).toContain("# bench：相对强弱、close(bench) 的默认基准");
     expect(text).toContain("# 按周期覆盖指标参数");

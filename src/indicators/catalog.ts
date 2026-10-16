@@ -15,7 +15,7 @@ export interface IndicatorDef {
   precision?: number;
 }
 
-const same = (p: number[]): Record<Timeframe, number[]> => ({ D: p, W: p, M: p, Q: p });
+const same = (p: number[]): Record<Timeframe, number[]> => ({ D: p, "3D": p, W: p, M: p, Q: p });
 
 export const INDICATORS: IndicatorDef[] = [
   {
@@ -23,10 +23,10 @@ export const INDICATORS: IndicatorDef[] = [
     label: "均线",
     pane: "main",
     // 10/40 weeks ≈ 50/200 days; 200 weeks is the classic BTC cycle line
-    params: { D: [20, 50, 200], W: [10, 40, 200], M: [10, 20], Q: [4, 12] },
+    params: { D: [20, 50, 200], "3D": [20, 50, 200], W: [10, 40, 200], M: [10, 20], Q: [4, 12] },
     hint: "简单移动平均",
   },
-  { name: "EMA", label: "EMA", pane: "main", params: { D: [21, 55], W: [21, 55], M: [12, 24], Q: [8, 20] }, hint: "指数移动平均" },
+  { name: "EMA", label: "EMA", pane: "main", params: { D: [21, 55], "3D": [21, 55], W: [21, 55], M: [12, 24], Q: [8, 20] }, hint: "指数移动平均" },
   { name: "BOLL", label: "布林", pane: "main", params: same([20, 2]), hint: "周期, 标准差倍数" },
   // TradingView's Volume has no moving average until one is asked for in its settings
   { name: "VOL", label: "成交量", pane: "sub", params: same([]), optionalParams: true, hint: "成交量均线周期（如 20），留空不画均线" },
@@ -37,7 +37,7 @@ export const INDICATORS: IndicatorDef[] = [
     name: "RS",
     label: "相对强弱",
     pane: "sub",
-    params: { D: [50], W: [26], M: [12], Q: [8] },
+    params: { D: [50], "3D": [50], W: [26], M: [12], Q: [8] },
     needsBenchmark: true,
     hint: "相对基准的强弱线，参数为均线周期",
   },

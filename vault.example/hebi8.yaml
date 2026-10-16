@@ -70,7 +70,7 @@ datasets: {}                   # 自定义数据集：名字 → git 地址或�
 alerts: []
 
 chart:                         # 全局图表偏好（UI 改动会写回这里）
-  tf: W                        # D | W | M | Q
+  tf: W                        # D | 3D | W | M | Q
   log: true
   style: candle_solid          # candle_solid | candle_up_stroke | ohlc | area
   indicators: [MA, VOL]        # 默认开启的指标名（内置 / 代码 / 公式 id）

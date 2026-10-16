@@ -18,7 +18,7 @@ export function GET(request: NextRequest) {
   const { config, error } = readConfigSafe(resolveViewer(request.cookies.get(SESSION_COOKIE)?.value).dir);
   if (!config) return NextResponse.json({ error }, { status: 500 });
   const query = chartQuery(request.nextUrl.searchParams, config);
-  if (!query) return NextResponse.json({ error: "need ?key=<source:ticker>&tf=D|W|M|Q&prices=split|total" }, { status: 400 });
+  if (!query) return NextResponse.json({ error: "need ?key=<source:ticker>&tf=D|3D|W|M|Q&prices=split|total" }, { status: 400 });
   const { key, tf, prices, withKeys } = query;
   let tail: StatusResponse["tail"];
   try {

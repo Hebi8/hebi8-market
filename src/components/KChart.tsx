@@ -129,13 +129,14 @@ interface StoreImpl {
 
 const PERIODS = {
   D: { type: "day", span: 1 },
+  "3D": { type: "day", span: 3 },
   W: { type: "week", span: 1 },
   M: { type: "month", span: 1 },
   Q: { type: "month", span: 3 },
 } as const;
 
-/** How many bars the initial view should fit: ~2 years of days, ~5 years of weeks, all months. */
-const INITIAL_BARS: Record<Timeframe, number> = { D: 500, W: 260, M: Infinity, Q: Infinity };
+/** How many bars the initial view should fit: ~2 years of days, ~3 years of 3D bars, ~5 years of weeks, all months. */
+const INITIAL_BARS: Record<Timeframe, number> = { D: 500, "3D": 250, W: 260, M: Infinity, Q: Infinity };
 
 function initialBarSpace(width: number, tf: Timeframe, total: number): number {
   const plotWidth = Math.max(200, width - 80); // minus the y-axis

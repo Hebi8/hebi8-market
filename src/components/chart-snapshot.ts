@@ -95,9 +95,10 @@ function measure(ctx: CanvasRenderingContext2D, text: string, font: string): num
   return ctx.measureText(text).width;
 }
 
-/** The last bar's day, or the week / month / quarter it covers. */
+/** The last bar's day, or the three days / week / month / quarter it covers. */
 function barDate(timestamp: number, tf: Timeframe): string {
   const iso = new Date(timestamp).toISOString();
+  if (tf === "3D") return `${iso.slice(0, 10)} 起 3 日`;
   if (tf === "W") return `${iso.slice(0, 10)} 当周`;
   if (tf === "M") return iso.slice(0, 7);
   if (tf === "Q") return `${iso.slice(0, 4)} Q${Math.ceil(Number(iso.slice(5, 7)) / 3)}`;

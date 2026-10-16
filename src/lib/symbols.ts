@@ -13,9 +13,9 @@ export const DATA_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 /** `data:<dataset>/<series>`, case-sensitive. */
 export const DATA_TICKER = /^([A-Za-z0-9][A-Za-z0-9._-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/;
 
-export type Timeframe = "D" | "W" | "M" | "Q";
-export const TIMEFRAMES: Timeframe[] = ["D", "W", "M", "Q"];
-export const TF_LABELS: Record<Timeframe, string> = { D: "日", W: "周", M: "月", Q: "季" };
+export type Timeframe = "D" | "3D" | "W" | "M" | "Q";
+export const TIMEFRAMES: Timeframe[] = ["D", "3D", "W", "M", "Q"];
+export const TF_LABELS: Record<Timeframe, string> = { D: "日", "3D": "3日", W: "周", M: "月", Q: "季" };
 
 /** 「英伟达 NVDA · 周线」: the page title, and what a shared chart is called. */
 export const chartTitle = (name: string, ticker: string, tf: Timeframe) => `${name === ticker ? ticker : `${name} ${ticker}`} · ${TF_LABELS[tf]}线`;

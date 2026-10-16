@@ -2,7 +2,7 @@ import type { Timeframe } from "./symbols";
 import { DAY } from "./time";
 
 export interface Bar {
-  /** Unix seconds at UTC midnight of the trading day (or of the week/month/quarter start) */
+  /** Unix seconds at UTC midnight of the trading day (or of the 3D/week/month/quarter start) */
   t: number;
   o: number;
   h: number;
@@ -22,8 +22,39 @@ export function dedupeBars(bars: Bar[]): Bar[] {
   return [...byTime.values()].sort((a, b) => a.t - b.t);
 }
 
-export function bucketStart(t: number, tf: Timeframe): number {
+/** Days from 1970-01-01 to Monday 1970-01-05, where 3D bars start counting. */
+const EPOCH_MONDAY = 4;
+
+/**
+ * A weekend bar in the last sixty means the series also trades on weekends, so its 3D bars count
+ * calendar days; the chart's drawing positions go by the same rule (`drawing-time.ts`).
+ */
+export function tradesWeekends(bars: Bar[]): boolean {
+  return bars.slice(-60).some(({ t }) => {
+    const day = new Date(t * 1000).getUTCDay();
+    return day === 0 || day === 6;
+  });
+}
+
+/**
+ * The first day of the 3D bar a day is in: days counted in threes from Monday 1970-01-05, weekdays
+ * only (a weekend day goes with the Friday before) unless the series trades on weekends. Fixed
+ * days, so a new day never moves an earlier bar and every symbol counted alike has the same bars;
+ * a holiday leaves its bar a day short.
+ */
+function threeDayStart(t: number, weekends: boolean): number {
+  const days = Math.floor(t / DAY) - EPOCH_MONDAY;
+  if (weekends) return (Math.floor(days / 3) * 3 + EPOCH_MONDAY) * DAY;
+  const weeks = Math.floor(days / 7);
+  // the bar's first weekday, counted from 1970-01-05, back to a date
+  const first = Math.floor((weeks * 5 + Math.min(days - weeks * 7, 4)) / 3) * 3;
+  const firstWeeks = Math.floor(first / 5);
+  return (firstWeeks * 7 + first - firstWeeks * 5 + EPOCH_MONDAY) * DAY;
+}
+
+export function bucketStart(t: number, tf: Timeframe, weekends = false): number {
   if (tf === "D") return t;
+  if (tf === "3D") return threeDayStart(t, weekends);
   const date = new Date(t * 1000);
   if (tf === "W") {
     const daysSinceMonday = (date.getUTCDay() + 6) % 7;
@@ -33,13 +64,16 @@ export function bucketStart(t: number, tf: Timeframe): number {
   return Date.UTC(date.getUTCFullYear(), tf === "Q" ? Math.floor(month / 3) * 3 : month, 1) / 1000;
 }
 
-/** Aggregate ascending daily bars into weekly (Monday-start), monthly or quarterly bars. */
-export function aggregate(daily: Bar[], tf: Timeframe): Bar[] {
+/**
+ * Aggregate ascending daily bars into 3D, weekly (Monday-start), monthly or quarterly bars. `weekends`
+ * says how 3D counts days; another symbol compared on a chart is given the chart's.
+ */
+export function aggregate(daily: Bar[], tf: Timeframe, weekends = tradesWeekends(daily)): Bar[] {
   if (tf === "D") return daily;
   const out: Bar[] = [];
   let cur: Bar | null = null;
   for (const bar of daily) {
-    const t = bucketStart(bar.t, tf);
+    const t = bucketStart(bar.t, tf, weekends);
     if (!cur || cur.t !== t) {
       cur = { ...bar, t };
       out.push(cur);

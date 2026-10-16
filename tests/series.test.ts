@@ -106,3 +106,62 @@ describe("closeAtOrBefore / dedupeBars", () => {
     expect(out.map((b) => b.c)).toEqual([1, 6]);
   });
 });
+
+describe("3D bars", () => {
+  /** Every weekday from `from` to `to`, except the given holidays; closes count up from 1. */
+  const weekdays = (from: string, to: string, holidays: string[] = []): Bar[] => {
+    const out: Bar[] = [];
+    for (let t = day(from); t <= day(to); t += 86400) {
+      const iso = new Date(t * 1000).toISOString().slice(0, 10);
+      const dow = new Date(t * 1000).getUTCDay();
+      if (dow !== 0 && dow !== 6 && !holidays.includes(iso)) out.push(bar(iso, out.length + 1));
+    }
+    return out;
+  };
+  const dates = (bars: Bar[]) => bars.map((b) => new Date(b.t * 1000).toISOString().slice(0, 10));
+
+  it("counts weekdays in threes from Monday 1970-01-05, so every symbol has the same buckets", () => {
+    expect(bucketStart(day("1970-01-05"), "3D")).toBe(day("1970-01-05"));
+    expect(bucketStart(day("1970-01-07"), "3D")).toBe(day("1970-01-05"));
+    // Thursday, Friday and the next Monday make one bar
+    expect(bucketStart(day("1970-01-08"), "3D")).toBe(day("1970-01-08"));
+    expect(bucketStart(day("1970-01-12"), "3D")).toBe(day("1970-01-08"));
+    // a weekend day belongs to the Friday before it
+    expect(bucketStart(day("2026-10-10"), "3D")).toBe(day("2026-10-08"));
+    // before 1970 too
+    expect(bucketStart(day("1970-01-02"), "3D")).toBe(day("1969-12-31"));
+  });
+
+  it("joins three trading days across weekends; a holiday leaves its bar shorter", () => {
+    // 2026-10-07 is a holiday here
+    const daily = weekdays("2026-09-28", "2026-10-16", ["2026-10-07"]);
+    const bars = aggregate(daily, "3D");
+    expect(dates(bars)).toEqual(["2026-09-25", "2026-09-30", "2026-10-05", "2026-10-08", "2026-10-13", "2026-10-16"]);
+    // Monday 09-28 and Tuesday 09-29 are the bar that started on Friday 09-25
+    expect(bars[0]).toMatchObject({ o: 1, c: 2, v: 2 });
+    // Monday and Tuesday only: Wednesday was the holiday
+    expect(bars[2]).toMatchObject({ o: 6, c: 7, v: 2 });
+    // Thursday, Friday and Monday
+    expect(bars[3]).toMatchObject({ o: 8, c: 10, v: 3 });
+    expect(bars[5]).toMatchObject({ o: 14, c: 14, v: 1 });
+  });
+
+  it("keeps every earlier bar as new days come in", () => {
+    const daily = weekdays("2026-01-01", "2026-06-30", ["2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25"]);
+    const full = aggregate(daily, "3D");
+    for (let n = 1; n < daily.length; n++) {
+      const part = aggregate(daily.slice(0, n), "3D");
+      expect(part.slice(0, -1)).toEqual(full.slice(0, part.length - 1));
+      expect(part.at(-1)!.t).toBe(full[part.length - 1].t);
+    }
+  });
+
+  it("counts calendar days for a series that trades on weekends", () => {
+    const crypto = ["2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-10"].map((d, i) => bar(d, i + 1));
+    const bars = aggregate(crypto, "3D");
+    expect(dates(bars)).toEqual(["2026-10-02", "2026-10-05", "2026-10-08"]);
+    expect(bars.map((b) => [b.o, b.c])).toEqual([[1, 2], [3, 5], [6, 8]]);
+    // asked to count weekdays (it is compared on a stock's chart): the weekend joins Friday's bar
+    expect(dates(aggregate(crypto, "3D", false))).toEqual(["2026-09-30", "2026-10-05", "2026-10-08"]);
+  });
+});
