@@ -11,12 +11,24 @@ const secrets = path.join(dir, "secrets");
 
 type Handler = (method: string, body: Record<string, unknown>, signal: AbortSignal) => Promise<Response> | Response;
 const hosts = new Map<string, Handler>();
-const calls: { host: string; method: string; body: Record<string, unknown> }[] = [];
+const calls: { host: string; token: string; method: string; body: Record<string, unknown> }[] = [];
 
 const ok = (result: unknown) => Response.json({ ok: true, result });
 const fail = (status: number, description: string) => Response.json({ ok: false, error_code: status, description }, { status });
-/** What undici throws when something went wrong under fetch */
-const netError = (code: string) => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(code), { code }) });
+/** What undici throws when something went wrong under fetch; `syscall` says in which step */
+const netError = (code: string, syscall?: string) => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(code), { code, syscall }) });
+/** A 200 whose body breaks off after the first bytes */
+const cutOff = () =>
+  new Response(
+    new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('{"ok":'));
+        // as undici's body does when the socket closes
+        c.error(Object.assign(new TypeError("terminated"), { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) }));
+      },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
 const after = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
     const t = setTimeout(resolve, ms);
@@ -24,7 +36,7 @@ const after = (ms: number, signal: AbortSignal) =>
   });
 const getMe: Handler = (method) => (method === "getMe" ? ok({ username: "hebi8_test_bot" }) : ok({ message_id: 1 }));
 const refused: Handler = () => {
-  throw netError("ECONNREFUSED");
+  throw netError("ECONNREFUSED", "connect");
 };
 const sent = (host: string, method = "sendMessage") => calls.filter((c) => c.host === host && c.method === method).length;
 
@@ -41,9 +53,9 @@ beforeAll(() => {
   fs.mkdirSync(secrets);
   vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
     const u = new URL(url);
-    const method = /^\/bot[^/]+\/(\w+)$/.exec(u.pathname)![1];
+    const [, token, method] = /^\/bot([^/]+)\/(\w+)$/.exec(u.pathname)!;
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    calls.push({ host: u.host, method, body });
+    calls.push({ host: u.host, token, method, body });
     return hosts.get(u.host)!(method, body, init.signal!);
   });
 });
@@ -111,18 +123,51 @@ describe("Bot API addresses", () => {
     expect(calls.map((c) => c.host)).toEqual(["local.test"]);
   });
 
-  it("a DNS failure, a connect timeout and a 5xx move on too", async () => {
+  it("a DNS failure, a refused or timed-out connect, and every address of a name failing to connect move on", async () => {
     const { sendTelegram } = await import("@/lib/notify");
     hosts.set("dns.test", () => {
-      throw netError("ENOTFOUND");
+      throw netError("ENOTFOUND", "getaddrinfo");
     });
     hosts.set("connect.test", () => {
       throw netError("UND_ERR_CONNECT_TIMEOUT");
     });
-    hosts.set("bad.test", () => fail(502, "Bad Gateway"));
+    hosts.set("connect2.test", () => {
+      throw netError("ETIMEDOUT", "connect");
+    });
+    hosts.set("both.test", () => {
+      throw Object.assign(new TypeError("fetch failed"), {
+        cause: Object.assign(new AggregateError([netError("ECONNREFUSED", "connect").cause, netError("ENETUNREACH", "connect").cause]), { code: "ECONNREFUSED" }),
+      });
+    });
     hosts.set("good.test", getMe);
-    await sendTelegram({ token: TOKEN, chat: "42", apis: ["http://dns.test", "http://connect.test", "http://bad.test", "http://good.test"] }, "x");
-    expect(calls.map((c) => c.host)).toEqual(["dns.test", "connect.test", "bad.test", "good.test"]);
+    await sendTelegram({ token: TOKEN, chat: "42", apis: ["http://dns.test", "http://connect.test", "http://connect2.test", "http://both.test", "http://good.test"] }, "x");
+    expect(calls.map((c) => c.host)).toEqual(["dns.test", "connect.test", "connect2.test", "both.test", "good.test"]);
+  });
+
+  it("a 5xx, a timeout on a connected socket and a body that broke off may have been sent: a send stops there, getMe moves on", async () => {
+    const { sendTelegram } = await import("@/lib/notify");
+    const { callBot, routeOrder } = await import("@/lib/bot-api");
+    const broken: [string, Handler, string][] = [
+      ["gateway", () => fail(504, "Gateway Timeout"), "Telegram sendMessage 504：Gateway Timeout"],
+      ["sending", () => Promise.reject(netError("ETIMEDOUT", "write")), "Telegram sendMessage 请求失败（ETIMEDOUT）"],
+      ["nocall", () => Promise.reject(netError("EHOSTUNREACH")), "Telegram sendMessage 请求失败（EHOSTUNREACH）"],
+      ["cut", cutOff, "Telegram sendMessage 200 回应没收完（UND_ERR_SOCKET）"],
+    ];
+    for (const [name, handler, message] of broken) {
+      hosts.set(`${name}.test`, handler);
+      hosts.set(`${name}-ok.test`, getMe);
+      const apis = [`http://${name}.test`, `http://${name}-ok.test`];
+      calls.length = 0;
+      await expect(sendTelegram({ token: TOKEN, chat: "42", apis }, "x")).rejects.toThrow(`${name}.test ${message}`);
+      expect(calls.map((c) => c.host)).toEqual([`${name}.test`]);
+      // failed until the next probe
+      expect(routeOrder(apis)).toEqual(apis.toReversed());
+
+      hosts.set(`${name}-me.test`, handler);
+      calls.length = 0;
+      await expect(callBot({ token: TOKEN, apis: [`http://${name}-me.test`, `http://${name}-ok.test`] }, "getMe", {})).resolves.toEqual({ username: "hebi8_test_bot" });
+      expect(calls.map((c) => c.host)).toEqual([`${name}-me.test`, `${name}-ok.test`]);
+    }
   });
 
   it("Telegram's own errors come back as they are, without asking another address", async () => {
@@ -180,7 +225,15 @@ function updatesServer(queue: { update_id: number; message: unknown }[]): Handle
 }
 
 describe("binding with two addresses", () => {
-  const writeNotify = (api: string[]) => fs.writeFileSync(path.join(secrets, "notify.json"), JSON.stringify({ telegram: { token: TOKEN, api } }));
+  const writeNotify = (api: string[], token = TOKEN) => fs.writeFileSync(path.join(secrets, "notify.json"), JSON.stringify({ telegram: { token, api } }));
+  const polls = (host: string, token = TOKEN) => calls.filter((c) => c.host === host && c.token === token && c.method === "getUpdates").length;
+  /** No more getUpdates on these hosts, over a while longer than a few held polls */
+  const quiet = async (...keys: string[]) => {
+    const count = () => keys.map((k) => calls.filter((c) => c.method === "getUpdates" && `${c.host} ${c.token}`.startsWith(k)).length).join();
+    const before = count();
+    await new Promise((r) => setTimeout(r, 200));
+    return count() === before;
+  };
   const codeOf = (url: string) => new URL(url).searchParams.get("start")!;
 
   beforeEach(async () => {
@@ -238,5 +291,35 @@ describe("binding with two addresses", () => {
       error: "down.bind Telegram getUpdates 请求失败（ECONNREFUSED）；cloud2.bind Telegram getUpdates 请求失败（ECONNREFUSED）",
     });
     cancelBinding("carol");
+  });
+
+  it("follows notify.json while it waits: addresses added and taken out, and a token changed by hand voids the codes", async () => {
+    const { bindingStatus, startBinding } = await import("@/lib/telegram");
+    for (const h of ["a.follow", "b.follow", "c.follow"]) hosts.set(h, updatesServer([]));
+    writeNotify(["http://a.follow", "http://b.follow"]);
+    await startBinding("dan");
+    await until(() => polls("a.follow") > 0 && polls("b.follow") > 0);
+
+    writeNotify(["http://c.follow"]);
+    await until(() => polls("c.follow") > 0);
+    expect(await quiet("a.follow", "b.follow")).toBe(true);
+    expect(await quiet("c.follow")).toBe(false);
+
+    // a second code does not bring the old addresses back
+    await startBinding("erin");
+    expect(await quiet("a.follow", "b.follow")).toBe(true);
+
+    // a new token written by hand: the codes were for the old bot, and nothing reads it any more
+    const NEW = "654321:OTHER-token";
+    writeNotify(["http://c.follow"], NEW);
+    await until(() => bindingStatus("dan").status === "expired");
+    expect(bindingStatus("erin")).toEqual({ status: "expired" });
+    expect(await quiet("c.follow")).toBe(true);
+    expect(polls("c.follow", NEW)).toBe(0);
+
+    await startBinding("frank");
+    await until(() => polls("c.follow", NEW) > 0);
+    expect(await quiet(`c.follow ${TOKEN}`)).toBe(true);
+    expect(bindingStatus("frank")).toEqual({ status: "pending" });
   });
 });

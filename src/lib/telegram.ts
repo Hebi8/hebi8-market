@@ -34,6 +34,8 @@ interface Update {
 interface State {
   /** Pending and just-bound codes by lower-case login */
   bindings: Map<string, Binding>;
+  /** The bot token the waiting codes and the polling loops are for */
+  token: string | null;
   /** The polling loops running now, one per Bot API address; another bot (or none) replaces them, see `resetBindings` */
   runs: Map<string, { stop: AbortController }>;
   /** The last failure of each address's loop, until it answers again */
@@ -45,7 +47,7 @@ interface State {
 }
 
 const g = globalThis as unknown as { hebi8Telegram?: State };
-const state: State = (g.hebi8Telegram ??= { bindings: new Map(), runs: new Map(), errors: new Map(), botNames: new Map(), version: 0, probing: false });
+const state: State = (g.hebi8Telegram ??= { bindings: new Map(), token: null, runs: new Map(), errors: new Map(), botNames: new Map(), version: 0, probing: false });
 
 const log = (msg: string) => console.log(`[hebi8m] telegram: ${msg}`);
 
@@ -84,6 +86,9 @@ export async function startBinding(login: string, now = Date.now()): Promise<{ u
   if (!bot) throw new Error("这台 hebi8/market 没有配置 Telegram bot（notify.json 的 telegram.token），请找部署的人");
   const name = await botName(bot);
   if (version !== state.version) throw new Error("bot 已更换，请重新开始绑定");
+  // the token was changed by hand since the last codes: theirs are for the old bot
+  if (state.token !== bot.token) resetBindings();
+  state.token = bot.token;
   const code = crypto.randomBytes(9).toString("base64url");
   const expiresAt = now + CODE_TTL_MS;
   state.bindings.set(login.toLowerCase(), { login, code, expiresAt });
@@ -124,6 +129,7 @@ export function cancelBinding(login: string): void {
  */
 export function resetBindings(): void {
   state.version++;
+  state.token = null;
   for (const [key, b] of state.bindings) if (!b.chat) state.bindings.delete(key);
   for (const run of state.runs.values()) run.stop.abort();
   state.runs.clear();
@@ -138,7 +144,22 @@ export function resetBindings(): void {
  * takes it before anything else), so the same `/start` read on both binds once.
  */
 function pollUpdates(bot: Bot): void {
-  for (const api of bot.apis) if (!state.runs.has(api)) void pollAt(bot, api);
+  for (const api of bot.apis) if (!state.runs.has(api)) void pollAt(api);
+}
+
+/**
+ * notify.json as it is now, read on every round of every loop since it may be edited by hand: a
+ * different token (or none) voids the waiting codes and ends every loop, an address added gets its
+ * loop, and an address taken out ends its own (null).
+ */
+function followConfig(api: string): Bot | null {
+  const bot = instanceBot();
+  if (!bot || bot.token !== state.token) {
+    resetBindings();
+    return null;
+  }
+  pollUpdates(bot);
+  return bot.apis.includes(api) ? bot : null;
 }
 
 /**
@@ -146,7 +167,7 @@ function pollUpdates(bot: Bot): void {
  * last `timeout: 0` call confirms the final batch (and whatever it returns is handled like any
  * other). A code started meanwhile keeps the same loop going.
  */
-async function pollAt(bot: Bot, api: string): Promise<void> {
+async function pollAt(api: string): Promise<void> {
   const run = { stop: new AbortController() };
   state.runs.set(api, run);
   const current = () => state.runs.get(api) === run;
@@ -157,6 +178,8 @@ async function pollAt(bot: Bot, api: string): Promise<void> {
     for (;;) {
       const busy = waiting();
       if (!current() || (!busy && !unconfirmed)) break;
+      const bot = followConfig(api);
+      if (!bot) break;
       try {
         const updates: Update[] = await callAt<Update[]>(
           api,

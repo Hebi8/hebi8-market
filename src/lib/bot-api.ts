@@ -5,13 +5,15 @@
  * measured yet in the configured order, then the ones that failed. What was measured lives in
  * memory only.
  *
- * A call moves on to the next address only when it certainly did not reach that server: the
- * connection was never made (refused, DNS, unreachable, connect timeout) or the server answered
- * 5xx. Once the request may have gone out (our own timeout fired, the connection dropped before an
- * answer), a sendMessage is not repeated elsewhere, since the chat could get it twice; that
- * address counts as failed until the next probe and the error is reported. getMe changes nothing,
- * so it moves on after those too. Telegram's own answers (4xx: chat not found, bot blocked, 429)
- * would be the same on every address and come back as they are.
+ * A call moves on to the next address only when it certainly did not reach that server: the name
+ * did not resolve, or the connection was never made (refused, unreachable or timed out while
+ * connecting). Anything else may have gone out: our own timeout, a connection dropped or timed out
+ * after it was made, an answer whose body did not arrive in full, and a 5xx (a gateway answers
+ * 504 when the server behind it is slow, and that server may still send). Then a sendMessage is
+ * not repeated elsewhere, since the chat could get it twice; that address counts as failed until
+ * the next probe and the error is reported. getMe and getUpdates change nothing, so they move on
+ * after those too. Telegram's own answers (4xx: chat not found, bot blocked, 429) would be the
+ * same on every address and come back as they are.
  */
 
 export interface Bot {
@@ -22,10 +24,34 @@ export interface Bot {
 
 const TIMEOUT_MS = 15_000;
 const PROBE_TIMEOUT_MS = 3000;
-/** Codes undici reports when no connection was ever made, so nothing was sent */
-const NOT_CONNECTED = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT", "UND_ERR_CONNECT_TIMEOUT"]);
 /** Methods that change nothing, safe to ask again elsewhere whatever happened */
-const READ_ONLY = new Set(["getMe"]);
+const READ_ONLY = new Set(["getMe", "getUpdates"]);
+
+interface Cause {
+  code?: unknown;
+  syscall?: unknown;
+  /** Each address tried, when the name has several */
+  errors?: Cause[];
+}
+
+/** The error's code (or name) for the message, never the URL, which carries the token. */
+const errorName = (err: unknown) => {
+  const code = (err as { cause?: Cause }).cause?.code;
+  return typeof code === "string" ? code : err instanceof Error ? err.name : "error";
+};
+
+/**
+ * Nothing was sent: undici's connect timeout, or every attempt failed while resolving the name or
+ * connecting. A code alone does not say so (ETIMEDOUT and EHOSTUNREACH also come from a socket
+ * that was already sending); the syscall does.
+ */
+function notConnected(err: unknown): boolean {
+  const cause = (err as { cause?: Cause }).cause;
+  if (!cause) return false;
+  if (cause.code === "UND_ERR_CONNECT_TIMEOUT") return true;
+  const attempts = cause.errors?.length ? cause.errors : [cause];
+  return attempts.every((e) => e.syscall === "connect" || e.syscall === "getaddrinfo");
+}
 
 /** `answer`: the server replied with an error; `unsent`: it certainly got nothing; `unknown`: it may have got the request */
 export class BotApiError extends Error {
@@ -45,7 +71,7 @@ interface Route {
 const g = globalThis as unknown as { hebi8BotApi?: Map<string, Route> };
 const routes: Map<string, Route> = (g.hebi8BotApi ??= new Map());
 
-/** One request to one address. The token is in the URL, so errors carry only the error code or name. */
+/** One request to one address. */
 export async function callAt<T>(api: string, token: string, method: string, body: Record<string, unknown>, timeoutMs = TIMEOUT_MS, stop?: AbortSignal): Promise<T> {
   let res: Response;
   try {
@@ -57,12 +83,19 @@ export async function callAt<T>(api: string, token: string, method: string, body
       signal: stop ? AbortSignal.any([timeout, stop]) : timeout,
     });
   } catch (err) {
-    const code = (err as { cause?: { code?: unknown } }).cause?.code;
-    const name = typeof code === "string" ? code : err instanceof Error ? err.name : "error";
-    throw new BotApiError(`Telegram ${method} 请求失败（${name}）`, NOT_CONNECTED.has(name) ? "unsent" : "unknown");
+    throw new BotApiError(`Telegram ${method} 请求失败（${errorName(err)}）`, notConnected(err) ? "unsent" : "unknown");
   }
-  const json = (await res.json().catch(() => null)) as { ok?: boolean; result?: T; description?: string } | null;
-  if (!res.ok || !json?.ok) throw new BotApiError(`Telegram ${method} ${res.status}${json?.description ? `：${json.description}` : ""}`, res.status >= 500 ? "unsent" : "answer");
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (err) {
+    throw new BotApiError(`Telegram ${method} ${res.status} 回应没收完（${errorName(err)}）`, "unknown");
+  }
+  let json: { ok?: boolean; result?: T; description?: string } | null = null;
+  try {
+    json = JSON.parse(text);
+  } catch {}
+  if (!res.ok || !json?.ok) throw new BotApiError(`Telegram ${method} ${res.status}${json?.description ? `：${json.description}` : ""}`, res.status >= 500 ? "unknown" : "answer");
   return json.result as T;
 }
 
