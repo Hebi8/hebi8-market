@@ -3,7 +3,8 @@
 # Usage, in the checkout that has dev:
 #   scripts/release.sh notes             what changed since the last tag, to rewrite into CHANGELOG.md
 #   scripts/release.sh <x.y.z>           release it (CHANGELOG.md needs a `## v<x.y.z>` section, committed on dev)
-#   scripts/release.sh publish <x.y.z>   after a deploy went through but a later step stopped: the rest again
+#   scripts/release.sh publish <x.y.z>   after a deploy went through but a later step stopped: the rest again,
+#                                        from any checkout (it works on the version commit, wherever dev is now)
 # Everything runs inside main(), so bash has read the whole file before a checkout can change it.
 set -euo pipefail
 SCRIPT=release.sh
@@ -13,10 +14,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/release-lib.sh"
 main() {
   case ${1:-} in
     notes) notes ;;
-    publish)
-      on_dev
-      publish "${2:?usage: release.sh publish <x.y.z>}" release
-      ;;
+    publish) publish "${2:?usage: release.sh publish <x.y.z>}" release ;;
     [0-9]*) release "$1" ;;
     *) fail "usage: release.sh notes | <x.y.z> | publish <x.y.z>" ;;
   esac
@@ -75,7 +73,7 @@ release() {
   fi
   [[ -z $(git tag -l "$tag") ]] || fail "$tag already exists"
   version_gt "$version" "$(pkg_version)" || fail "$version does not come after $(pkg_version)"
-  has_section "$version" || fail "CHANGELOG.md has no '## $tag' section; run scripts/release.sh notes and write one"
+  has_section "$version" <CHANGELOG.md || fail "CHANGELOG.md has no '## $tag' section; run scripts/release.sh notes and write one"
 
   before=$(git rev-parse HEAD)
   STEP=bump

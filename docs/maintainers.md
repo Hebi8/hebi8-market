@@ -47,7 +47,11 @@ scripts/release.sh 0.3.0
 
 先检查：在 dev 上、工作区干净、master 是 dev 的祖先、origin 上没有本地缺的提交、tag 还不存在、版本号比 `package.json` 的大、CHANGELOG 有这一节。然后改 `package.json` 和 lockfile 的版本、把这一节的日期填成今天，提交 `chore(release): vX.Y.Z` → `deploy.sh dev`（master 快进到 dev，构建、重启、推 master）→ 打 tag、推 dev 和 tag → `gh release create` → 处理 issue。
 
-部署失败时 `deploy.sh` 已经把线上退回去，脚本也撤掉版本提交，什么都没推。部署成功之后哪一步停了，脚本会说停在哪，照提示跑 `scripts/release.sh publish 0.3.0` 把剩下的做完（做过的会跳过）。
+停下来时分三种情况，脚本都会说停在哪一步、接下来跑什么：
+
+- **构建或健康检查失败**：`deploy.sh` 已经把线上退回原来的版本，脚本撤掉版本提交，什么都没推，修好再跑一次。
+- **构建、重启都成功，只是 `deploy.sh` 最后推 master 失败**：线上已经是新版本，本地 master 和 dev 上的版本提交都保留。在线上目录 `~/dev/hebi8-market` 里手动 `git push origin master`，再跑 `scripts/release.sh publish 0.3.0`。
+- **部署成功之后的步骤停了**（打 tag、推送、Release、issue）：跑 `scripts/release.sh publish 0.3.0`。它按版本找发布的那个提交（有 tag 用 tag，没有就用 master 上的 `chore(release): v0.3.0`），从那个提交读 `package.json` 和 CHANGELOG 核对版本，所以在哪个目录跑都行，dev 之后又有新提交也不影响；版本号对不上或没部署过就拒绝。做过的步骤会跳过：issue 的公告评论带一个隐藏标记，有了就不再评论；评论和关闭都成功后才去掉 `status:next-release`，所以中途停下的 issue 下次还会被找到。GitHub 请求失败（不是「没有这个 issue」或「这是 PR」）就停下，不会当成做完。
 
 ### 热补丁
 
@@ -59,7 +63,7 @@ git worktree add -b hotfix/<名字> <目录> master
 scripts/hotfix.sh 0.3.1
 ```
 
-在热补丁分支上跑，版本必须是线上版本的下一个 patch。版本提交 → `deploy.sh <这个分支>` → 打 tag、推 tag、Release，给提交里 `Fixes #n` 的 issue 评论并关掉 → **把 master 合回 dev 并推 dev**（在 checkout 了 dev 的目录里合，没有就开一个临时 worktree）。合并有冲突时脚本停下，说在哪个目录手动合；只差合回这一步时跑 `scripts/hotfix.sh merge-back`，部署之后别的步骤停了跑 `scripts/hotfix.sh publish 0.3.1`。
+在热补丁分支上跑，版本必须正好是线上版本的下一个 patch（0.3.0 之后是 0.3.1）。版本提交 → `deploy.sh <这个分支>` → 打 tag、推 tag、Release，给提交里 `Fixes #n` 的 issue 评论并关掉 → **把 master 合回 dev 并推 dev**（在 checkout 了 dev 的目录里合，没有就开一个临时 worktree）。合并有冲突时脚本停下，说在哪个目录手动合；只差合回这一步时跑 `scripts/hotfix.sh merge-back`，部署之后别的步骤停了跑 `scripts/hotfix.sh publish 0.3.1`（同上，绑定版本提交，做完再合回）；推 master 失败的恢复和发版一样。
 
 ### CHANGELOG 怎么写
 
