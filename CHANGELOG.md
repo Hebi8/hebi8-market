@@ -2,6 +2,17 @@
 
 每个版本给用的人带来了什么。「升级注意」写给自己部署实例的人：vault、`hebi8.yaml`、密钥目录或 MCP 工具有变化时，升级前先看这一节。
 
+## v0.2.1 — 日期
+
+### 修复
+
+- **Telegram 提醒更稳**：bot 可以配好几个 Bot API 地址，每 5 分钟测一次速，走最快能用的那个；一个地址连不上就换下一个，可能已经发出的不重发，不会收到两条。
+
+### 升级注意
+
+- 密钥目录 `notify.json` 的 `telegram.api` 可以写成地址数组，比如 `["http://自建 Bot API", "https://api.telegram.org"]`；原来的单个地址照样能用。
+- `scripts/deploy.sh` 默认经 ssh 部署到另一台机器（`HEBI8_LIVE_HOST`）；在本机跑实例的，设 `HEBI8_LIVE_HOST=local`，`HEBI8_LIVE` 还是线上目录。第一次用之前，在线上目录里 `git update-ref refs/hebi8/live <正在跑的 commit>` 设好基线。
+
 ## v0.2.0 — 2026-10-16
 
 第一个正式版本，包括到今天为止的全部功能。之后的版本只写和上一版相比的变化。
