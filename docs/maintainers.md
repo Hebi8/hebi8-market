@@ -50,6 +50,7 @@ scripts/release.sh 0.3.0
 停下来时分三种情况，脚本都会说停在哪一步、接下来跑什么：
 
 - **构建或健康检查失败**：`deploy.sh` 已经把线上退回原来的版本，脚本撤掉版本提交，什么都没推，修好再跑一次。
+- **不知道线上成没成**（`deploy.sh` 退出码 3：和 N100 的 ssh 断了，事后也问不到，或者问到的状态说不清）：版本提交**保留**，什么都没推，master 没动，因为 N100 可能已经跑着它了。等 N100 连得上，在同一个目录里再跑一次 `scripts/deploy.sh dev`（热补丁是那个分支）：已经部署完的就只快进、推 master，没部署完的重新做一遍；然后跑 `scripts/release.sh publish 0.3.0`（热补丁是 `scripts/hotfix.sh publish 0.3.1`）。这期间 dev 上多着一个还没推的版本提交，别在它下面再提交，也别手动撤掉它。
 - **构建、重启都成功，只是 `deploy.sh` 最后推 master 失败**：线上已经是新版本，本地 master 和 dev 上的版本提交都保留。在 devNuc 的 `~/dev/hebi8-market`（仓库的主目录）里手动 `git push origin master`，再跑 `scripts/release.sh publish 0.3.0`。
 - **部署成功之后的步骤停了**（打 tag、推送、Release、issue）：跑 `scripts/release.sh publish 0.3.0`。它按版本找发布的那个提交（有 tag 用 tag，没有就用 master 上的 `chore(release): v0.3.0`），从那个提交读 `package.json` 和 CHANGELOG 核对版本，所以在哪个目录跑都行，dev 之后又有新提交也不影响；版本号对不上或没部署过就拒绝。做过的步骤会跳过：issue 的公告评论带一个隐藏标记，有了就不再评论；评论和关闭都成功后才去掉 `status:next-release`，所以中途停下的 issue 下次还会被找到。GitHub 请求失败（不是「没有这个 issue」或「这是 PR」）就停下，不会当成做完。
 
@@ -91,14 +92,25 @@ scripts/hotfix.sh 0.3.1
 **部署**：只经 `release.sh` / `hotfix.sh`，它们在 devNuc 的 dev（或热补丁）checkout 里调同目录的 `scripts/deploy.sh <分支>`：
 
 1. 在 devNuc 的 `~/dev/hebi8-market`（`HEBI8_REPO`）检查：在 master、干净、分支是 master 的快进。
-2. 把那个 commit 用 git 经 ssh 直接推进 N100 线上目录的 `refs/hebi8/deploy`（不经 GitHub，没上线的版本提交不会出现在 origin），再用 ssh 在 N100 上跑**同一个** `deploy.sh live <commit>`：备份 → 快进 master → 依赖有变就 `npm ci` → 构建 → 重启 → 健康检查（默认 http://100.102.150.101:8808/），构建或检查失败就退回原来的 commit 重新构建，非零退出。
+2. 把那个 commit 用 git 经 ssh 直接推进 N100 线上目录的 `refs/hebi8/deploy`（不经 GitHub，没上线的版本提交不会出现在 origin），再用 ssh 在 N100 上跑**同一个** `deploy.sh live <commit>`（上传的是发版 checkout 里的这份，不是主目录里的旧版）：备份 → 快进 master → 依赖有变就 `npm ci` → 构建 → 重启 → 健康检查（默认是 unit 里 `next start -H … -p …` 的地址，即 http://100.102.150.101:8808/），通过后把这个 commit 记进线上目录的 `refs/hebi8/live`；构建或检查失败就退回上一个记下的 commit 重新构建。
 3. N100 成功后，devNuc 的 master 快进到这个 commit，由 devNuc 推 master（推送只在 devNuc，用自己的身份）。
 
-续跑：N100 上已经是这个 commit 而且页面 200，就直接算成功（比如 ssh 断在部署之后）；ssh 报错时也先问 N100 的 HEAD，是这个 commit 就接着推 master。`HEBI8_LIVE_HOST`（默认 `dreaife@100.102.150.101`，`local` = 在本机部署）、`HEBI8_LIVE`（线上目录，相对 N100 的 home）、`HEBI8_UNIT`、`HEBI8_HEALTH_URL`、`HEBI8_SECRETS` 可改；后四个设了会一起带到 N100。
+**线上跑的是哪个版本看 `refs/hebi8/live`，不看 HEAD**：HEAD 在快进时就动了，那时还没构建、没检查。N100 上同一时间只跑一个部署（线上目录 `.git/hebi8-deploy.lock`）。`deploy.sh` 的退出码：0 已部署（master 已快进；之后推送失败是 git 自己的退出码）；1 没部署（动手前就拒绝了，或已退回，线上跑的还是原来的）；3 不知道。ssh 没正常返回时，脚本再连一次问 N100（`deploy.sh status`）：记下的就是这个 commit、HEAD 也是、页面 200，算成功接着推；HEAD 和记下的都是原来那个，算没部署；部署还拿着锁、或者状态对不上、或者连不上，就是 3。续跑同一个部署：记下的已经是它而且页面 200 就跳过构建；否则从记下的那个版本重新来（备份、快进、按记下的版本判断要不要 `npm ci`、构建、检查），上一次断线后还在跑的会先等它跑完（最多 15 分钟）。`HEBI8_LIVE_HOST`（默认 `dreaife@100.102.150.101`，`local` = 在本机部署）、`HEBI8_LIVE`（线上目录，相对 N100 的 home）、`HEBI8_UNIT`、`HEBI8_HEALTH_URL`、`HEBI8_SECRETS` 可改；后四个设了会一起带到 N100。
 
 **日志**：在 N100 上 `journalctl --user -u hebi8-market -f`（`[hebi8m]` 是调度和同步）；隧道 `docker logs hebi8-tunnel`。从 devNuc：`ssh dreaife@100.102.150.101 'journalctl --user -u hebi8-market -n 100'`。
 
-**回滚一个版本**：在 N100 的线上目录 `git reset --hard <上一个版本的 tag>`，`systemctl --user stop hebi8-market && npm ci && npm run build && systemctl --user start hebi8-market`；数据要退回就从 `~/backups/hebi8/<时间>-deploy/` 拷回 `vault/`、密钥目录，`hebi8.db` 放回 `data/`（先停服务）。然后 devNuc 的 master 也 `git reset --hard` 到同一个 commit（origin 上的 master 不能倒退：往前修一个热补丁）。
+**临时退回上一个版本**（新版本有急问题、热补丁一时出不来）：只动 N100 上跑的版本，**devNuc 的 master 不动，一直等于 origin/master**（不然之后 `release.sh` / `hotfix.sh` 会因为「origin/master 有本地缺的提交」拒绝）。
+
+```bash
+# 在 N100 的线上目录
+git reset --hard v0.3.0                     # 上一个版本的 tag
+git update-ref refs/hebi8/live v0.3.0       # 记下线上跑的是它，下次部署从它快进、失败时也退回它
+systemctl --user stop hebi8-market && npm ci && npm run build && systemctl --user start hebi8-market
+```
+
+数据也要退回就先停服务，从 `~/backups/hebi8/<时间>-deploy/` 拷回 `vault/`、密钥目录，`hebi8.db` 放回 `data/`。
+
+这之后是一段临时状态：N100 跑旧版本（`/usage` 的版本号是旧的），master、tag 和 GitHub Release 还是新版本。修复在最新发布的提交上做：从 master 开热补丁分支，`scripts/hotfix.sh 0.4.1`，部署时 N100 从旧版本直接快进到热补丁。不修、只想回到 master 上的版本：在 devNuc 的 `~/dev/hebi8-market` 里 `scripts/deploy.sh master`。
 
 ## dev 实例
 
