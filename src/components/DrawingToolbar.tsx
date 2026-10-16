@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { LINE_WIDTHS } from "@/lib/config";
 import type { PriceScale } from "./drawing-scale";
 import type { LineDash } from "./drawing-style";
 import { editedFields, type Extension } from "./drawing-edit";
@@ -48,8 +49,7 @@ const PALETTE = [
   ["#f23645", "#ff9800", "#ffeb3b", "#4caf50", "#089981", "#00bcd4", "#2962ff", "#673ab7", "#9c27b0", "#e91e63"],
   ["#ffffff", "#d1d4dc", "#b2b5be", "#9598a1", "#787b86", "#5d606b", "#434651", "#2a2e39", "#131722", "#000000"],
 ];
-const WIDTHS = [1, 2, 3, 4];
-const DASHES: { dash: LineDash; label: string }[] = [
+export const DASHES: { dash: LineDash; label: string }[] = [
   { dash: "solid", label: "实线" },
   { dash: "dashed", label: "虚线" },
   { dash: "dotted", label: "点线" },
@@ -62,7 +62,7 @@ const SCALES: { scale: PriceScale; label: string }[] = [
 
 export const toolLabel = (name: string) => DRAW_TOOLS.find((t) => t.name === name)?.label ?? name;
 
-function Swatches({ value, onPick }: { value: string; onPick: (c: string) => void }) {
+export function Swatches({ value, onPick }: { value: string; onPick: (c: string) => void }) {
   return (
     <div className="flex flex-col gap-1">
       {PALETTE.map((row, i) => (
@@ -182,7 +182,7 @@ export function DrawingToolbar({
         <div className="menu absolute top-full left-1/2 mt-1 -translate-x-1/2 p-2" style={{ right: "auto", minWidth: 0 }} role="menu">
           {open === "color" && <Swatches value={info.color} onPick={(color) => pick({ color })} />}
           {open === "width" &&
-            WIDTHS.map((w) => (
+            LINE_WIDTHS.map((w) => (
               <button key={w} type="button" role="menuitemradio" aria-checked={w === info.size} className={`menu-item flex items-center gap-2 ${w === info.size ? "font-medium" : ""}`} onClick={() => pick({ size: w })}>
                 <IconLineWidth width={w} /> {w}px
               </button>
@@ -299,7 +299,7 @@ export function DrawingSettings({ info, precision, onApply, onClose }: { info: D
             <div className={row}>
               <span className="text-muted">线宽</span>
               <span className="flex gap-1">
-                {WIDTHS.map((w) => (
+                {LINE_WIDTHS.map((w) => (
                   <button key={w} type="button" className="tb-btn h-7 px-2 text-xs" aria-pressed={w === size} onClick={() => setSize(w)}>
                     {w}px
                   </button>

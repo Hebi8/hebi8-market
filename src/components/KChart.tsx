@@ -27,11 +27,12 @@ import {
 import { customIndicators } from "@/indicators/custom";
 import type { RefSeries } from "@/indicators/formula";
 import type { BarsTail, ChartBar } from "@/lib/api-types";
-import type { ChartStyle } from "@/lib/config";
+import type { ChartStyle, LineOverride } from "@/lib/config";
 import { barCloseAt, fmtCountdown, type SessionClock } from "@/lib/session";
 import type { Timeframe } from "@/lib/symbols";
 import type { CompareEntry, OverlaySpec } from "@/lib/vault";
 import { ChartLegend, createLegendStore, type ChartLegendProps } from "./ChartLegend";
+import { indicatorLines } from "./indicator-style";
 import { IconAlarm } from "./chart-icons";
 import { registerDrawingTemplates, setOverlayChart, setOverlayTheme, snapToBar, textOf, textSizeOf } from "./chart-overlays";
 import { LOG_AXIS } from "./log-axis";
@@ -39,7 +40,7 @@ import { extensionOf, historyOf, record, redo, TREND_LINES, undo, withExtension,
 import { drawingOf, specOf, type DrawingFlags } from "./drawing-spec";
 import { dashOf, drawingStyles, lineOf, withAlpha } from "./drawing-style";
 import { FIB_DRAWINGS, fibSettingsOf } from "./fib";
-import { COMPARE_COLORS, MEASURE_TOOL, MONO, OPEN_DRAWINGS, SANS, SCALED_DRAWINGS, TEXT_DRAWINGS, type ChartControl, type IndicatorSpec, type LegendValue } from "./chart-types";
+import { COMPARE_COLORS, MEASURE_TOOL, MONO, OPEN_DRAWINGS, SANS, SCALED_DRAWINGS, TEXT_DRAWINGS, type ChartControl, type IndicatorLine, type IndicatorSpec, type LegendValue } from "./chart-types";
 import { DrawingSettings, DrawingToolbar, TextEditor, type DrawingChange, type DrawingInfo } from "./DrawingToolbar";
 
 export interface DrawingModes {
@@ -355,6 +356,26 @@ function fmtValue(value: number, precision: number, big: boolean): string {
     return `${(value / div).toFixed(2)}${unit}`;
   }
   return value.toLocaleString("en-US", { minimumFractionDigits: precision, maximumFractionDigits: precision });
+}
+
+/** The 样式 page's lines over KLineChart's own; the figures, and so the number of lines, exist once it is created. */
+function restyleLines(chart: Chart, id: string | null, own: LineOverride[] | undefined) {
+  const ind = id ? chart.getIndicators({ id })[0] : undefined;
+  if (!ind) return;
+  const lines = indicatorLines(chart.getStyles().indicator.lines, own, ind.figures.filter((f) => f.type === "line").length);
+  if (lines) chart.overrideIndicator({ name: ind.name, paneId: ind.paneId, styles: { lines } });
+}
+
+/** An indicator's lines as the 样式 page lists them: the title each has in the legend and its default look. */
+function defaultLines(chart: Chart, name: string, titles?: string[]): IndicatorLine[] | null {
+  const defaults = chart.getStyles().indicator.lines;
+  const ind = chart.getIndicators({ name }).find((i) => !isCompare(i.name));
+  const names = titles ?? ind?.figures.filter((f) => f.type === "line").map((f) => String(f.title ?? f.key).replace(/:\s*$/, ""));
+  if (!names) return null;
+  return names.map((title, i) => {
+    const base = defaults[i % defaults.length];
+    return { title, color: base.color, size: base.size, dash: dashOf(base) };
+  });
 }
 
 /** Values at `idx` as KLineChart's own tooltip would show them: one per titled figure, in the figure's color. */
@@ -1181,6 +1202,7 @@ export function KChart({
         chart.scrollToRealTime();
         return space >= MIN_BAR_SPACE;
       },
+      indicatorLines: (name, titles) => (chartRef.current ? defaultLines(chartRef.current, name, titles) : null),
       undo: () => applyHistory(undo(historyRef.current)),
       redo: () => applyHistory(redo(historyRef.current)),
       dialogOpen: () => settingsOpenRef.current,
@@ -1272,13 +1294,14 @@ export function KChart({
         // moved up from a pane of its own: its own scale, on the left like TradingView's, or none for volume
         const yAxisId = spec.ownScale ? `axis_${spec.name}` : undefined;
         if (yAxisId) chart.createYAxis({ id: yAxisId, paneId: CANDLE_PANE, ...(spec.name === "VOL" ? VOLUME_AXIS : { position: "left", gap: { top: gapRef.current, bottom: BOTTOM_GAP } }) });
-        chart.createIndicator(
+        const id = chart.createIndicator(
           { name: spec.name, calcParams: spec.calcParams, paneId: CANDLE_PANE, visible, ...(yAxisId ? { yAxisId } : {}), ...(spec.precision !== undefined ? { precision: spec.precision } : {}) },
           true,
         );
+        restyleLines(chart, id, spec.lines);
       } else {
         const paneId = `pane_${spec.name}`;
-        chart.createIndicator({ name: spec.name, calcParams: spec.calcParams, paneId, visible, ...(spec.precision !== undefined ? { precision: spec.precision } : {}) });
+        restyleLines(chart, chart.createIndicator({ name: spec.name, calcParams: spec.calcParams, paneId, visible, ...(spec.precision !== undefined ? { precision: spec.precision } : {}) }), spec.lines);
         // indicator panes stay above compare panes however often either is re-created
         chart.setPaneOptions({ id: paneId, order: 10 + order++ });
       }

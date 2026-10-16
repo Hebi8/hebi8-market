@@ -61,21 +61,25 @@ export function Dropdown({
       const t = e.target as Node;
       if (!menuRef.current?.contains(t) && !buttonRef.current?.contains(t)) setPos(null);
     };
+    // Esc closes the menu, not also the dialog or tool the page would close with it
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPos(null);
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setPos(null);
     };
     const onMove = () => setPos(null);
     // the page moving under the menu closes it; a long menu scrolling in itself does not
     const onScroll = (e: Event) => {
       if (!menuRef.current?.contains(e.target as Node)) setPos(null);
     };
-    document.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
+    // capturing: a dialog the menu sits in stops the mousedown on its way up
+    document.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey, true);
     window.addEventListener("resize", onMove);
     window.addEventListener("scroll", onScroll, true);
     return () => {
-      document.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("resize", onMove);
       window.removeEventListener("scroll", onScroll, true);
     };

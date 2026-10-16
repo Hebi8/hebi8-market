@@ -10,7 +10,7 @@ import { INDICATORS } from "@/indicators/catalog";
 import { compileFormula, formulaIndicatorName, formulaTemplate, isFormulaIndicator } from "@/indicators/formula-indicators";
 import type { BarsResponse, BarsSymbol, StatusResponse, SymbolStatus } from "@/lib/api-types";
 import { BRAND } from "@/lib/brand";
-import { CHART_STYLES, type ChartPrefs, type ChartStyle, type FormulaDef, type ParamOverrides } from "@/lib/config";
+import { CHART_STYLES, parseLineStyles, type ChartPrefs, type ChartStyle, type FormulaDef, type LineOverride, type ParamOverrides } from "@/lib/config";
 import { copyText } from "@/lib/copy-text";
 import { SESSION_LABELS, fmtAgo } from "@/lib/format";
 import { setChartContext } from "@/lib/page-context";
@@ -48,7 +48,7 @@ import {
   IconWatchlist,
 } from "./chart-icons";
 import { renderSnapshot, snapshotFileName } from "./chart-snapshot";
-import { COMPARE_COLORS, DRAW_GROUPS, DRAW_TOOLS, MEASURE_TOOL, OPEN_DRAWINGS, RANGES, type ChartControl, type IndicatorSpec } from "./chart-types";
+import { COMPARE_COLORS, DRAW_GROUPS, DRAW_TOOLS, MEASURE_TOOL, OPEN_DRAWINGS, RANGES, type ChartControl, type IndicatorLine, type IndicatorSpec } from "./chart-types";
 import { DrawToolGroups, GroupMenuItems } from "./DrawToolGroups";
 import { AlertDialog, AlertLoginDialog } from "./AlertDialog";
 import { AlertsPanel } from "./AlertsPanel";
@@ -74,7 +74,8 @@ type Panel = "watchlist" | "details" | "notes" | "alerts";
 type DialogState =
   | { kind: "indicators"; formula?: FormulaDef | "new" }
   | { kind: "compare" }
-  | { kind: "params"; name: string }
+  /** `lines`: what the indicator draws now, for its 样式 tab */
+  | { kind: "params"; name: string; lines: IndicatorLine[] }
   | { kind: "clear" }
   /** 新建警报 at a price, or 编辑警报 */
   | { kind: "alert"; alert: AlertView | null; price: number | null }
@@ -162,6 +163,9 @@ export function ChartView({
   const [enabled, setEnabled] = useState(prefs.indicators);
   const [overrides, setOverrides] = useState<ParamOverrides>(prefs.params);
   const [panes, setPanes] = useState(prefs.panes);
+  const [styles, setStyles] = useState(prefs.styles);
+  /** An indicator's lines as its open 样式 tab has them, before 确定 */
+  const [stylePreview, setStylePreview] = useState<{ id: string; lines: LineOverride[] } | null>(null);
   const [hiddenCompares, setHiddenCompares] = useState<string[]>([]);
   const [hiddenIndicators, setHiddenIndicators] = useState<string[]>([]);
   const [pctAxis, setPctAxis] = useLocalStorage("hebi8:chart:pct", false);
@@ -250,6 +254,8 @@ export function ChartView({
     setReloadSeq((n) => n + 1);
   }, [reloading]);
   const paramTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const styleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pendingStyles = useRef<Record<string, LineOverride[] | null>>({});
 
   const scope = useMemo(() => ({ aliases, bench }), [aliases, bench]);
   const compiled = useMemo(() => formulas.map((def) => ({ def, ...compileFormula(def.formula, scope) })), [formulas, scope]);
@@ -356,8 +362,11 @@ export function ChartView({
     () => compiled.flatMap((f) => (f.program && enabled.includes(f.def.id) ? [formulaTemplate(f.def, f.program, data?.refs ?? {})] : [])),
     [compiled, enabled, data],
   );
-  const specs: IndicatorSpec[] = useMemo(
-    () => [
+  // a preview lasts as long as the settings dialog it came from
+  const preview = dialog?.kind === "params" || dialog?.kind === "indicators" ? stylePreview : null;
+  const specs: IndicatorSpec[] = useMemo(() => {
+    const linesOf = (id: string) => (preview?.id === id ? preview.lines : styles[id]);
+    return [
       ...INDICATORS.filter((d) => enabled.includes(d.name) && (!d.needsBenchmark || hasBench)).map((d) => ({
         name: d.name,
         pane: panes[d.name] ?? d.pane,
@@ -365,16 +374,16 @@ export function ChartView({
         calcParams: params[d.name],
         hidden: hiddenIndicators.includes(d.name),
         precision: d.precision,
+        lines: linesOf(d.name),
       })),
       ...compiled
         .filter((f) => f.program && enabled.includes(f.def.id))
         .map((f) => {
           const name = formulaIndicatorName(f.def.id);
-          return { name, pane: panes[f.def.id] ?? f.def.pane, ownScale: f.def.pane === "sub", calcParams: [], hidden: hiddenIndicators.includes(name) };
+          return { name, pane: panes[f.def.id] ?? f.def.pane, ownScale: f.def.pane === "sub", calcParams: [], hidden: hiddenIndicators.includes(name), lines: linesOf(f.def.id) };
         }),
-    ],
-    [enabled, hasBench, params, compiled, hiddenIndicators, panes],
-  );
+    ];
+  }, [enabled, hasBench, params, compiled, hiddenIndicators, panes, styles, preview]);
   const labels = useMemo(
     () => Object.fromEntries([...INDICATORS.map((d) => [d.name, d.label]), ...formulas.map((f) => [formulaIndicatorName(f.id), f.label])]),
     [formulas],
@@ -396,6 +405,23 @@ export function ChartView({
     setOverrides({ ...overrides, [dataTf]: next });
     clearTimeout(paramTimer.current);
     paramTimer.current = setTimeout(() => persist({ params: { [dataTf]: { [name]: value ?? [] } } }), 600);
+  };
+  /** 样式 → 确定 (null: 恢复默认); by built-in name or formula id, for every timeframe */
+  const saveStyles = (id: string, lines: LineOverride[] | null) => {
+    const own = parseLineStyles(lines);
+    const rest = Object.fromEntries(Object.entries(styles).filter(([k]) => k !== id));
+    setStyles(own.length ? { ...rest, [id]: own } : rest);
+    setStylePreview(null);
+    pendingStyles.current[id] = own.length ? own : null;
+    clearTimeout(styleTimer.current);
+    styleTimer.current = setTimeout(() => {
+      persist({ styles: pendingStyles.current });
+      pendingStyles.current = {};
+    }, 600);
+  };
+  const openIndicators = (formula?: FormulaDef) => {
+    setStylePreview(null);
+    setDialog({ kind: "indicators", ...(formula ? { formula } : {}) });
   };
   const saveFormula = async (def: FormulaDef) => {
     const result = await saveIndicator(def);
@@ -435,8 +461,11 @@ export function ChartView({
       if (enabled.includes(id)) toggle(id);
     } else if (isFormulaIndicator(name)) {
       const def = formulas.find((f) => f.id === id);
-      if (def) setDialog({ kind: "indicators", formula: def });
-    } else setDialog({ kind: "params", name });
+      if (def) openIndicators(def);
+    } else {
+      setStylePreview(null);
+      setDialog({ kind: "params", name, lines: control.current?.indicatorLines(name) ?? [] });
+    }
   };
   const onCompare = (key: string, action: "toggle" | "remove") => {
     if (action === "remove") removeCompare(key);
@@ -870,7 +899,7 @@ export function ChartView({
           }
         </Dropdown>
         <span className="tb-sep" />
-        <button type="button" onClick={() => setDialog({ kind: "indicators" })} className="tb-btn px-2" title="指标">
+        <button type="button" onClick={() => openIndicators()} className="tb-btn px-2" title="指标">
           <span className="font-serif text-[15px] italic">fx</span>
           <span>指标</span>
         </button>
@@ -1142,6 +1171,13 @@ export function ChartView({
           onToggle={toggle}
           onSaveFormula={saveFormula}
           onDeleteFormula={deleteFormula}
+          linesOf={(def) => {
+            const outputs = compiled.find((f) => f.def.id === def.id)?.program?.outputs;
+            return outputs ? (control.current?.indicatorLines(formulaIndicatorName(def.id), outputs) ?? null) : null;
+          }}
+          styles={styles}
+          onPreviewStyles={(id, lines) => setStylePreview({ id, lines })}
+          onSaveStyles={saveStyles}
           onClose={() => setDialog(null)}
         />
       )}
@@ -1167,7 +1203,11 @@ export function ChartView({
           tf={dataTf}
           value={params[paramDef.name] ?? []}
           overridden={paramDef.name in tfOverrides}
+          lines={dialog?.kind === "params" ? dialog.lines : []}
+          styles={styles[paramDef.name] ?? []}
           onSave={(p) => setParams(paramDef.name, p)}
+          onPreviewStyles={(lines) => setStylePreview({ id: paramDef.name, lines })}
+          onSaveStyles={(lines) => saveStyles(paramDef.name, lines)}
           onClose={() => setDialog(null)}
         />
       )}

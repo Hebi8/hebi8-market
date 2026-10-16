@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { INDICATORS, type IndicatorDef } from "@/indicators/catalog";
-import type { FormulaDef } from "@/lib/config";
+import { LINE_WIDTHS, type FormulaDef, type LineOverride } from "@/lib/config";
 import { TF_LABELS, type Timeframe } from "@/lib/symbols";
-import { IconCheck, IconPencil, IconSearch } from "./chart-icons";
-import { Dialog } from "./Dialog";
+import type { IndicatorLine } from "./chart-types";
+import { IconCheck, IconLineDash, IconPencil, IconSearch } from "./chart-icons";
+import { Dialog, Dropdown } from "./Dialog";
+import { DASHES, Swatches } from "./DrawingToolbar";
 import { FormulaEditor, type FormulaScope } from "./FormulaEditor";
 
 export interface FormulaStatus {
@@ -26,14 +28,35 @@ interface IndicatorDialogProps {
   onToggle: (name: string) => void;
   onSaveFormula: (def: FormulaDef) => Promise<string | null>;
   onDeleteFormula: (id: string) => Promise<string | null>;
+  /** A saved formula's lines for its 样式 tab; null while it does not compile */
+  linesOf: (def: FormulaDef) => IndicatorLine[] | null;
+  styles: Record<string, LineOverride[]>;
+  /** Shown on the chart while the 样式 tab is open, saved only by 确定 */
+  onPreviewStyles: (id: string, lines: LineOverride[]) => void;
+  onSaveStyles: (id: string, lines: LineOverride[] | null) => void;
   onClose: () => void;
 }
 
 /** TradingView's「指标」dialog: search, categories on the left, click a row to add (or remove) it. */
-export function IndicatorDialog({ enabled, hasBenchmark, formulas, scope, initialFormula = null, onToggle, onSaveFormula, onDeleteFormula, onClose }: IndicatorDialogProps) {
+export function IndicatorDialog({
+  enabled,
+  hasBenchmark,
+  formulas,
+  scope,
+  initialFormula = null,
+  onToggle,
+  onSaveFormula,
+  onDeleteFormula,
+  linesOf,
+  styles,
+  onPreviewStyles,
+  onSaveStyles,
+  onClose,
+}: IndicatorDialogProps) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<Category>(initialFormula ? "formula" : "builtin");
   const [editing, setEditing] = useState<FormulaDef | "new" | null>(initialFormula);
+  const [tab, setTab] = useState<SettingsTab>("inputs");
   const q = query.trim().toLowerCase();
   const match = (...texts: string[]) => !q || texts.some((t) => t.toLowerCase().includes(q));
   const builtins = INDICATORS.filter((d) => match(d.label, d.name, d.hint));
@@ -45,9 +68,30 @@ export function IndicatorDialog({ enabled, hasBenchmark, formulas, scope, initia
   const row = "flex w-full items-center gap-3 px-4 py-2 text-left text-[13px] hover:bg-fg/5 disabled:cursor-default disabled:opacity-45";
 
   if (editing) {
+    // a formula's inputs are its source; its lines have a 样式 tab once it is saved and compiles
+    const lines = editing === "new" ? null : linesOf(editing);
+    const leave = () => {
+      setEditing(null);
+      setTab("inputs");
+    };
     return (
       <Dialog title={editing === "new" ? "新建公式" : `编辑公式 · ${editing.label}`} onClose={onClose} className="max-w-[760px]">
-        <div className="overflow-y-auto p-3">
+        {lines && editing !== "new" && <SettingsTabs tab={tab} onTab={setTab} />}
+        {lines && editing !== "new" && tab === "style" && (
+          <StyleForm
+            key={editing.id}
+            lines={lines}
+            value={styles[editing.id] ?? []}
+            onPreview={(next) => onPreviewStyles(editing.id, next)}
+            onSave={(next) => {
+              onSaveStyles(editing.id, next);
+              leave();
+            }}
+            onClose={leave}
+          />
+        )}
+        {/* hidden, not unmounted, on the 样式 tab: an edit not saved yet is still there on the way back */}
+        <div className={`overflow-y-auto p-3 ${tab === "style" && lines ? "hidden" : ""}`}>
           <FormulaEditor
             key={editing === "new" ? "new" : editing.id}
             initial={editing === "new" ? null : editing}
@@ -186,66 +230,220 @@ function parseParams(text: string): number[] | null {
   return parts.length > 0 && parts.every((n) => Number.isFinite(n) && n > 0) ? parts : null;
 }
 
-/** The settings dialog a legend row's gear opens: inputs per timeframe, as before. */
+type SettingsTab = "inputs" | "style";
+
+/** TradingView's 输入 / 样式 tabs under a settings dialog's title. */
+function SettingsTabs({ tab, onTab }: { tab: SettingsTab; onTab: (tab: SettingsTab) => void }) {
+  return (
+    <div role="tablist" aria-label="设置" className="flex h-9 shrink-0 items-stretch gap-1 border-b border-line px-3">
+      {(
+        [
+          ["inputs", "输入"],
+          ["style", "样式"],
+        ] as const
+      ).map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          role="tab"
+          aria-selected={tab === id}
+          onClick={() => onTab(id)}
+          className={`-mb-px border-b-2 px-2 text-[13px] ${tab === id ? "border-fg font-medium text-fg" : "border-transparent text-muted hover:text-fg"}`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** TradingView's 样式 tab: a row per line the indicator draws, its colour and width in one menu and its line style in another. */
+function StylePage({ lines, value, onChange }: { lines: IndicatorLine[]; value: LineOverride[]; onChange: (next: LineOverride[]) => void }) {
+  if (!lines.length) return <p className="text-muted">这个指标没有可设置样式的线。</p>;
+  const set = (i: number, change: LineOverride) => {
+    // lines beyond the ones drawn now (fewer periods than before) keep their styles
+    const next = Array.from({ length: Math.max(value.length, lines.length) }, (_, j) => value[j] ?? {});
+    next[i] = { ...next[i], ...change };
+    onChange(next);
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      {lines.map((line, i) => {
+        const color = value[i]?.color ?? line.color;
+        const size = value[i]?.size ?? line.size;
+        const dash = value[i]?.dash ?? line.dash;
+        return (
+          <div key={i} className="flex items-center gap-2">
+            <span className="min-w-0 flex-1 truncate font-mono text-[13px]">{line.title}</span>
+            <Dropdown
+              label={
+                <span className="flex h-4 w-7 items-center rounded-sm border border-line px-0.5">
+                  <span className="w-full rounded-full" style={{ background: color, height: size + 1 }} />
+                </span>
+              }
+              title={`${line.title} 颜色和线宽`}
+              className="tb-btn h-7 px-1.5"
+              menuClassName="p-2"
+            >
+              {() => (
+                <div className="flex flex-col gap-2">
+                  <Swatches value={color} onPick={(c) => set(i, { color: c })} />
+                  <div className="flex items-center justify-between gap-2 border-t border-line pt-2">
+                    <span className="text-muted">线宽</span>
+                    <span className="flex gap-1">
+                      {LINE_WIDTHS.map((w) => (
+                        <button key={w} type="button" className="tb-btn h-7 px-2 text-xs" aria-pressed={w === size} onClick={() => set(i, { size: w })}>
+                          {w}px
+                        </button>
+                      ))}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </Dropdown>
+            <Dropdown label={<IconLineDash dash={dash} />} title={`${line.title} 线型`} className="tb-btn h-7 px-1.5" menuClassName="min-w-[7rem]">
+              {(close) =>
+                DASHES.map((d) => (
+                  <button
+                    key={d.dash}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={d.dash === dash}
+                    className={`menu-item flex items-center gap-2 ${d.dash === dash ? "font-medium" : ""}`}
+                    onClick={() => {
+                      set(i, { dash: d.dash });
+                      close();
+                    }}
+                  >
+                    <IconLineDash dash={d.dash} /> {d.label}
+                  </button>
+                ))
+              }
+            </Dropdown>
+          </div>
+        );
+      })}
+      <p className="pt-1 text-[11px] text-muted">样式对所有周期生效。</p>
+    </div>
+  );
+}
+
+/** The 样式 tab of a formula, whose 输入 tab is the formula editor with its own buttons. */
+function StyleForm({ lines, value, onPreview, onSave, onClose }: { lines: IndicatorLine[]; value: LineOverride[]; onPreview: (next: LineOverride[]) => void; onSave: (next: LineOverride[] | null) => void; onClose: () => void }) {
+  const [draft, setDraft] = useState(value);
+  return (
+    <form
+      className="flex flex-col gap-3 p-4 text-xs"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave(draft);
+      }}
+    >
+      <StylePage
+        lines={lines}
+        value={draft}
+        onChange={(next) => {
+          setDraft(next);
+          onPreview(next);
+        }}
+      />
+      <div className="flex items-center gap-2 pt-1">
+        {value.length > 0 && (
+          <button type="button" onClick={() => onSave(null)} className="btn btn-secondary">
+            恢复默认
+          </button>
+        )}
+        <span className="flex-1" />
+        <button type="button" onClick={onClose} className="btn btn-secondary">
+          取消
+        </button>
+        <button type="submit" className="btn btn-primary">
+          确定
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/** The settings dialog a legend row's gear opens: 输入 per timeframe, as before, and 样式 for every timeframe. */
 export function ParamDialog({
   def,
   tf,
   value,
   overridden,
+  lines,
+  styles,
   onSave,
+  onPreviewStyles,
+  onSaveStyles,
   onClose,
 }: {
   def: IndicatorDef;
   tf: Timeframe;
   value: number[];
   overridden: boolean;
+  /** The lines it draws now */
+  lines: IndicatorLine[];
+  styles: LineOverride[];
   onSave: (params: number[] | null) => void;
+  /** Shown on the chart while the dialog is open, saved only by 确定 */
+  onPreviewStyles: (lines: LineOverride[]) => void;
+  onSaveStyles: (lines: LineOverride[] | null) => void;
   onClose: () => void;
 }) {
-  const [text, setText] = useState(value.join(", "));
+  const [tab, setTab] = useState<SettingsTab>("inputs");
+  const initial = value.join(", ");
+  const [text, setText] = useState(initial);
+  const [draft, setDraft] = useState(styles);
+  const noInputs = value.length === 0 && !overridden && !def.optionalParams;
   // an optional param left empty goes back to the default (none)
   const cleared = Boolean(def.optionalParams) && !text.trim();
   const parsed = parseParams(text);
-  if (value.length === 0 && !overridden && !def.optionalParams) {
-    return (
-      <Dialog title={`${def.label} 设置`} onClose={onClose} className="max-w-[420px]">
-        <div className="flex flex-col gap-3 p-4 text-xs">
-          <p className="text-muted">{def.hint}</p>
-          <div className="flex justify-end">
-            <button type="button" onClick={onClose} className="btn btn-secondary">
-              关闭
-            </button>
-          </div>
-        </div>
-      </Dialog>
-    );
-  }
+  const valid = noInputs || Boolean(parsed) || cleared;
   return (
     <Dialog title={`${def.label} 设置`} onClose={onClose} className="max-w-[420px]">
+      <SettingsTabs tab={tab} onTab={setTab} />
       <form
         className="flex flex-col gap-3 p-4 text-xs"
         onSubmit={(e) => {
           e.preventDefault();
-          if (parsed || cleared) {
-            onSave(cleared ? null : parsed);
-            onClose();
-          }
+          if (!valid) return;
+          // only what was changed is saved: 确定 on the 样式 tab does not pin the periods
+          if (!noInputs && text !== initial) onSave(cleared ? null : parsed);
+          if (draft !== styles) onSaveStyles(draft);
+          onClose();
         }}
       >
-        <div className="text-[11px] font-medium text-muted">输入</div>
-        <label className="flex flex-col gap-1">
-          <span className="text-muted">{def.hint}</span>
-          <input value={text} onChange={(e) => setText(e.target.value)} onFocus={(e) => e.target.select()} autoFocus aria-invalid={!parsed && !cleared} className="input h-8 font-mono text-[13px]" />
-        </label>
-        <p className="text-[11px] text-muted">
-          只对{TF_LABELS[tf]}线生效，其它周期各自保存{overridden ? "；当前为自定义值" : ""}。多个参数用逗号分隔。
-        </p>
+        {tab === "style" ? (
+          <StylePage
+            lines={lines}
+            value={draft}
+            onChange={(next) => {
+              setDraft(next);
+              onPreviewStyles(next);
+            }}
+          />
+        ) : noInputs ? (
+          <p className="text-muted">{def.hint}</p>
+        ) : (
+          <>
+            <label className="flex flex-col gap-1">
+              <span className="text-muted">{def.hint}</span>
+              <input value={text} onChange={(e) => setText(e.target.value)} onFocus={(e) => e.target.select()} autoFocus aria-invalid={!valid} className="input h-8 font-mono text-[13px]" />
+            </label>
+            <p className="text-[11px] text-muted">
+              只对{TF_LABELS[tf]}线生效，其它周期各自保存{overridden ? "；当前为自定义值" : ""}。多个参数用逗号分隔。
+            </p>
+          </>
+        )}
         <div className="flex items-center gap-2 pt-1">
-          {overridden && (
+          {(overridden || styles.length > 0) && (
             <button
               type="button"
+              title="参数和样式都回到默认"
               onClick={() => {
-                onSave(null);
+                if (overridden) onSave(null);
+                if (styles.length) onSaveStyles(null);
                 onClose();
               }}
               className="btn btn-secondary"
@@ -257,7 +455,7 @@ export function ParamDialog({
           <button type="button" onClick={onClose} className="btn btn-secondary">
             取消
           </button>
-          <button type="submit" disabled={!parsed && !cleared} className="btn btn-primary">
+          <button type="submit" disabled={!valid} className="btn btn-primary">
             确定
           </button>
         </div>

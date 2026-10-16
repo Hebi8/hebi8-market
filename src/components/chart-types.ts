@@ -1,4 +1,6 @@
 /** Shared by ChartView and KChart; kept free of klinecharts so the page can be server-rendered. */
+import type { LineOverride } from "@/lib/config";
+import type { LineDash } from "./drawing-style";
 
 export interface IndicatorSpec {
   name: string;
@@ -10,6 +12,16 @@ export interface IndicatorSpec {
   hidden?: boolean;
   /** Decimals on the indicator's own axis, when KLineChart's default is too many */
   precision?: number;
+  /** Its lines as restyled on the 样式 page (`chart.styles`) */
+  lines?: LineOverride[];
+}
+
+/** One line of an indicator on its 样式 page, as KLineChart draws it by default. */
+export interface IndicatorLine {
+  title: string;
+  color: string;
+  size: number;
+  dash: LineDash;
 }
 
 export interface CompareLegendEntry {
@@ -76,6 +88,8 @@ export interface ChartControl {
   /** Ctrl+Z / Ctrl+Y on the drawings; false when there is nothing to undo or redo, or a drawing is half done */
   undo: () => boolean;
   redo: () => boolean;
+  /** The lines of an indicator on the chart (by its KLineChart name), or of one drawing `titles`; null when it is not on the chart and no titles are given */
+  indicatorLines: (name: string, titles?: string[]) => IndicatorLine[] | null;
 }
 
 // Same stacks as globals.css; a canvas cannot read Tailwind's theme.
