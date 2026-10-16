@@ -1,4 +1,5 @@
 import YahooFinance from "yahoo-finance2";
+import type { ChartResultArray } from "yahoo-finance2/modules/chart";
 import { dedupeBars, type Bar } from "../series";
 import { localDay, tradingDay } from "../time";
 import { partsIn } from "../tz";
@@ -96,13 +97,26 @@ export function yahooProfile(r: YahooSummary): SourceProfile {
 }
 
 /**
+ * Daily rows from `period1` on, not validated against the library's schema: some indices have no
+ * currency (MSCI's `^990100-USD-STRD`), and the prices are checked one by one below.
+ */
+const dailyChart = async (ticker: string, period1: Date) => (await yf.chart(ticker, { period1, interval: "1d" }, { validateResult: false })) as ChartResultArray;
+
+/**
  * Full daily history. The chart endpoint's OHLC is already split-adjusted and is stored as is;
  * `adjclose / close` carries the dividend factor. Raw HTTP requests get 429, the library handles
  * the cookie/crumb dance.
  */
 export const yahoo: SourceAdapter = {
   async fetchDaily(ticker) {
-    const result = await yf.chart(ticker, { period1: new Date("1800-01-01"), interval: "1d" });
+    // Yahoo serves at most 100 years of daily rows and clamps 1800 to the first trade date; a
+    // symbol without one (`^750108-USD-STRD`) is refused and asked again from 99 years back
+    const result = await dailyChart(ticker, new Date("1800-01-01")).catch((e: unknown) => {
+      if (!(e instanceof Error && e.message.includes("Only 100 years worth of day granularity data"))) throw e;
+      const since = new Date();
+      since.setUTCFullYear(since.getUTCFullYear() - 99);
+      return dailyChart(ticker, since);
+    });
     const timeZone = result.meta.exchangeTimezoneName ?? "UTC";
     const unsettled = liveVolumeOff(ticker, result.meta.instrumentType) ? localDay(Date.now() / 1000, timeZone) : null;
     const bars: Bar[] = [];
