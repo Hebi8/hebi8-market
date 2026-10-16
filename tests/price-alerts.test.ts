@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { describeCondition, observe, parseCondition, type AlertCondition } from "@/lib/alert-conds";
+import { currentFirst, describeCondition, observe, parseCondition, type AlertCondition } from "@/lib/alert-conds";
 import { decideCondition, type StateRow } from "@/lib/alerts";
 import { ConfigError, normalizeConfig } from "@/lib/config";
 import type { Bar } from "@/lib/series";
@@ -72,6 +72,14 @@ describe("alerts in hebi8.yaml", () => {
   ])("rejects %j", (alert, msg) => {
     expect(() => normalizeConfig({ aliases, alerts: [alert] })).toThrow(ConfigError);
     expect(() => normalizeConfig({ aliases, alerts: [alert] })).toThrow(msg);
+  });
+});
+
+describe("the alerts panel", () => {
+  it("lists the open chart's alerts first and keeps the rest in yaml order", () => {
+    const alerts = [{ id: "a", key: "yahoo:AAPL" }, { id: "w", key: null }, { id: "b", key: "yahoo:000001.SS" }, { id: "c", key: "binance:BTCUSDT" }, { id: "d", key: "yahoo:000001.SS" }];
+    expect(currentFirst(alerts, "yahoo:000001.SS").map((a) => a.id)).toEqual(["b", "d", "a", "w", "c"]);
+    expect(currentFirst(alerts, "yahoo:MSFT").map((a) => a.id)).toEqual(["a", "w", "b", "c", "d"]);
   });
 });
 

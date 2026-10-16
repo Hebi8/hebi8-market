@@ -31,6 +31,11 @@ export const isAlertCond = (v: unknown): v is AlertCond => typeof v === "string"
 /** What an alert without a key covers: every watched symbol. */
 export const WATCHLIST = "全部自选";
 
+/** The alerts panel's order: the open chart's alerts first, then the others (the whole watchlist's among them), each in yaml order. */
+export function currentFirst<T extends { key: string | null }>(alerts: T[], current: string): T[] {
+  return [...alerts.filter((a) => a.key === current), ...alerts.filter((a) => a.key !== current)];
+}
+
 /** `once` disables the alert after it fires; `bar` fires at most once per daily bar. */
 export type AlertTrigger = "once" | "bar";
 

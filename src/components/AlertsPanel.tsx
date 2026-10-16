@@ -1,7 +1,9 @@
 "use client";
 
+import { Fragment } from "react";
 import { useRouter } from "next/navigation";
 import { confirmAlert, deleteAlert, saveAlert, setAlertEnabled } from "@/app/actions";
+import { currentFirst } from "@/lib/alert-conds";
 import type { AlertView } from "@/lib/alert-view";
 import { fmtAgo, fmtPrice } from "@/lib/format";
 import { IconClose, IconPlus } from "./chart-icons";
@@ -15,7 +17,8 @@ const STATUS: Record<AlertView["status"], { text: string; className: string }> =
 };
 
 /**
- * TradingView's 警报 panel: every alert of this vault, whatever the symbol. A row opens its chart;
+ * TradingView's 警报 panel: every alert of this vault, whatever the symbol, the open chart's first
+ * and the rest under 其他商品, each in yaml order. A row opens its chart;
  * 编辑 / 暂停·恢复 / 删除 sit on the row. Prices come from the quotes table, read by the page.
  * One an agent made says so, and its draft (待确认, §2.5) has 确认 / 丢弃 in place of 暂停 / 删除:
  * nothing judges it until it is confirmed here.
@@ -42,6 +45,8 @@ export function AlertsPanel({
   const report = (result: { ok: boolean; error?: string }) => {
     if (!result.ok) toast(result.error ?? "操作失败", { kind: "error" });
   };
+
+  const own = alerts.filter((a) => a.key === current).length;
 
   const remove = async (a: AlertView) => {
     const result = await deleteAlert(a.id);
@@ -93,57 +98,60 @@ export function AlertsPanel({
         </div>
       ) : (
         <ul className="min-h-0 flex-1 divide-y divide-line overflow-y-auto">
-          {alerts.map((a) => {
+          {currentFirst(alerts, current).map((a, i) => {
             const status = STATUS[a.status];
             // an alert on the whole watchlist has no chart of its own
             const opens = a.key !== null && a.key !== current ? a.key : null;
             return (
-              <li key={a.id} className={`group px-3 py-2 ${a.key === current ? "bg-fg/5" : ""}`}>
-                <button type="button" className="block w-full text-left" onClick={() => opens && router.push(chartHref(opens))} title={opens ? `打开 ${a.name}` : undefined}>
-                  <span className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={a.name}>
-                      {a.name}
+              <Fragment key={a.id}>
+                {i === own && own > 0 && <li className="px-3 pt-2 pb-1 text-[11px] text-muted">其他商品</li>}
+                <li className={`group px-3 py-2 ${a.key === current ? "bg-fg/5" : ""}`}>
+                  <button type="button" className="block w-full text-left" onClick={() => opens && router.push(chartHref(opens))} title={opens ? `打开 ${a.name}` : undefined}>
+                    <span className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={a.name}>
+                        {a.name}
+                      </span>
+                      {a.by === "agent" && (
+                        <span className="shrink-0 rounded border border-line px-1 text-[11px] text-muted" title="由 agent 经 MCP 建立或修改">
+                          Agent
+                        </span>
+                      )}
+                      <span className={`shrink-0 rounded border px-1 text-[11px] ${status.className}`}>{status.text}</span>
                     </span>
-                    {a.by === "agent" && (
-                      <span className="shrink-0 rounded border border-line px-1 text-[11px] text-muted" title="由 agent 经 MCP 建立或修改">
-                        Agent
+                    <span className="mt-0.5 block truncate" title={a.label}>
+                      {a.label}
+                    </span>
+                    {/* TradingView: the condition stays visible under any name */}
+                    <span className="mt-0.5 block truncate text-[11px] text-muted" title={a.summary}>
+                      {a.summary} · {a.key === null ? "每个标的每根 K 线最多一次" : a.trigger === "once" ? "仅一次" : "每根 K 线一次"}
+                      {!a.notify && " · 不推送"}
+                    </span>
+                    {a.draft && <span className="mt-0.5 block text-[11px] text-muted">确认后才开始判断{a.key === null ? "，会立刻对全部自选判断一次" : ""}</span>}
+                    {a.key !== null && (
+                      <span className="mt-0.5 block text-[11px] text-muted">
+                        当前 {a.price != null ? `${fmtPrice(a.price)}${a.priceAt ? ` · ${fmtAgo(a.priceAt, "")}` : ""}` : "暂无价格"}
                       </span>
                     )}
-                    <span className={`shrink-0 rounded border px-1 text-[11px] ${status.className}`}>{status.text}</span>
-                  </span>
-                  <span className="mt-0.5 block truncate" title={a.label}>
-                    {a.label}
-                  </span>
-                  {/* TradingView: the condition stays visible under any name */}
-                  <span className="mt-0.5 block truncate text-[11px] text-muted" title={a.summary}>
-                    {a.summary} · {a.key === null ? "每个标的每根 K 线最多一次" : a.trigger === "once" ? "仅一次" : "每根 K 线一次"}
-                    {!a.notify && " · 不推送"}
-                  </span>
-                  {a.draft && <span className="mt-0.5 block text-[11px] text-muted">确认后才开始判断{a.key === null ? "，会立刻对全部自选判断一次" : ""}</span>}
-                  {a.key !== null && (
-                    <span className="mt-0.5 block text-[11px] text-muted">
-                      当前 {a.price != null ? `${fmtPrice(a.price)}${a.priceAt ? ` · ${fmtAgo(a.priceAt, "")}` : ""}` : "暂无价格"}
-                    </span>
-                  )}
-                </button>
-                <span className="mt-1 flex gap-1">
-                  <button type="button" className="btn h-6 px-1.5" onClick={() => onEdit(a)}>
-                    编辑
                   </button>
-                  {a.draft ? (
-                    <button type="button" className="btn btn-secondary h-6 px-1.5" onClick={() => void confirmAlert(a.id).then(report)}>
-                      确认
+                  <span className="mt-1 flex gap-1">
+                    <button type="button" className="btn h-6 px-1.5" onClick={() => onEdit(a)}>
+                      编辑
                     </button>
-                  ) : (
-                    <button type="button" className="btn h-6 px-1.5" onClick={() => void setAlertEnabled(a.id, !a.enabled).then(report)}>
-                      {a.enabled ? "暂停" : "恢复"}
+                    {a.draft ? (
+                      <button type="button" className="btn btn-secondary h-6 px-1.5" onClick={() => void confirmAlert(a.id).then(report)}>
+                        确认
+                      </button>
+                    ) : (
+                      <button type="button" className="btn h-6 px-1.5" onClick={() => void setAlertEnabled(a.id, !a.enabled).then(report)}>
+                        {a.enabled ? "暂停" : "恢复"}
+                      </button>
+                    )}
+                    <button type="button" className="btn h-6 px-1.5 text-down" onClick={() => void remove(a)}>
+                      {a.draft ? "丢弃" : "删除"}
                     </button>
-                  )}
-                  <button type="button" className="btn h-6 px-1.5 text-down" onClick={() => void remove(a)}>
-                    {a.draft ? "丢弃" : "删除"}
-                  </button>
-                </span>
-              </li>
+                  </span>
+                </li>
+              </Fragment>
             );
           })}
         </ul>
