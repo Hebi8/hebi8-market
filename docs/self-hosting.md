@@ -27,7 +27,7 @@ npm run dev        # http://localhost:3000
 
 ### 用 GitHub Actions 自动部署（可选）
 
-`.github/workflows/deploy.yml`：push 到 `master`（合并 PR）部署到 GitHub Environment `production`。只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，从不在 pull_request 上跑。**仓库设置里没有 `production` 这个 Environment 就直接跳过**，所以不配置就什么都不发生，fork 里推送也不会连任何机器。合并就是批准，Environment 不需要审批人。想再跑一个跟着 `dev` 的实例先试新功能，不用工作流：照 `scripts/dev-instance/hebi8-dev.sh` 那样让它自己每分钟看一次分支（`git ls-remote`），动了才拉取、构建、切换。
+`.github/workflows/deploy.yml`：push 到 `master`（合并 PR）部署到 GitHub Environment `production`。只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，从不在 pull_request 上跑。**仓库设置里没有 `production` 这个 Environment 就直接跳过**，所以不配置就什么都不发生，fork 里推送也不会连任何机器。合并就是批准，Environment 不需要审批人。想再跑一个跟着 `dev` 的实例先试新功能，不用工作流：照 `scripts/dev-instance/hebi8-dev.sh` 那样让它自己每分钟看一次分支（systemd 用户 timer 跑 `git ls-remote`），动了才拉取、构建、切换；它可以和线上在同一台机器上，单独的目录、数据库和空的密钥目录，优先级调低。
 
 production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上：备份、构建、重启、检查、回滚），成功后，这个提交的 `package.json` 版本还没有 tag 的话，打带注释的 tag `v<版本>`、用 `CHANGELOG.md` 那一节发 GitHub Release、给修好的 issue 评论并关掉（从上一个 tag 到这个提交、提交信息里写着 `Fixes #n` 一类的；带 `status:next-release` 标签但修复不在这次发布里的不动），最后把 master 合回 dev。合回之前 master 不是 dev 的祖先；部署失败时不会合回，下次发版前先 `scripts/hotfix.sh merge-back`。
 
@@ -57,7 +57,7 @@ production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上
    | `DEPLOY_SSH_KEY` | secret | 第 2 步的私钥（`hebi8-deploy` 文件的全部内容） |
    | `DEPLOY_URL` | variable | 可选，部署记录上显示的地址 |
 
-6. **只在 tailnet 里连得到时**（能直连 ssh 的不需要）：在 Tailscale 后台建 OAuth client（Settings → OAuth clients，scope 选 Auth Keys 的 Write，tag 选 `tag:ci`），在 `production` 里放 secret `TS_OAUTH_CLIENT_ID`、`TS_OAUTH_SECRET`（放仓库级也能用，但 Environment 的 secret 只给限定分支上的 job，别的分支里改过的工作流拿不到；tag 不叫 `tag:ci` 时加变量 `TS_TAGS`）。runner 以 `tag:ci` 临时加入 tailnet，job 结束就下线。策略里要有 `"tagOwners": {"tag:ci": [...]}`，并让 `tag:ci` 只能连到线上那台的 22 端口，别的哪里都不行。
+6. **只在 tailnet 里连得到时**（线上那台有公网 SSH 就不需要，这一步整个跳过；放了这两个 secret，runner 就会先加入 tailnet 再 ping `DEPLOY_HOST` 的主机，ping 不通公网地址就失败，所以换成公网 SSH 时要把它们删掉）：在 Tailscale 后台建 OAuth client（Settings → OAuth clients，scope 选 Auth Keys 的 Write，tag 选 `tag:ci`），在 `production` 里放 secret `TS_OAUTH_CLIENT_ID`、`TS_OAUTH_SECRET`（放仓库级也能用，但 Environment 的 secret 只给限定分支上的 job，别的分支里改过的工作流拿不到；tag 不叫 `tag:ci` 时加变量 `TS_TAGS`）。runner 以 `tag:ci` 临时加入 tailnet，job 结束就下线。策略里要有 `"tagOwners": {"tag:ci": [...]}`，并让 `tag:ci` 只能连到线上那台的 22 端口，别的哪里都不行。
 7. **issue 用谁的名义**：不配时用 github-actions。想用自己的 GitHub App：App 只要 Issues 的读写，装到这个仓库，在 `production` 里加变量 `TRIAGE_APP_CLIENT_ID`（App 设置页的 Client ID）和 secret `TRIAGE_APP_PRIVATE_KEY`（生成的私钥 `.pem` 的全部内容）。
 8. **dev 只能经 PR 时**（分支保护或 ruleset）：合回 dev 的推送会被拒，工作流改开一个 master → dev 的 PR 并开启 auto-merge。要在 Settings → Actions → General 勾选 **Allow GitHub Actions to create and approve pull requests**，在 Settings → General 勾选 **Allow auto-merge**；master → dev 的 PR 只能用 merge commit 合并。
 
@@ -115,7 +115,7 @@ vault/
 
 ## 共用一台实例
 
-在根 vault 的 `hebi8.yaml` 里写 `owner: <你的 GitHub 用户名>`（几个账号都是你的就写列表 `owner: [dreaife, dreaifekks]`，任何一个登录都用根 vault），局域网里的几个人就能共用这台 hebi8：K 线缓存、同步和数据集是共享的，自选、别名、公式、警报、图表偏好、笔记、复盘、画线和通知是各人的。不写 `owner` 就是单用户模式，和以前完全一样。
+在根 vault 的 `hebi8.yaml` 里写 `owner: <你的 GitHub 用户名>`（几个账号都是你的就写列表 `owner: [alice, alice-work]`，任何一个登录都用根 vault），局域网里的几个人就能共用这台 hebi8：K 线缓存、同步和数据集是共享的，自选、别名、公式、警报、图表偏好、笔记、复盘、画线和通知是各人的。不写 `owner` 就是单用户模式，和以前完全一样。
 
 | 访问者 | 看到 | 能改 |
 |---|---|---|

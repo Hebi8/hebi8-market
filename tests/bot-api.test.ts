@@ -78,7 +78,7 @@ describe("telegram.api", () => {
     const { parseNotifyConfig } = await import("@/lib/notify");
     const apis = (api: unknown) => parseNotifyConfig({ telegram: { token: TOKEN, api } }).telegram?.apis;
     expect(apis("http://127.0.0.1:18081/")).toEqual(["http://127.0.0.1:18081"]);
-    expect(apis(["http://100.92.194.31:18081", "https://api.telegram.org"])).toEqual(["http://100.92.194.31:18081", "https://api.telegram.org"]);
+    expect(apis(["http://100.64.0.1:18081", "https://api.telegram.org"])).toEqual(["http://100.64.0.1:18081", "https://api.telegram.org"]);
     expect(apis(undefined)).toEqual(["https://api.telegram.org"]);
     expect(apis([])).toEqual(["https://api.telegram.org"]);
     expect(() => apis(["https://api.telegram.org", "ftp://x"])).toThrow("telegram.api 只支持 http 或 https");

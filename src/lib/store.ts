@@ -93,6 +93,10 @@ export function latestBarTime(key: string): number | null {
   return row.t;
 }
 
+export function countBars(key: string): number {
+  return (getDb().prepare("SELECT count(*) AS n FROM bars WHERE key = ?").get(key) as { n: number }).n;
+}
+
 /** The close of the latest stored bar as traded: split-adjusted, no dividend factor. */
 export function lastClose(key: string): number | null {
   const row = getDb().prepare("SELECT c FROM bars WHERE key = ? ORDER BY t DESC LIMIT 1").get(key) as { c: number } | undefined;

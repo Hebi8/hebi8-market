@@ -38,11 +38,11 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 ### 部署工作流
 
-`.github/workflows/deploy.yml`，只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，**从不在 pull_request 上跑**，只部署到 `production`（工作流里判断分支，不只靠 Environment 的分支限定）；仓库设置里没有 `production` 这个 Environment 就跳过，所以 fork 里推送不报错，也不连任何人的机器。dev 不经工作流：没有任何东西从外面连进 memoh，[dev 实例](#dev-实例)自己拉。配置（Environment 的 variables / secrets、Tailscale、forced command）见 [self-hosting.md](self-hosting.md#用-github-actions-自动部署可选)。
+`.github/workflows/deploy.yml`，只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，**从不在 pull_request 上跑**，只部署到 `production`（工作流里判断分支，不只靠 Environment 的分支限定）；仓库设置里没有 `production` 这个 Environment 就跳过，所以 fork 里推送不报错，也不连任何人的机器。dev 不经工作流：[dev 实例](#dev-实例)自己拉，没有任何东西从外面连进来部署它。配置（Environment 的 variables / secrets、Tailscale、forced command）见 [self-hosting.md](self-hosting.md#用-github-actions-自动部署可选)。
 
 | 触发 | job | 做什么 |
 |---|---|---|
-| push 到 master（合并 Release / 热补丁 PR） | `production` | GitHub 托管的 runner 以 `tag:ci` 临时加入 tailnet → ssh 到 homeN100，部署 key 的 forced command 是 `scripts/deploy-gate.sh`：N100 自己 `git fetch origin master`，确认这个 commit 在 master 上，再用这个 commit 的 `deploy.sh live <commit>`（备份、快进、构建、重启、健康检查、失败回滚，见[正式环境](#正式环境)）→ 成功后：版本没有 tag 就打 tag、发 Release、处理 issue → 把 master 合回 dev |
+| push 到 master（合并 Release / 热补丁 PR） | `production` | GitHub 托管的 runner ssh 到线上机器（Environment 里有 Tailscale 的 secret 时先以 `tag:ci` 临时加入 tailnet），部署 key 的 forced command 是 `scripts/deploy-gate.sh`：线上机器自己 `git fetch origin master`，确认这个 commit 在 master 上，再用这个 commit 的 `deploy.sh live <commit>`（备份、快进、构建、重启、健康检查、失败回滚，见[正式环境](#正式环境)）→ 成功后：版本没有 tag 就打 tag、发 Release、处理 issue → 把 master 合回 dev |
 
 - **版本从提交里读**：部署成功后读这个提交的 `package.json`。这个版本还没有 tag（或 tag 就在这个提交上：重跑）才打 tag、发 Release、处理 issue；已经在别的提交上（不是 Release / 热补丁 PR 的普通推送）就只部署。版本提交是 `chore(hotfix): vX.Y.Z` 的按热补丁处理（只认提交里的 `Fixes #n`，不碰 `status:next-release`），其余按发版。
 - **同时只部署一个**：production 的 `concurrency` 不取消正在跑的，后来的排队（GitHub 每组只留一个排队的，连续几次推送时中间的会被最新的那次替掉；最新的提交包含它们）。
@@ -56,10 +56,10 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
   - 或者在 GitHub 上 revert 那个 PR 再合，回到原来的版本号；之后同样先合回再发版。
 
   下一次推送会从线上跑着的版本直接快进过去。
-- 退出码 3（不知道结果：ssh 断了、事后也问不到，或者问到的状态说不清）：job 标红，日志里写着续跑方法：**等 N100 连得上，在这次运行的页面上 Re-run failed jobs**。N100 那边是幂等的：已经部署完的认出来直接返回，没做完的从进行中标记接着做或重做。
+- 退出码 3（不知道结果：ssh 断了、事后也问不到，或者问到的状态说不清）：job 标红，日志里写着续跑方法：**等线上机器连得上，在这次运行的页面上 Re-run failed jobs**。线上那边是幂等的：已经部署完的认出来直接返回，没做完的从进行中标记接着做或重做。
 - 部署成功、后面的步骤停了（打 tag、Release、issue、合回 dev，比如 GitHub 请求失败）：同样 Re-run failed jobs，部署那一步认出已经在跑，做过的步骤跳过（issue 的公告评论带隐藏标记，有了就不再评论；评论和关闭都成功后才去标签）。GitHub 请求失败（不是「没有这个 issue」或「这是 PR」）就停下，不当成做完。
 
-**线上真正跑的是哪个版本**以 N100 线上目录的 `refs/hebi8/live` 为准，GitHub 上看仓库的 Deployments（production 最后一次成功的部署），不看 master。
+**线上真正跑的是哪个版本**以线上机器上线上目录的 `refs/hebi8/live` 为准，GitHub 上看仓库的 Deployments（production 最后一次成功的部署），不看 master。
 
 ### 审查
 
@@ -74,7 +74,7 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 - **审什么**：先 `git fetch origin`，审分支相对 `origin/dev` 的改动（热补丁相对 `origin/master`），按 blocking / suggestion 分级，结论原样交给协调者。
 - **怎么处理意见**：协调者把两份合在一起，筛掉只是「多加防御性检查」的意见；真问题修完后，由提出它的那个审查者复审，直到两边都没有 blocking。
 - **结论贴在 PR 上**：两份审查（最后一轮的结论，以及修过什么）作为 PR 评论贴上，用户的 gh 身份（`gh pr comment <n> --body-file …`）。
-- **谁合并**：进 dev 的 PR，两边都没有 blocking 后协调者 `gh pr merge <n> --merge --delete-branch`；用户也可以随时自己合。合并后 dev 实例约一分钟内自己拉到（加上构建的几分钟），到没到看 memoh 上的 `logs/daemon.log`（见 [dev 实例](#dev-实例)）。热补丁 PR 和 Release PR 进 master，只由用户手动合并。
+- **谁合并**：进 dev 的 PR，两边都没有 blocking 后协调者 `gh pr merge <n> --merge --delete-branch`；用户也可以随时自己合。合并后 dev 实例约一分钟内自己拉到（加上构建的几分钟），到没到看 dev 实例那台上的 `journalctl --user -u hebi8-dev-poll`（见 [dev 实例](#dev-实例)）。热补丁 PR 和 Release PR 进 master，只由用户手动合并。
 
 ### 发版
 
@@ -126,35 +126,38 @@ scripts/hotfix.sh 0.3.1         # 版本提交 chore(hotfix): v0.3.1，推分支
 
 ## 正式环境
 
-线上实例跑在 **homeN100**（家里的 N100 小机，Ubuntu 24.04）：**https://market-hebi8.dreaife.tokyo**，Tailscale 上是 http://100.102.150.101:8808。2026-10-16 之前在 devNuc（开发机，agent 在上面构建、会重启），所以搬了出来。
+线上实例跑在一台 VPS 上（下面叫「线上机器」）：**https://market-hebi8.dreaife.tokyo**，经 Cloudflare Tunnel 进来。应用只听本机的 `127.0.0.1:8808`，不为它开任何入站端口；对外只有 SSH（只认 key），部署和维护都从这里进。实际的主机、地址、用户名不写进仓库：部署工作流从 `production` Environment 读，手动部署从仓库主目录的 `deploy.env` 读。以前它在开发机上（agent 在上面构建、会重启），后来在家里的小机上，2026-10-17 搬到了 VPS。
 
-| 在哪（homeN100） | 是什么 |
+| 在哪（线上机器） | 是什么 |
 |---|---|
-| `~/dev/hebi8-market` | 线上目录：master 的 checkout，`vault/`、`data/hebi8.db` 在里面 |
+| `~/dev/hebi8-market` | 线上目录：master 的 checkout（`origin` 是 GitHub 上的这个仓库，https），`vault/`、`data/hebi8.db` 在里面 |
 | `~/.config/hebi8/market/` | 密钥目录（700 / 600） |
-| systemd 用户服务 `hebi8-market` | `next start -H 100.102.150.101 -p 8808`；Node 22 来自 unit 里的 `PATH`（`~/.local/share/hebi8/node` 链到 nvm 的 v22.22.3），`deploy.sh` 构建时也用它，better-sqlite3 是给它编译的 |
-| `~/services/hebi8-tunnel` | 只管这个域名的 Cloudflare Tunnel（`hebi8-market`，容器 `hebi8-tunnel`），和 N100 自己的 `cloudflared.service` 互不相干 |
-| `~/dev/hebi8-gpu-prices` | 数据集 `cnCDIY` 的 clone；用户 timer `hebi8-gpu-prices-pull`（06:50 / 08:50 JST）从 devNuc 拉，OCR 更新仍在 devNuc 上跑 |
+| systemd 用户服务 `hebi8-market` | `next start -H 127.0.0.1 -p 8808`（linger 开着，开机自己起来）；Node 22 来自 unit 里的 `PATH`（`~/.local/share/hebi8/node` 链到旁边 nodejs.org 官方的 v22 二进制包），`deploy.sh` 构建时也用它；better-sqlite3 要现场编译，机器上要有 make 和 g++ |
+| `~/services/hebi8-tunnel` | 只管这个域名的 Cloudflare Tunnel（`hebi8-market`，容器 `hebi8-tunnel`，`network_mode: host`，ingress 指向 `http://127.0.0.1:8808`）；凭据 JSON 在它的 `credentials/` 里，DNS 是在开发机上用域名的 origin cert 建的 |
+| `~/dev/hebi8-gpu-prices` | 数据集 `cnCDIY` 的 clone；用户 timer `hebi8-gpu-prices-pull`（06:50 / 08:50 JST）从开发机拉，OCR 更新在开发机上跑。用的 key 在开发机的 `authorized_keys` 里是 `command="git-upload-pack <那个仓库>",restrict`：只能读这一个仓库，推不进去，也拿不到 shell |
+| `~/.local/share/hebi8/dev-export.mjs` | [dev 实例](#dev-实例)每天同步时在这里跑的 `export.mjs`（固定的一份） |
 | `~/backups/hebi8/` | 每次部署前的备份 |
-| `~/.ssh/authorized_keys` 里 `hebi8-deploy` 那一行 | 部署工作流的 key，forced command 锁在 `~/dev/hebi8-market/scripts/deploy-gate.sh` |
+| `~/.ssh/authorized_keys` | `hebi8-deploy` 那一行：部署工作流的 key，forced command 锁在 `~/dev/hebi8-market/scripts/deploy-gate.sh`；dev 实例那台的 key：forced command 只在线上目录里跑 `dev-export.mjs` |
 
-还留在 devNuc 上的：仓库的主目录 `~/dev/hebi8-market`（各个 worktree 都挂在它上面；服务已停用；里面不进 git 的 `deploy.env` 让手动的 `deploy.sh` 部署到 N100）；Telegram 走 devNuc 上共用的本地 Bot API（`~/services/telegram-bot-api`），由 devNuc 的 `hebi8-telegram-forward` 把 100.92.194.31:18081 转给它，只放 N100 的地址进来，所以 **Telegram 推送依赖 devNuc 在线**；旧地址 http://100.92.194.31:8808 由 `hebi8-old-address` 308 到新地址（过渡用）。两个都在 devNuc 的 `~/services/hebi8-n100-bridge/`。
+防火墙默认拒绝入站，只放 22。线上机器也在 tailnet 里，但只用来**主动连开发机**（下面的 Telegram 转发和数据集），部署、dev 同步、日常维护都走公网 SSH，Tailscale 断了线上照常。这台以后还会放别的服务：hebi8 的东西都在这个用户的 home 和用户级 systemd 里，不开新的入站端口。
+
+还留在开发机上的：仓库的主目录 `~/dev/hebi8-market`（各个 worktree 都挂在它上面；里面不进 git 的 `deploy.env` 让手动的 `deploy.sh` 部署到线上机器）；Telegram 用开发机上共用的本地 Bot API，由开发机的 `hebi8-telegram-forward` 把它在 tailnet 上的 18081 端口转给本地的服务，只放线上机器的 tailnet 地址进来。线上 `notify.json` 的 `telegram.api` 写两个地址（这个转发和 `https://api.telegram.org`），按测速选，开发机不在线时走云端。
 
 **部署**：合并进 master 的 PR 触发[部署工作流](#部署工作流)的 production job：
 
-1. GitHub 托管的 runner 用 Tailscale OAuth client 以 `tag:ci` 临时加入 tailnet（job 结束就下线），用 Environment 里的部署 key ssh 到 `dreaife@100.102.150.101`，命令只能是 `live <40 位 commit>` 或 `status <40 位 commit>`：那把 key 在 `authorized_keys` 里是 forced command，只跑线上目录里的 `scripts/deploy-gate.sh`，其它一律拒绝（退出 2，什么都不跑）。
-2. `deploy-gate.sh` 在线上目录 `git fetch origin master`（GitHub，公开仓库，不用凭据），确认这个 commit 在 origin 的 master 上（只按 commit 取的话，GitHub 连 fork 里的提交都给），再把**这个 commit 的** `scripts/deploy.sh` 读到临时文件里跑 `deploy.sh live <commit>`：备份 → 快进 master → 依赖有变就 `npm ci` → 构建 → 重启 → 健康检查（默认是 unit 里 `next start -H … -p …` 的地址，即 http://100.102.150.101:8808/），通过后把这个 commit 记进线上目录的 `refs/hebi8/live`；构建或检查失败就退回上一个记下的 commit 重新构建。`status` 一律用线上目录 HEAD 的 `deploy.sh`，从不执行被查询的那个 commit（对象库里可能有还没进 master 的提交）。
+1. GitHub 托管的 runner 用 Environment 里的部署 key ssh 到 `DEPLOY_HOST`（线上机器的公网 SSH），命令只能是 `live <40 位 commit>` 或 `status <40 位 commit>`：那把 key 在 `authorized_keys` 里是 forced command，只跑线上目录里的 `scripts/deploy-gate.sh`，其它一律拒绝（退出 2，什么都不跑）。**Tailscale 是可选的**：机器有公网 SSH 就不需要；只在 tailnet 里连得到的机器，在 Environment 里放 `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET`，runner 先以 `tag:ci` 临时加入 tailnet、ping `DEPLOY_HOST` 的主机（这时写 tailnet 地址），见 [self-hosting.md](self-hosting.md#用-github-actions-自动部署可选)。本仓库现在不放这两个 secret（放着的话 runner 会去 ping 公网地址，失败）。
+2. `deploy-gate.sh` 在线上目录 `git fetch origin master`（GitHub，公开仓库，不用凭据），确认这个 commit 在 origin 的 master 上（只按 commit 取的话，GitHub 连 fork 里的提交都给），再把**这个 commit 的** `scripts/deploy.sh` 读到临时文件里跑 `deploy.sh live <commit>`：备份 → 快进 master → 依赖有变就 `npm ci` → 构建 → 重启 → 健康检查（默认是 unit 里 `next start -H … -p …` 的地址，即 http://127.0.0.1:8808/，在线上机器本机查），通过后把这个 commit 记进线上目录的 `refs/hebi8/live`；构建或检查失败就退回上一个记下的 commit 重新构建。`status` 一律用线上目录 HEAD 的 `deploy.sh`，从不执行被查询的那个 commit（对象库里可能有还没进 master 的提交）。
 3. `deploy-gate.sh` 本身用的是线上目录里那份，也就是线上在跑的版本：改了它，从带着它上线的那次**之后**的部署才生效，所以 `live` / `status` 的接口要跨一个版本兼容。
 
-手动部署（工作流跑不了时应急，或者 `--deploy`）：devNuc 的 `~/dev/hebi8-market/deploy.env` 写着 `HEBI8_LIVE_HOST=dreaife@100.102.150.101`，`scripts/deploy.sh <分支>` 用自己的 ssh key（不受 forced command 限制）把 commit 经 git 直接推进 N100 线上目录的 `refs/hebi8/deploy`，上传自己跑 `deploy.sh live`，成功后在 devNuc 快进 master 并推送，见 [self-hosting.md](self-hosting.md#更新线上实例scriptsdeploysh)。
+手动部署（工作流跑不了时应急，或者 `--deploy`）：开发机的 `~/dev/hebi8-market/deploy.env` 写着 `HEBI8_LIVE_HOST=<ssh 别名或 user@host>`（指向线上机器），`scripts/deploy.sh <分支>` 用自己的 ssh key（不受 forced command 限制）把 commit 经 git 直接推进线上目录的 `refs/hebi8/deploy`，上传自己跑 `deploy.sh live`，成功后在开发机快进 master 并推送，见 [self-hosting.md](self-hosting.md#更新线上实例scriptsdeploysh)。
 
-**线上跑的是哪个版本看 `refs/hebi8/live`，不看 HEAD**：HEAD 在快进时就动了，那时还没构建、没检查。N100 线上目录的 `.git` 里有三样：
+**线上跑的是哪个版本看 `refs/hebi8/live`，不看 HEAD**：HEAD 在快进时就动了，那时还没构建、没检查。线上目录的 `.git` 里有三样：
 
 - `refs/hebi8/live`：最后一次确认在跑的 commit，部署的健康检查通过、或者回滚后旧版本的检查通过才写。**新机器第一次部署前要手动设基线**：确认实例正在跑而且页面 200，在线上目录 `git update-ref refs/hebi8/live <它跑的完整 commit>`。没有基线时部署照常走（每次都 `npm ci`），但不会跳过，`status` 也只说「不清楚」。
 - `hebi8-deploy.pending`（进行中标记）：动 HEAD 之前写下（写临时文件再改名，不会只写了一半），内容是目标、从哪个版本出发、这次的备份目录、开始时间；只有两种情况才删：新版本检查通过并写好记录之后，或者回滚完、旧版本检查通过之后。它还在，就说明有一次部署或回滚没做完，不管 HEAD 和记录是什么都当作说不清。
 - `hebi8-deploy.lock`：同一时间只有一个部署，`status` 也看它。
 
-`deploy.sh`（工作流里是 `deploy.sh ci <commit>`）的退出码：0 已部署（手动时 master 已快进；之后推送失败是 git 自己的退出码）；1 没部署，线上跑的还是原来的；3 不知道。N100 那边只要不是正常返回 0（不管是部署失败、gate 拒绝、ssh 断了、还是 ssh 包装自己出错），都再连一次问 `deploy.sh status`，由它定：
+`deploy.sh`（工作流里是 `deploy.sh ci <commit>`）的退出码：0 已部署（手动时 master 已快进；之后推送失败是 git 自己的退出码）；1 没部署，线上跑的还是原来的；3 不知道。线上那边只要不是正常返回 0（不管是部署失败、gate 拒绝、ssh 断了、还是 ssh 包装自己出错），都再连一次问 `deploy.sh status`，由它定：
 
 | `status` | 条件 | `deploy.sh` |
 |---|---|---|
@@ -162,16 +165,16 @@ scripts/hotfix.sh 0.3.1         # 版本提交 chore(hotfix): v0.3.1，推分支
 | not-live | 没有标记、没人持锁、有记录且不是这个 commit、HEAD 等于记录、页面 200 | 1，工作流标红；`--deploy` 撤掉版本提交 |
 | busy / unclear / 连不上 | 有人持锁、有标记、没有记录、页面不通、HEAD 和记录对不上，或者问不到 | 3，工作流标红、写着重跑；`--deploy` 保留版本提交 |
 
-回滚时旧版本也起不来、或者新版本已经是记录里的那个却不通（没有更早的可退），都留着标记退出 3。续跑同一个部署：没有标记、记录和 HEAD 都是它、页面 200 才跳过构建；没有标记就从记录的版本正常走一遍。**有标记就是接着那次没做完的**：出发的版本和备份都用标记里的，不再备份（那次的 `npm ci` 可能已经清空了 `node_modules`，加载不了 better-sqlite3 也不影响续跑），一律 `npm ci`；目标相同就不动标记，换了目标（之后又有新提交）才整个换掉，出发的版本和备份照旧。上一次断线后还在跑的会先等它跑完（最多 15 分钟）。手动时 `HEBI8_LIVE_HOST`（默认 `local` = 在本机部署，devNuc 的 `deploy.env` 设成 N100）、`HEBI8_LIVE`（线上目录，相对 N100 的 home）、`HEBI8_UNIT`、`HEBI8_HEALTH_URL`、`HEBI8_SECRETS` 可改，后四个设了会一起带到 N100；工作流里这些写在 `authorized_keys` 那一行的 command 里（N100 用默认值，什么都不用写）。
+回滚时旧版本也起不来、或者新版本已经是记录里的那个却不通（没有更早的可退），都留着标记退出 3。续跑同一个部署：没有标记、记录和 HEAD 都是它、页面 200 才跳过构建；没有标记就从记录的版本正常走一遍。**有标记就是接着那次没做完的**：出发的版本和备份都用标记里的，不再备份（那次的 `npm ci` 可能已经清空了 `node_modules`，加载不了 better-sqlite3 也不影响续跑），一律 `npm ci`；目标相同就不动标记，换了目标（之后又有新提交）才整个换掉，出发的版本和备份照旧。上一次断线后还在跑的会先等它跑完（最多 15 分钟）。手动时 `HEBI8_LIVE_HOST`（默认 `local` = 在本机部署，开发机的 `deploy.env` 设成线上机器）、`HEBI8_LIVE`（线上目录，相对线上机器的 home）、`HEBI8_UNIT`、`HEBI8_HEALTH_URL`、`HEBI8_SECRETS` 可改，后四个设了会一起带到线上机器；工作流里这些写在 `authorized_keys` 那一行的 command 里（本仓库的线上机器用默认值，什么都不用写）。
 
-**日志**：在 N100 上 `journalctl --user -u hebi8-market -f`（`[hebi8m]` 是调度和同步）；隧道 `docker logs hebi8-tunnel`。从 devNuc：`ssh dreaife@100.102.150.101 'journalctl --user -u hebi8-market -n 100'`。
+**日志**：在线上机器上 `journalctl --user -u hebi8-market -f`（`[hebi8m]` 是调度和同步）；隧道 `docker logs hebi8-tunnel`。从别的机器：`ssh <user>@<host> 'journalctl --user -u hebi8-market -n 100'`。
 
-**临时退回上一个版本**（新版本有急问题、热补丁一时出不来；能等的话 revert 那个 PR 再合更省事）：只动 N100 上跑的版本，**GitHub 上的 master 不动**。
+**临时退回上一个版本**（新版本有急问题、热补丁一时出不来；能等的话 revert 那个 PR 再合更省事）：只动线上机器上跑的版本，**GitHub 上的 master 不动**。
 
 整段拿着部署锁，按和部署一样的规则写进行中标记（这期间 `status` 只会说「说不清」），旧版本检查通过后才写记录、删标记：
 
 ```bash
-# 在 N100 上
+# 在线上机器上
 cd ~/dev/hebi8-market
 export PATH=$HOME/.local/share/hebi8/node/bin:$PATH   # 服务用的 Node 22；用别的版本 npm ci 会弄坏 better-sqlite3
 exec 9>.git/hebi8-deploy.lock && flock 9
@@ -180,61 +183,100 @@ printf 'target %s\nfrom %s\nbackup\nstarted %s\n' "$old" "$(git rev-parse refs/h
 mv .git/hebi8-deploy.pending.tmp .git/hebi8-deploy.pending
 git reset --hard "$old"
 systemctl --user stop hebi8-market && npm ci && npm run build && systemctl --user start hebi8-market
-curl -s -o /dev/null -w '%{http_code}\n' http://100.102.150.101:8808/   # 200 才做下一行；不是 200 就先修，标记留着
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8808/   # 200 才做下一行；不是 200 就先修，标记留着
 git update-ref refs/hebi8/live "$old" && rm .git/hebi8-deploy.pending
 exec 9>&-
 ```
 
 数据也要退回就先停服务，从 `~/backups/hebi8/<时间>-deploy/` 拷回 `vault/`、密钥目录，`hebi8.db` 放回 `data/`。
 
-这之后是一段临时状态：N100 跑旧版本（`/usage` 的版本号是旧的），master、tag 和 GitHub Release 还是新版本。修复在最新发布的提交上做：`scripts/hotfix.sh start 0.4.1`，合并热补丁 PR 时 N100 从旧版本直接快进到热补丁。不修、只想回到 master 上的版本：在 Actions 页对 master 手动跑一次 Deploy（Run workflow），或者重跑最近那次 production 部署。
+这之后是一段临时状态：线上跑旧版本（`/usage` 的版本号是旧的），master、tag 和 GitHub Release 还是新版本。修复在最新发布的提交上做：`scripts/hotfix.sh start 0.4.1`，合并热补丁 PR 时线上从旧版本直接快进到热补丁。不修、只想回到 master 上的版本：在 Actions 页对 master 手动跑一次 Deploy（Run workflow），或者重跑最近那次 production 部署。
 
 ## dev 实例
 
-平时的开发合进 `dev`，发版时才进 master 上线。在那之前想先用上新功能，就开 dev 实例：**http://100.107.245.93:8809/**（memoh-codex 的 Tailscale 地址，没有公网入口）。它每分钟自己看一次 origin 的 dev，PR 合进 dev 后最多约一分钟就开始构建、建好就换上；每天用线上 owner 的 vault 覆盖一遍，所以看到的是自己的自选、警报和画线。
+平时的开发合进 `dev`，发版时才进 master 上线。在那之前想先用上新功能，就开 dev 实例：**http://<那台的 Tailscale 地址>:8809/**（家里的小机，和线上不是同一台；只在 Tailscale 上，没有公网入口）。它每分钟自己看一次 origin 的 dev，PR 合进 dev 后最多约一分钟就开始构建、建好就换上；每天用线上 owner 的 vault 覆盖一遍，所以看到的是自己的自选、警报和画线。
 
 - **单用户模式**：yaml 里的 `owner` 去掉了，经 Tailscale 打开就能改，不用登录。改动第二天被覆盖，这是有意的：只单向从线上到 dev。
-- **不发通知**：密钥目录是它自己的、空的（`/data/hebi8-dev/secrets`），没有任何通道，警报照常判断但不发出，不会和线上重复推送。不要把线上的 `~/.config/hebi8/market` 拷过去。
-- **行情自己同步**：按 yaml 里的 `sync.at` 自己拉 K 线、每 5 分钟取报价，走的是 memoh 的出口 IP，不占线上的配额。
+- **不发通知**：密钥目录是它自己的、空的（`~/hebi8-dev/secrets`），没有任何通道，警报照常判断但不发出，不会和线上重复推送。不要把线上的 `~/.config/hebi8/market` 拷过去。
+- **行情自己去拉**：每 5 分钟的报价轮询没有开关，和线上各轮询一遍（每个源每天约 300 次，2026-10 从没被限流过；和线上在同一台、同一个出口 IP 时请求量就是翻倍）；K 线同步改成每天一次（`APP_SYNC_AT`，默认 08:00，同步 vault 时写进 yaml 的 `sync.at`），反正每天还会拿到线上的缓存快照。
 
-脚本在 `scripts/dev-instance/`，memoh 上用的是装进 `/data/hebi8-dev/bin/` 的那份。memoh 没有 systemd 和 cron，`hebi8-dev.sh daemon` 自己当看门狗：每 15 秒看一眼应用，没在跑就拉起来；每分钟（`UPDATE_EVERY`）问一次 origin 分支在哪；到了每天的同步时间就同步。只有 memoh 往外连（GitHub、homeN100），没有任何部署从外面连进来。开机时 memoh 的自启项（`~/.config/autostart` → `/data/services/start.sh`）最后一步调 `hebi8-dev.sh start`。
+脚本在 `scripts/dev-instance/`，那台上用的是装进 `~/hebi8-dev/bin/` 的那份，由 systemd 用户服务托管（linger 已开，开机自己起来）：
 
-| 路径（`/data/hebi8-dev/`） | 是什么 |
+| unit | 做什么 |
 |---|---|
-| `config.env` | 跟踪的分支 `BRANCH`，以及 `HOST`、`PORT`、`SYNC_AT` / `SYNC_TZ`（默认 04:30 Asia/Tokyo，避开线上 07:30 / 17:30 的同步）、`UPDATE_EVERY`（默认 60 秒）；缺省值在脚本开头 |
+| `hebi8-dev` | `next start`，从 `current` 指向的版本跑；`Restart=always` |
+| `hebi8-dev-poll.timer` → `hebi8-dev-poll.service` | 每分钟看一次 origin 的分支，动了才拉取、构建、切换 |
+| `hebi8-dev-sync.timer` → `hebi8-dev-sync.service` | 每天 `SYNC_AT`（默认 04:30 Asia/Tokyo，避开线上 07:30 / 17:30 的同步）从线上同步一次；关机错过了开机补；失败半小时后再试 |
+
+三个都比线上低一档：`Nice=10`、`CPUWeight=20`（线上是默认的 100，抢 CPU 时 dev 只分到约六分之一）、`IOSchedulingClass=best-effort` + `IOSchedulingPriority=7`；`MemoryHigh` 应用 1G、构建和同步 3G，超了先回收它自己的内存。`IOWeight=20` 也写了，但 Ubuntu 的用户 systemd 没有 io 控制器，不起作用，靠 IO 调度优先级。unit 由 `hebi8-dev.sh install` 按 `config.env` 生成，改了 `SYNC_AT` / `SYNC_TZ` 要再 install 一次。
+
+| 路径（`~/hebi8-dev/`） | 是什么 |
+|---|---|
+| `config.env` | 这台机器的值（不进仓库）：`HOST`、`PORT`、`BRANCH`、`LIVE_DIR`（线上目录）、`NODE_BIN`（Node 22 的 bin，和线上服务同一个大版本；系统默认的 node 是别的版本时 better-sqlite3 不认），以及 `SYNC_AT` / `SYNC_TZ`、`APP_SYNC_AT`、`LIVE_SHELL`（线上在别的机器时，在那边跑命令的前缀，如 `(ssh <user>@<host>)`；空 = 本机。远程时 `LIVE_DIR` 相对那边的 home，`LIVE_NODE` 要写成那边线上服务的 Node 的路径：`NODE_BIN` 只管本机的 `PATH`），以及 `LIVE_NODE`；缺省值在脚本开头 |
 | `repo/` | 仓库的 clone；每个版本是它的一个 worktree |
 | `releases/<commit>/`、`current` | 构建好的版本，`current` 指向正在跑的那个；保留最近 3 个 |
 | `vault/`、`data/hebi8.db`、`datasets/` | 每天从线上换进来的 vault、缓存快照和本机数据集 |
-| `logs/daemon.log` | 更新、回滚、同步、重启，一行一件事 |
-| `logs/app.log`、`logs/build-<commit>.log` | `next start` 的输出（`[hebi8m]` 调度日志也在这里）；每次构建的输出 |
+| `secrets/` | 它自己的密钥目录，空的 |
+| `logs/build-<commit>.log` | 每次构建的输出（`npm ci`、`next build`） |
 | `state/failed` | 构建失败或起不来的 commit，分支动了之前不再重试 |
 
-**自动更新**：看门狗每分钟用 `git ls-remote origin refs/heads/<分支>` 看分支指向哪个 commit（只问一句，不下载对象）。和正在跑的一样、或者是 `state/failed` 里那个，就什么都不做；不一样才 fetch 并在 `releases/<新 commit>/` 里另建一份：`package-lock.json` 和正在跑的版本一样就硬链接它的 `node_modules`，否则 `npm ci`（better-sqlite3 要现场编译，缺编译器时自动 `apt-get install build-essential`）；`npm run build` 的时候旧版本照常服务。构建成功才停旧的、起新的，60 秒内首页不返回 200 就切回旧的。构建或启动失败都记进 `state/failed`，旧版本一直在跑。不推送，不备份。看门狗一次只做一件事：构建要几分钟，这期间又合进来的几个提交，等这一轮建完下一次看时一起看到，只建最新的那一个。memoh 掉线期间什么都不做，回来后第一次看就跟上。
+**自动更新**：timer 每分钟用 `git ls-remote origin refs/heads/<分支>` 看分支指向哪个 commit（只问一句，不下载对象）。和正在跑的一样、或者是 `state/failed` 里那个，就什么都不做；不一样才 fetch 并在 `releases/<新 commit>/` 里另建一份：`package-lock.json` 和正在跑的版本一样就硬链接它的 `node_modules`，否则 `npm ci`；`npm run build` 的时候旧版本照常服务。构建成功才切换、重启 `hebi8-dev`，60 秒内首页不返回 200 就切回旧的。构建或启动失败都记进 `state/failed`，旧版本一直在跑。不推送，不备份。构建要几分钟，这期间 poll 服务一直在跑，timer 不会再起一个；这期间又合进来的几个提交，下一次看时一起看到，只建最新的那一个。同步和更新拿同一把锁，不会同时重启应用。
 
-**合并之后看它到了没有**：在 memoh 上 `tail -f /data/hebi8-dev/logs/daemon.log`（`update dev: <旧> -> <新>`、`running <新>`，或者 `build of <新> failed` / `did not answer 200`），或者 `hebi8-dev.sh status`（`running` 是正在跑的 commit，`checked` 是上次看分支的时间）；从 devNuc：`lody-lan lan shell memoh-codex -- 'tail -n 20 /data/hebi8-dev/logs/daemon.log'`。
+**每天同步**：在线上目录里用 `LIVE_NODE`（本机时默认就是 `NODE_BIN` 里的 node）跑 `export.mjs`（只读），带回三样，换进去后重启。只复制普通文件和目录：vault 和数据集目录里的**符号链接一律跳过**，不管它指向哪里（同一台机器上，留着链接就等于 dev 直接读写线上的文件，跟着链接复制又会把 vault 外的东西、`users/` 带过来），跳过的在同步日志里列成 `sync: skipped symbolic link <路径>`；vault 目录本身、数据集目录本身是链接的照常按它的真实位置复制。带回来的东西里要是还有符号链接，就整个停下、什么都不换：
 
-**每天同步**：由 memoh 拉，经 `lody-lan lan shell homeN100` 在线上目录里用线上服务的 Node（`~/.local/share/hebi8/node`）跑 `export.mjs`（只读），带回三样，换进去后重启：
-
-- 根 vault（owner 的）：`hebi8.yaml`、`notes/`、`journal/`、`charts/`。**`users/` 不带**，别人的 vault 不离开线上。到了 dev 上由 `prepare-vault.mjs` 去掉 `owner`、把本机数据集改指 `datasets/<名字>`。
+- 根 vault（owner 的）：`hebi8.yaml`、`notes/`、`journal/`、`charts/`。**`users/` 不带**，别人的 vault 不离开线上。换进来前由 `prepare-vault.mjs` 去掉 `owner`、把 `sync.at` 换成 `APP_SYNC_AT`、把本机数据集改指 `datasets/<名字>`。
 - 数据库快照（`db.backup()`），省得冷启动全量拉：`stats`、`alert_state` 只留根 vault（`vault = ''`）的行，`traffic`、`visitors`、`upstream`、`usage_alerts` 清空；K 线、标的、报价、标的资料原样。
-- 本机目录数据集（如 `cnCDIY`）的清单和 CSV；远端仓库的数据集 dev 自己克隆。
+- 本机目录数据集（如 `cnCDIY`）的清单和 CSV；远端仓库的数据集 dev 自己克隆。清单 `hebi8-dataset.yaml` 本身是符号链接的，整次同步失败（不去读它指向的清单），dev 保留原来的数据。dev 的 yaml 里每个本机数据集都改指 `datasets/<名字>`，没带回副本的也一样，不会留着线上的目录。
 
-没同步的：线上的密钥目录（会话、通知通道、Telegram、网页推送、GitHub App、MCP 令牌）一概不碰。memoh 那时不在线就在它回来后补一次；失败了半小时后再试。
+**线上在别的机器时**（本仓库现在就是）：`config.env` 里写 `LIVE_SHELL=(ssh -i ~/.ssh/<专用 key> -o IdentitiesOnly=yes -o BatchMode=yes <user>@<host>)`，走线上机器的公网 SSH（`known_hosts` 里记那个地址的主机 key），`LIVE_DIR`、`LIVE_NODE` 写成那边的值。这把专用 key 在线上机器的 `authorized_keys` 里是 forced command，只在线上目录里跑一份固定的 `export.mjs`：
 
-常用命令（在 memoh 上；从 devNuc 是 `lody-lan lan shell memoh-codex -- /data/hebi8-dev/bin/hebi8-dev.sh status`）：
+```text
+command="cd /home/<user>/dev/hebi8-market && exec /home/<user>/.local/share/hebi8/node/bin/node /home/<user>/.local/share/hebi8/dev-export.mjs",restrict ssh-ed25519 AAAA… hebi8-dev-export
+```
+
+`hebi8-dev.sh` 发过去的命令（里面带着它自己的 `export.mjs`）被忽略，跑的是线上机器上那份，dev 那台只拿得到导出的结果，拿不到 shell：线上机器上有所有人的 vault 和密钥目录。代价是 `scripts/dev-instance/export.mjs` 改了、dev 实例 `install` 了新脚本之后，要用自己的 key 把它拷过去一次，比如在开发机上 `ssh <user>@<host> 'cat > ~/.local/share/hebi8/dev-export.mjs' < scripts/dev-instance/export.mjs`（用和 dev 实例同一个版本的 checkout）。
+
+没同步的：线上的密钥目录（会话、通知通道、Telegram、网页推送、GitHub App、MCP 令牌）一概不碰。
+
+**合并之后看它到了没有**：`journalctl --user -u hebi8-dev-poll -f`（`update dev: <旧> -> <新>`、`running <新>`，或者 `build of <新> failed` / `did not answer 200`），或者 `hebi8-dev.sh status`（正在跑的 commit、应用状态、两个 timer 上次和下次的时间）。
+
+常用命令（在 dev 实例那台上；从别的机器是 `ssh <user>@<host> '~/hebi8-dev/bin/hebi8-dev.sh status'`）：
 
 ```bash
-H=/data/hebi8-dev/bin/hebi8-dev.sh
-$H status                       # 地址、分支、正在跑的 commit、上次检查和同步
-tail -f /data/hebi8-dev/logs/daemon.log
+H=~/hebi8-dev/bin/hebi8-dev.sh
+$H status                       # 地址、分支、正在跑的 commit、timer
+journalctl --user -u hebi8-dev-poll -u hebi8-dev-sync -n 50   # 更新、回滚、同步
+journalctl --user -u hebi8-dev -f                             # next start 的输出（[hebi8m] 是调度和同步）
 $H branch dev                   # 改跟踪的分支（写进 config.env）并立刻更新；也可以填某个 commit
 $H update [--force]             # 不等下一分钟，立刻 fetch 并更新；--force 连 state/failed 里的也重试
 $H sync                         # 立刻从线上同步一次
-$H restart                      # 只重启应用
-$H stop | start                 # 停 / 起看门狗和应用；stop 之后到下次开机或 start 之前都不会自己起来
+systemctl --user restart hebi8-dev                            # 只重启应用
+# 全停：timer、正在跑的构建 / 同步（含等着重试的）、应用；只停应用和 timer 的话，跑到一半的构建结束时会把应用再拉起来
+systemctl --user stop hebi8-dev-poll.timer hebi8-dev-sync.timer hebi8-dev-poll.service hebi8-dev-sync.service hebi8-dev
+systemctl --user start hebi8-dev hebi8-dev-poll.timer hebi8-dev-sync.timer                 # 恢复
 ```
 
-脚本本身不随分支自动更新（看门狗不替换自己）。改了 `scripts/dev-instance/`、dev 实例跑上那个版本之后：`$H install /data/hebi8-dev/current/scripts/dev-instance && $H stop && $H start`。
+`update`、`sync`、`branch` 都是去启动对应的 unit 并等它跑完（输出来自 journal），所以和 timer 触发的一样低优先级、一样进日志；正在构建时 `update` / `branch` 先等这一轮跑完，再自己跑一轮（那一轮开始时还没看到新的要求）。
+
+脚本本身不随分支自动更新（timer 不替换自己）。改了 `scripts/dev-instance/`、dev 实例跑上那个版本之后：`$H install ~/hebi8-dev/current/scripts/dev-instance`（重写 unit，`daemon-reload`）；改的是 `export.mjs` 而线上在别的机器上，再照上面拷一份过去。
+
+**从头搭一个**（新机器，或者整个重来）：要有 Node 22（和线上服务同一个）、g++（better-sqlite3 要编译）、`loginctl enable-linger`。
+
+```bash
+git clone https://github.com/Hebi8/hebi8-market.git ~/hebi8-dev/repo
+git -C ~/hebi8-dev/repo checkout -q --detach origin/dev
+cat > ~/hebi8-dev/config.env <<'CFG'
+HOST=<这台机器的 Tailscale IP>
+PORT=8809
+LIVE_DIR=$HOME/dev/hebi8-market
+NODE_BIN=$HOME/.local/share/hebi8/node/bin
+CFG
+~/hebi8-dev/repo/scripts/dev-instance/hebi8-dev.sh install ~/hebi8-dev/repo/scripts/dev-instance
+# 一分钟内 poll 第一次构建并起应用；之后同步一次，换成 owner 的 vault
+~/hebi8-dev/bin/hebi8-dev.sh sync
+```
+
+2026-10-16 到 10-17 它在一台云端 microVM 上（没有 systemd，脚本自己当看门狗），掉线太多，搬到了家里的小机（当时线上也在那台，10-17 线上搬去了 VPS）。
 
 ## 源码结构
 

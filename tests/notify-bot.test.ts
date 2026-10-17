@@ -10,7 +10,7 @@ const GOOD = "777000:GOOD-secret-token";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hebi8m-bot-"));
 const secrets = path.join(dir, "secrets");
 const notifyFile = path.join(secrets, "notify.json");
-const ORIGIN = "http://100.92.194.31:8808";
+const ORIGIN = "http://100.64.0.1:8808";
 const calls: string[] = [];
 
 // a Bot API that knows one token
@@ -27,7 +27,7 @@ let api: string;
 let sessions: Record<string, string>;
 const writeRoot = (owner: string | null) => fs.writeFileSync(path.join(dir, "vault", "hebi8.yaml"), `${owner ? `owner: ${owner}\n` : ""}groups: []\n`);
 const req = (method: string, init: { session?: string; body?: unknown; origin?: string } = {}) => {
-  const headers = new Headers({ host: "100.92.194.31:8808" });
+  const headers = new Headers({ host: "100.64.0.1:8808" });
   if (init.session) headers.set("cookie", `hebi8m_session=${init.session}`);
   if (init.origin) headers.set("origin", init.origin);
   return new NextRequest(`${ORIGIN}/api/notify/bot`, { method, headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
