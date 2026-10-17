@@ -7,7 +7,7 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const TOKEN = "123456:SECRET-token";
-const ORIGIN = "http://100.92.194.31:8808";
+const ORIGIN = "http://100.64.0.1:8808";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "hebi8-notify-"));
 const secrets = path.join(dir, "secrets");
 const usersFile = path.join(secrets, "notify-users.json");
@@ -273,7 +273,7 @@ describe("Telegram binding", () => {
 // ---------------------------------------------------------------------------- /api/notify
 
 const req = (url: string, init: { method?: string; session?: string; body?: unknown; origin?: string } = {}) => {
-  const headers = new Headers({ host: "100.92.194.31:8808" });
+  const headers = new Headers({ host: "100.64.0.1:8808" });
   if (init.session) headers.set("cookie", `hebi8m_session=${init.session}`);
   if (init.origin) headers.set("origin", init.origin);
   return new NextRequest(`${ORIGIN}${url}`, { method: init.method ?? "GET", headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });

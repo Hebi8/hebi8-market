@@ -19,7 +19,7 @@ import { GitHubError, LOGIN_COOKIE, SESSION_COOKIE, pollDeviceFlow, requestOrigi
 import { createSession, getSession, liveSessions, touchSession, writeJson } from "@/lib/secrets";
 import { proxy } from "@/proxy";
 
-const ORIGIN = "http://100.92.194.31:8809";
+const ORIGIN = "http://100.64.0.1:8809";
 const CLIENT_ID = "Iv23_test";
 
 const page: PageInfo = {
@@ -147,7 +147,7 @@ describe("configuration", () => {
   });
 
   it("derives the origin from Host and X-Forwarded-Proto", () => {
-    expect(requestOrigin(new Headers({ host: "100.92.194.31:8809" }))).toBe(ORIGIN);
+    expect(requestOrigin(new Headers({ host: "100.64.0.1:8809" }))).toBe(ORIGIN);
     expect(requestOrigin(new Headers({ host: "a.ts.net", "x-forwarded-proto": "https" }))).toBe("https://a.ts.net");
     expect(() => requestOrigin(new Headers({ host: "evil/<x>" }))).toThrow();
   });
@@ -192,7 +192,7 @@ afterEach(() => {
 });
 
 const req = (url: string, init: { method?: string; cookies?: Record<string, string>; body?: unknown; headers?: Record<string, string> } = {}) => {
-  const headers = new Headers({ host: "100.92.194.31:8809", ...init.headers });
+  const headers = new Headers({ host: "100.64.0.1:8809", ...init.headers });
   if (init.cookies) headers.set("cookie", Object.entries(init.cookies).map(([k, v]) => `${k}=${v}`).join("; "));
   return new NextRequest(`${ORIGIN}${url}`, { method: init.method ?? "GET", headers, body: init.body === undefined ? undefined : JSON.stringify(init.body) });
 };
@@ -362,7 +362,7 @@ describe("web login", () => {
 
   it("is offered only with an id and a secret, and only on the origins whose callback is registered", () => {
     const pub = new Headers({ host: "m.example", "x-forwarded-proto": "https" });
-    const tailnet = new Headers({ host: "100.92.194.31:8809" });
+    const tailnet = new Headers({ host: "100.64.0.1:8809" });
     expect(webLoginClient(pub)).toBeNull();
     oauthFile({ client_secret: "" });
     expect(webLoginClient(pub)).toBeNull();
@@ -643,7 +643,7 @@ describe("login on another device", () => {
   const alice = { login: "alice", avatarUrl: "https://avatars.githubusercontent.com/u/1" };
   const loggedIn = () => createSession({ login: "alice", avatar_url: alice.avatarUrl, access_token: "ghu_alice", access_expires_at: Date.now() + 3600_000, refresh_token: "ghr_alice", refresh_expires_at: null });
   const redeem = (code: string, init: { cookies?: Record<string, string>; origin?: string } = {}) => {
-    const headers = new Headers({ host: "100.92.194.31:8809", origin: init.origin ?? ORIGIN, "content-type": "application/x-www-form-urlencoded" });
+    const headers = new Headers({ host: "100.64.0.1:8809", origin: init.origin ?? ORIGIN, "content-type": "application/x-www-form-urlencoded" });
     if (init.cookies) headers.set("cookie", Object.entries(init.cookies).map(([k, v]) => `${k}=${v}`).join("; "));
     return redeemPOST(new NextRequest(`${ORIGIN}/api/github/claim/redeem`, { method: "POST", headers, body: new URLSearchParams({ c: code }).toString() }));
   };

@@ -10,7 +10,7 @@ hebi8 是一个**周度复盘工具**，不是 TradingView 的替代品。每天
 | 深看 | `/chart/[key]` 图表：K 线、指标、对比、画线、笔记 | 值得细看的几个，结构是什么样？和别的比呢？ |
 | 记录 | `/review` 复盘：本周日志、上周日志、本周变化汇总 | 上周怎么想的，这周怎么想？ |
 
-约束：本体只绑定 Tailscale IP，另经 Cloudflare Tunnel 公开（`https://market-hebi8.dreaife.tokyo`，cloudflared 转发到 Tailscale 地址），暂时完全公开、不限流，只做流量监控（§1.7）；只存日线，3日/周/月/季线读时合成；**读取永远不碰网络**。默认单用户、无登录；在 yaml 里设了 `owner` 之后，几个人可以共用一台实例，每人用 GitHub 登录后看到自己的自选、画线、笔记和通知（§1.6）。
+约束：本体只绑定本机地址（不对外开端口），经 Cloudflare Tunnel 公开（`https://market-hebi8.dreaife.tokyo`，同一台上的 cloudflared 转发到 `127.0.0.1`），暂时完全公开、不限流，只做流量监控（§1.7）；只存日线，3日/周/月/季线读时合成；**读取永远不碰网络**。默认单用户、无登录；在 yaml 里设了 `owner` 之后，几个人可以共用一台实例，每人用 GitHub 登录后看到自己的自选、画线、笔记和通知（§1.6）。
 
 第八天之外只有一种打扰：自己建的**警报**触发，推到 Telegram、webhook 或开了网页推送的设备（§2.5–§2.7）。警报可以盯一个标的，也可以对全部自选；每条警报有一个「判断时机」：盘中价格（每 5 分钟取一次最新价来判断，盯一个标的时的默认）或日线收盘（每次同步后只看已收盘的日线，对全部自选时的默认）。系统不预置任何警报。只存日线，不存日内 K 线。
 
@@ -39,7 +39,7 @@ vault.example/hebi8.yaml      首次运行时若 vault/ 不存在，复制为 va
 ### 1.1 `hebi8.yaml`
 
 ```yaml
-owner: [dreaife, dreaifekks]   # 可省；写了就是共用实例，这些 GitHub 账号共用根 vault（§1.6），也可以只写一个字符串
+owner: [alice, alice-work]   # 可省；写了就是共用实例，这些 GitHub 账号共用根 vault（§1.6），也可以只写一个字符串
 sync:
   at: ["07:30", "17:30"]       # 本地时间，按 tz 解释；美股收盘后、亚洲收盘后各一次
   tz: Asia/Tokyo
@@ -237,7 +237,7 @@ CREATE TABLE translations (                 -- §2.8：简介的简体中文译�
 
 几个人共用一台 hebi8：K 线缓存、同步、数据集是共享的；**自选、别名、公式指标、警报、图表偏好、笔记、复盘、画线和通知都是各人的**。
 
-**开关**：根 vault 的 `hebi8.yaml` 写 `owner: <GitHub login>`，或者一个列表 `owner: [dreaife, dreaifekks]`（同一个人的几个账号）。列表里任何一个账号登录都用根 vault，页面上称呼第一个。没写就是单用户模式，行为和现在完全一样（不用登录，谁都能改根 vault）。
+**开关**：根 vault 的 `hebi8.yaml` 写 `owner: <GitHub login>`，或者一个列表 `owner: [alice, alice-work]`（同一个人的几个账号）。列表里任何一个账号登录都用根 vault，页面上称呼第一个。没写就是单用户模式，行为和现在完全一样（不用登录，谁都能改根 vault）。
 
 **命名**：`hebi8` 以后是一组东西的总名，这个应用对外叫 **hebi8/market**（页面标题、通知标题、Telegram 确认消息、webhook 的 `Title` 头），不能带斜杠的地方用 **hebi8m**（会话 cookie `hebi8m_session`、日志前缀 `[hebi8m]`）。cookie 不分端口，同一台机器上别的 hebi8 应用不会和它抢；配置目录也放在 `~/.config/hebi8/market/` 下。
 
@@ -410,7 +410,7 @@ date,open,high,low,close,volume
 {
   "telegram": { "token": "123:abc", "chat": "123456789", "api": "https://api.telegram.org" },
   "webhook": { "url": "https://ntfy.sh/hebi8-xxxx", "format": "text" },
-  "link": "http://100.92.194.31:8808"
+  "link": "https://market.example.com"
 }
 ```
 

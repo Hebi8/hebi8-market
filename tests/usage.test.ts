@@ -82,7 +82,7 @@ const tunnel = (pathname: string, ip: string, init: { session?: string; headers?
       ...init.headers,
     },
   });
-const tailnet = (pathname: string, ip: string) => new NextRequest(`http://100.92.194.31:8808${pathname}`, { headers: { host: "100.92.194.31:8808", "x-forwarded-for": ip } });
+const tailnet = (pathname: string, ip: string) => new NextRequest(`http://100.64.0.1:8808${pathname}`, { headers: { host: "100.64.0.1:8808", "x-forwarded-for": ip } });
 
 describe("request counting", () => {
   it("the proxy counts in memory, the flush writes hashed visitors and logins per local day", async () => {

@@ -12,7 +12,7 @@ describe("where a request comes from", () => {
   it("a public host name is the tunnel; addresses, single labels and MagicDNS names are the tailnet", () => {
     expect(originOf("market-hebi8.dreaife.tokyo")).toBe("public");
     expect(originOf("Market-Hebi8.dreaife.tokyo:443")).toBe("public");
-    for (const host of ["100.92.194.31:8808", "100.92.194.31", "localhost:3000", "devnuc:8808", "devnuc.tail1234.ts.net", "[fd7a:115c::1]:8808", "", null]) {
+    for (const host of ["100.64.0.1:8808", "100.64.0.1", "localhost:3000", "homebox:8808", "homebox.tail1234.ts.net", "[fd7a:115c::1]:8808", "", null]) {
       expect(originOf(host)).toBe("tailnet");
     }
   });
@@ -207,7 +207,7 @@ describe("usage limits", () => {
 describe("session cookie", () => {
   it("is Secure over HTTPS (the tunnel) and not on the tailnet's http", () => {
     expect(cookieOptions(60, h({ host: "market-hebi8.dreaife.tokyo", "x-forwarded-proto": "https" })).secure).toBe(true);
-    expect(cookieOptions(60, h({ host: "100.92.194.31:8808", "x-forwarded-proto": "http" })).secure).toBe(false);
-    expect(cookieOptions(60, h({ host: "100.92.194.31:8808" })).secure).toBe(false);
+    expect(cookieOptions(60, h({ host: "100.64.0.1:8808", "x-forwarded-proto": "http" })).secure).toBe(false);
+    expect(cookieOptions(60, h({ host: "100.64.0.1:8808" })).secure).toBe(false);
   });
 });
