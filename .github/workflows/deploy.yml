@@ -1,24 +1,21 @@
-# Deploys what lands on master to production and what lands on dev to the development instance
-# (docs/self-hosting.md §用 GitHub Actions 自动部署). Merging the pull request is the approval: there is no
-# Environment review. Only pushes and a manual run; never pull requests. master only ever deploys to
-# production and dev only to development, and a job runs only when its Environment exists in the repository's
-# settings, so a fork without them skips both and reaches nobody's machine.
+# Deploys what lands on master to production (docs/self-hosting.md §用 GitHub Actions 自动部署). Merging the pull
+# request is the approval: there is no Environment review. Only pushes to master and a manual run on master;
+# never pull requests. The job runs only when the production Environment exists in the repository's settings, so
+# a fork without it skips and reaches nobody's machine. dev is not deployed from here: the dev instance polls
+# origin's dev itself (scripts/dev-instance/hebi8-dev.sh).
 #
-# Settings, per Environment (the same names in both):
+# Settings, in the production Environment:
 #   variables DEPLOY_HOST (user@host), DEPLOY_KNOWN_HOSTS (its known_hosts lines), DEPLOY_URL (optional, shown
-#     on the deployment); development also DEPLOY_COMMAND (run there with the commit appended)
-#   secret DEPLOY_SSH_KEY (production: the key whose authorized_keys line is scripts/deploy-gate.sh; development:
-#     optional, not needed for Tailscale SSH)
-# Either (better per Environment: only its branch's jobs see them; repository-wide works too):
+#     on the deployment); secret DEPLOY_SSH_KEY (the key whose authorized_keys line is scripts/deploy-gate.sh)
 #   secrets TS_OAUTH_CLIENT_ID, TS_OAUTH_SECRET and variable TS_TAGS (default tag:ci): join the tailnet first;
-#     without them the hosts must be reachable directly
+#     without them the host must be reachable directly
 #   variable TRIAGE_APP_CLIENT_ID and secret TRIAGE_APP_PRIVATE_KEY: issue comments as that GitHub App; without
 #     them as github-actions
 name: Deploy
 
 on:
   push:
-    branches: [master, dev]
+    branches: [master]
   workflow_dispatch:
 
 permissions: {}
@@ -26,7 +23,7 @@ permissions: {}
 jobs:
   environment:
     name: Environment
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/dev'
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
@@ -38,7 +35,7 @@ jobs:
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
-          NAME: ${{ github.ref == 'refs/heads/master' && 'production' || 'development' }}
+          NAME: production
         run: |
           if out=$(gh api "repos/$GITHUB_REPOSITORY/environments/$NAME" --jq .name 2>&1); then
             echo "name=$NAME" >>"$GITHUB_OUTPUT"
@@ -77,9 +74,7 @@ jobs:
         env:
           KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          [[ -n $KEY ]] || { echo "::error::the production environment needs the secret DEPLOY_SSH_KEY"; exit 1; }
-          scripts/ci-ssh.sh "$HEBI8_LIVE_HOST" "$KNOWN_HOSTS" "$KEY"
+        run: scripts/ci-ssh.sh "$HEBI8_LIVE_HOST" "$KNOWN_HOSTS" "$KEY"
       - name: Tailscale
         if: env.HAS_TAILSCALE == 'true'
         uses: tailscale/github-action@v4
@@ -120,47 +115,3 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           scripts/release.sh deployed "$GITHUB_SHA"
-
-  development:
-    needs: environment
-    if: needs.environment.outputs.name == 'development' && github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment:
-      name: development
-      url: ${{ vars.DEPLOY_URL }}
-    # only the newest commit matters; the instance's own fetch is the fallback for anything missed
-    concurrency:
-      group: deploy-development
-      cancel-in-progress: true
-    permissions:
-      contents: read
-    env:
-      HAS_TAILSCALE: ${{ secrets.TS_OAUTH_CLIENT_ID != '' }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          sparse-checkout: scripts
-          persist-credentials: false
-      - name: ssh
-        id: ssh
-        env:
-          HOST: ${{ vars.DEPLOY_HOST }}
-          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
-        run: scripts/ci-ssh.sh "$HOST" "$KNOWN_HOSTS" "$KEY"
-      - name: Tailscale
-        if: env.HAS_TAILSCALE == 'true'
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: ${{ vars.TS_TAGS || 'tag:ci' }}
-          ping: ${{ steps.ssh.outputs.host }}
-      - name: Deploy
-        env:
-          HOST: ${{ vars.DEPLOY_HOST }}
-          COMMAND: ${{ vars.DEPLOY_COMMAND }}
-        run: |
-          [[ -n $COMMAND ]] || { echo "::error::the development environment needs the variable DEPLOY_COMMAND"; exit 1; }
-          ssh -o BatchMode=yes -o ConnectTimeout=20 "$HOST" "$COMMAND $GITHUB_SHA" </dev/null

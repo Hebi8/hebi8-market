@@ -286,8 +286,6 @@ deployed() {
 # [<commit>]: merge it (origin's master by default) into origin's dev and push dev, so master stays an ancestor of
 # dev. When dev takes changes only through pull requests the push is refused: then a pull request from master
 # into dev, merged as soon as GitHub lets it (auto-merge, else at once; when neither is allowed it waits for you).
-# A push with the workflow's token starts no workflow, so dev's deploy does not run for it; the dev instance's
-# own fetch picks it up.
 merge_back() {
   STEP=merge-back
   local c tmp pr title
