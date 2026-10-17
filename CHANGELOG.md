@@ -2,6 +2,13 @@
 
 每个版本给用的人带来了什么。「升级注意」写给自己部署实例的人：vault、`hebi8.yaml`、密钥目录或 MCP 工具有变化时，升级前先看这一节。
 
+## v0.2.2 — 日期
+
+### 升级注意
+
+- `scripts/deploy.sh` 又默认在本机部署；部署到另一台机器的，把目标写进仓库主目录的 `deploy.env`（照 `deploy.env.example`，不进仓库），环境变量优先。
+- 可以在合并 PR 后用 GitHub Actions 自动部署（可选，没配置 `production` Environment 就不跑），见 `docs/self-hosting.md`。`scripts/release.sh` / `scripts/hotfix.sh` 默认改为开 PR，原来在本机直接部署的做法用 `--deploy`。
+
 ## v0.2.1 — 2026-10-17
 
 ### 修复
