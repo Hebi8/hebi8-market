@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # Deploy a branch to the live instance: back up, fast-forward master, build, restart, health check, push.
 # Usage: scripts/deploy.sh <branch-or-commit>
-# Runs in the repo home (HEBI8_REPO, the checkout whose master is what is live). The instance itself runs on
-# HEBI8_LIVE_HOST: the commit is pushed straight into the live checkout over ssh, this same file runs there as
-# `deploy.sh live <commit>` (back up, fast-forward, build, restart, health check, and back to the previous
-# commit when the build or the check fails), and only after that does master move here and go to origin.
-# HEBI8_LIVE_HOST=local: the live checkout (HEBI8_LIVE) is the repo home, everything happens on this machine.
+#        scripts/deploy.sh ci <commit>      from GitHub Actions, through the live machine's deploy-gate.sh
+# Runs in the repo home (HEBI8_REPO, default the main checkout of the repository this file is in: the one whose
+# master is what is live). By default the live instance is this machine (HEBI8_LIVE_HOST=local): the live
+# checkout (HEBI8_LIVE, default the repo home) is the repo home, everything happens here. HEBI8_LIVE_HOST=<user@host>
+# puts it on another machine: the commit is pushed straight into the live checkout over ssh, this same file runs
+# there as `deploy.sh live <commit>` (back up, fast-forward, build, restart, health check, and back to the
+# previous commit when the build or the check fails), and only after that does master move here and go to origin.
+# Settings come from the environment, or from deploy.env in the repo home (KEY=value lines, no quotes; not in
+# git, see deploy.env.example); the environment wins.
+#
+# `ci <commit>`: the commit is on origin's master already and nothing here moves or is pushed. HEBI8_LIVE_HOST's
+# key is a forced command (scripts/deploy-gate.sh) that only takes `live <commit>` and `status <commit>`; the live
+# machine fetches the commit from origin itself. Same exit status and the same status question as below.
 #
 # Exit status: 0 deployed (master moved and was pushed; a failed push is git's own status, after master moved),
 # 1 not deployed (the live instance runs what it ran before), 3 unknown (master did not move). After 3, run the
@@ -37,17 +45,25 @@ main() {
       return
       ;;
   esac
-  local host=${HEBI8_LIVE_HOST:-dreaife@100.102.150.101}
+  local home
+  home=$(main_checkout)
+  load_env "$home/deploy.env"
+  if [[ ${1:-} == ci ]]; then
+    ci "${2:?usage: deploy.sh ci <commit>}"
+    return
+  fi
+  local host=${HEBI8_LIVE_HOST:-local}
   local ref=${1:?usage: deploy.sh <branch-or-commit>}
-  local repo=${HEBI8_REPO:-$HOME/dev/hebi8-market}
+  local repo=${HEBI8_REPO:-$home}
   # on one machine the live checkout is the repo home, and HEBI8_LIVE names it as it always did
-  if [[ $host == local ]]; then repo=${HEBI8_LIVE:-$HOME/dev/hebi8-market}; fi
+  if [[ $host == local ]]; then repo=${HEBI8_LIVE:-$home}; fi
 
   cd "$repo"
   [[ $(git branch --show-current) == master ]] || fail "$repo is not on master"
-  [[ -z $(git status --porcelain) ]] || fail "$repo has local changes"
+  # deploy.env lives here and is ignored, but not by a .gitignore from before it
+  [[ -z $(git status --porcelain -- . ':!deploy.env') ]] || fail "$repo has local changes"
   git merge-base --is-ancestor HEAD "$ref" || fail "$ref is not a fast-forward of master; rebase it onto master first"
-  local sha rc=0 state
+  local sha rc=0
   sha=$(git rev-parse --verify "$ref^{commit}")
 
   # the live side always runs as its own bash, where set -e holds (inside an `||` list it would not)
@@ -59,22 +75,58 @@ main() {
     on_host "$host" live "$sha" || rc=$?
   fi
   if ((rc != 0)); then
-    # whatever said so (the deploy, ssh, the wrapper), the live checkout decides what runs
-    echo "deploy.sh: the live side ended with status $rc; asking it what runs" >&2
     if [[ $host == local ]]; then
-      state=$(HEBI8_LIVE=$PWD bash "$SELF" status "$sha") || state="unclear (status failed)"
+      settle "$sha" "$rc" "master did not move" env HEBI8_LIVE="$PWD" bash "$SELF" status "$sha"
     else
-      state=$(on_host "$host" status "$sha") || state="unreachable"
+      settle "$sha" "$rc" "master did not move" on_host "$host" status "$sha"
     fi
-    case $state in
-      done) echo "it runs ${sha:0:7} and answers; going on" ;;
-      not-live) fail "it does not run ${sha:0:7}: it runs what it ran before, healthy; master did not move" ;;
-      *) unknown "$state" ;;
-    esac
   fi
   if [[ $host != local ]]; then git merge --ff-only "$sha"; fi
   git push origin master
   echo "deployed $(git rev-parse --short HEAD)"
+}
+
+# <commit>: GitHub Actions after a push to master. The live machine's key runs deploy-gate.sh, which takes the
+# request from the command line alone (stdin is not read), fetches the commit from origin and runs its deploy.sh.
+ci() {
+  local sha=$1 host=${HEBI8_LIVE_HOST:-} rc=0
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] || fail "ci needs a full commit, not '$sha'"
+  [[ -n $host && $host != local ]] || fail "ci needs HEBI8_LIVE_HOST=<user@host>"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" live "$sha" </dev/null || rc=$?
+  if ((rc != 0)); then
+    settle "$sha" "$rc" "nothing else was done" ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" status "$sha" </dev/null
+  fi
+  echo "deployed ${sha:0:7}"
+}
+
+# <commit> <status of the live side> <what did not happen> <the status command...>: whatever said so (the deploy,
+# ssh, the wrapper), the live checkout decides what runs. Returns on done, exits 1 on not-live, 3 otherwise.
+settle() {
+  local sha=$1 rc=$2 held=$3 state
+  shift 3
+  echo "deploy.sh: the live side ended with status $rc; asking it what runs" >&2
+  state=$("$@") || state="unclear or unreachable (status ended with $?)"
+  case $state in
+    done) echo "it runs ${sha:0:7} and answers; going on" ;;
+    not-live) fail "it does not run ${sha:0:7}: it runs what it ran before, healthy; $held" ;;
+    *) unknown "$state" "$held" ;;
+  esac
+}
+
+# The main checkout of the repository this file is in (a worktree's too): the repo home by default.
+main_checkout() {
+  dirname "$(git -C "$(dirname "$SELF")" rev-parse --path-format=absolute --git-common-dir)"
+}
+
+# <file>: its HEBI8_*=value lines, for each one not set already
+load_env() {
+  local line k
+  [[ -f $1 ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line =~ ^(HEBI8_[A-Z_]+)=(.*)$ ]] || continue
+    k=${BASH_REMATCH[1]}
+    if [[ -z ${!k+set} ]]; then export "$k=${BASH_REMATCH[2]}"; fi
+  done <"$1"
 }
 
 # <host> <live|status> <commit>: this file runs there, over stdin into a file first so nothing it runs can
@@ -265,7 +317,7 @@ fail() {
 }
 
 unknown() {
-  echo "deploy.sh: the outcome is unknown: $1; master did not move. Once the live machine answers, run the same deploy again: it finishes one that went through or does it again" >&2
+  echo "deploy.sh: the outcome is unknown: $1; $2. Once the live machine answers, run the same deploy again: it finishes one that went through or does it again" >&2
   exit 3
 }
 
