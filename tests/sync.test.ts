@@ -59,17 +59,80 @@ describe("full-history sync", () => {
   it.each([
     [KEY, 3349, 3304],
     ["tv:CME_MINI:ES1!", 7361, 6000],
-    ["yahoo:SPY", 3349, 3304],
   ])("merges a repeated truncated response for %s, keeping old bars and updating the overlap", async (key, count, received) => {
     const old = bars(count);
     seed(old, key);
-    const partial = old.slice(count - received).map((b) => ({ ...b, c: 200, adj: 0.9 }));
+    const partial = old.slice(count - received).map((b, i) => ({ ...b, c: i === received - 1 ? 101 : b.c, v: 2 }));
     fetchDaily.mockImplementation(async () => result(partial));
     expect(await syncOne(key, true)).toEqual({ key, ok: true, bars: received });
     expect(fetchDaily).toHaveBeenCalledTimes(2);
     expect(readDaily(key)).toEqual([...old.slice(0, count - received), ...partial]);
     expect(getSymbol(key)).toMatchObject({ firstT: old[0].t, name: "updated", syncError: null });
     expect(console.warn).toHaveBeenLastCalledWith(expect.stringContaining("merging to preserve stored history"));
+  });
+
+  it("replaces truncated TV history when a split changes the overlapping close", async () => {
+    const old = bars(3349);
+    const key = "tv:NASDAQ:AAPL";
+    seed(old, key);
+    const partial = old.slice(45).map((b) => ({ ...b, o: 10, h: 10, l: 10, c: 10 }));
+    fetchDaily.mockImplementation(async () => result(partial));
+    expect(await syncOne(key, true)).toEqual({ key, ok: true, bars: 3304 });
+    expect(fetchDaily).toHaveBeenCalledTimes(2);
+    expect(readDaily(key)).toEqual(partial);
+    expect(getSymbol(key)?.firstT).toBe(partial[0].t);
+    expect(console.warn).toHaveBeenLastCalledWith(expect.stringContaining("replacing truncated history to keep prices consistent"));
+  });
+
+  it.each([[100.00005, true], [100.0002, false]])("uses relative tolerance for an overlapping close of %f", async (close, merge) => {
+    const old = bars(100);
+    seed(old);
+    const partial = old.slice(20).map((b) => ({ ...b, c: close }));
+    fetchDaily.mockImplementation(async () => result(partial));
+    await syncOne(KEY, true);
+    expect(readDaily(KEY)).toEqual(merge ? [...old.slice(0, 20), ...partial] : partial);
+  });
+
+  it("checks the first shared day even if the response starts with a day missing from the cache", async () => {
+    const old = bars(100).filter((_, i) => i !== 20);
+    seed(old);
+    const partial = bars(100).slice(20).map((b, i) => ({ ...b, c: i === 0 ? 200 : b.c }));
+    fetchDaily.mockImplementation(async () => result(partial));
+    await syncOne(KEY, true);
+    expect(readDaily(KEY)).toEqual([...old.slice(0, 20), ...partial]);
+    expect(fetchDaily).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a truncated response with no shared day without changing the cache or sync time", async () => {
+    const old = bars(100);
+    seed(old);
+    fetchDaily.mockImplementation(async () => result(bars(200).slice(100)));
+    expect(await syncOne(KEY, true)).toEqual({ key: KEY, ok: false, error: "truncated history has no overlap with stored bars" });
+    expect(readDaily(KEY)).toEqual(old);
+    expect(fetchDaily).toHaveBeenCalledTimes(2);
+    expect(getSymbol(KEY)).toMatchObject({ syncedAt: null, syncError: "truncated history has no overlap with stored bars" });
+  });
+
+  it("keeps retrying and merging when TV permanently shortens its history", async () => {
+    const old = bars(100);
+    seed(old);
+    fetchDaily.mockImplementation(async () => result(old.slice(20)));
+    await syncOne(KEY, true);
+    await syncOne(KEY, true);
+    expect(fetchDaily).toHaveBeenCalledTimes(4);
+    expect(readDaily(KEY)).toEqual(old);
+  });
+
+  it("replaces Yahoo's later-starting history without retrying", async () => {
+    const old = bars(3349);
+    const key = "yahoo:SPY";
+    seed(old, key);
+    const partial = old.slice(45).map((b) => ({ ...b, c: 200, adj: 0.9 }));
+    fetchDaily.mockResolvedValue(result(partial));
+    expect(await syncOne(key, true)).toEqual({ key, ok: true, bars: 3304 });
+    expect(fetchDaily).toHaveBeenCalledTimes(1);
+    expect(readDaily(key)).toEqual(partial);
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   it.each([4, 15])("replaces US02Y's history with %i fewer interior bars and the same first day", async (missing) => {
@@ -102,13 +165,17 @@ describe("full-history sync", () => {
     expect(readDaily(KEY)).toEqual(bars(3394));
   });
 
-  it("keeps even a short cached history when both responses are empty", async () => {
+  it("reports empty responses without changing even a short cached history or its sync time", async () => {
     const old = bars(10);
     seed(old);
+    vi.spyOn(Date, "now").mockReturnValue(12345);
+    markSynced(KEY, {});
+    vi.mocked(Date.now).mockReturnValue(99999);
     fetchDaily.mockImplementation(async () => result([]));
-    await syncOne(KEY, true);
+    expect(await syncOne(KEY, true)).toEqual({ key: KEY, ok: false, error: "no data returned" });
     expect(fetchDaily).toHaveBeenCalledTimes(2);
     expect(readDaily(KEY)).toEqual(old);
+    expect(getSymbol(KEY)).toMatchObject({ syncedAt: 12345, syncError: "no data returned" });
   });
 
   it("leaves the cache untouched and records the error when the retry fails", async () => {

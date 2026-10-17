@@ -6,7 +6,7 @@ import { readProfile, refreshProfile } from "./profiles";
 import { adapters } from "./sources";
 import type { FetchResult } from "./sources/types";
 import { computeStats, type Stats } from "./stats";
-import { countBars, ensureSymbol, getSymbol, hasBars, latestBarTime, listSymbols, markSyncError, markSynced, readAllStats, writeBars, writeStats } from "./store";
+import { countBars, ensureSymbol, getSymbol, hasBars, latestBarTime, listSymbols, markSyncError, markSynced, readAllStats, readDaily, writeBars, writeStats } from "./store";
 import { parseKey } from "./symbols";
 import { compareKeys, listVaults, readConfig, readConfigSafe, vaultDir, type VaultRef } from "./vault";
 
@@ -38,8 +38,8 @@ async function run(key: string, force: boolean): Promise<SyncOutcome> {
   if (!force && meta.syncedAt && Date.now() - meta.syncedAt < FRESH_MS) return { key, ok: true, skipped: true };
   try {
     const since = latestBarTime(key);
-    // Remote full histories can be silently truncated; a dataset may deliberately remove rows.
-    const storedCount = source === "tv" || source === "yahoo" ? countBars(key) : 0;
+    // TV can silently truncate history; Yahoo's rolling window and edited datasets can shrink intentionally.
+    const storedCount = source === "tv" ? countBars(key) : 0;
     const truncated = (r: FetchResult) => r.mode === "replace" && meta.firstT !== null && storedCount > 0 && (
       r.bars.length === 0 || r.bars[0].t > meta.firstT || storedCount - r.bars.length > Math.max(20, storedCount * 0.01)
     );
@@ -48,8 +48,18 @@ async function run(key: string, force: boolean): Promise<SyncOutcome> {
       console.warn(`[hebi8m] ${key}: truncated history (${result.bars.length}/${storedCount} bars, first ${result.bars[0]?.t} vs ${meta.firstT}); retrying once`);
       result = await adapters[source].fetchDaily(ticker, since);
       if (truncated(result)) {
-        console.warn(`[hebi8m] ${key}: history still truncated (${result.bars.length}/${storedCount} bars, first ${result.bars[0]?.t} vs ${meta.firstT}); merging to preserve stored history`);
-        result.mode = "merge";
+        if (result.bars.length === 0) throw new Error("no data returned");
+        // A split changes the entire history: do not join old and new price scales.
+        const closes = new Map(readDaily(key).map((b) => [b.t, b.c]));
+        const overlap = result.bars.find((b) => closes.has(b.t));
+        if (!overlap) throw new Error("truncated history has no overlap with stored bars");
+        const oldClose = closes.get(overlap.t)!;
+        if (Math.abs(overlap.c - oldClose) <= Math.abs(oldClose) * 1e-6) {
+          console.warn(`[hebi8m] ${key}: history still truncated (${result.bars.length}/${storedCount} bars, first ${result.bars[0].t} vs ${meta.firstT}); merging to preserve stored history`);
+          result.mode = "merge";
+        } else {
+          console.warn(`[hebi8m] ${key}: overlapping close changed (${oldClose} to ${overlap.c}); replacing truncated history to keep prices consistent`);
+        }
       }
     }
     if (result.bars.length === 0 && since === null) throw new Error("no data returned");
