@@ -39,7 +39,7 @@ vault.example/hebi8.yaml      首次运行时若 vault/ 不存在，复制为 va
 ### 1.1 `hebi8.yaml`
 
 ```yaml
-owner: [dreaife, dreaifekks]   # 可省；写了就是共用实例，这些 GitHub 账号共用根 vault（§1.6），也可以只写一个字符串
+owner: [alice, alice-work]   # 可省；写了就是共用实例，这些 GitHub 账号共用根 vault（§1.6），也可以只写一个字符串
 sync:
   at: ["07:30", "17:30"]       # 本地时间，按 tz 解释；美股收盘后、亚洲收盘后各一次
   tz: Asia/Tokyo
@@ -237,7 +237,7 @@ CREATE TABLE translations (                 -- §2.8：简介的简体中文译�
 
 几个人共用一台 hebi8：K 线缓存、同步、数据集是共享的；**自选、别名、公式指标、警报、图表偏好、笔记、复盘、画线和通知都是各人的**。
 
-**开关**：根 vault 的 `hebi8.yaml` 写 `owner: <GitHub login>`，或者一个列表 `owner: [dreaife, dreaifekks]`（同一个人的几个账号）。列表里任何一个账号登录都用根 vault，页面上称呼第一个。没写就是单用户模式，行为和现在完全一样（不用登录，谁都能改根 vault）。
+**开关**：根 vault 的 `hebi8.yaml` 写 `owner: <GitHub login>`，或者一个列表 `owner: [alice, alice-work]`（同一个人的几个账号）。列表里任何一个账号登录都用根 vault，页面上称呼第一个。没写就是单用户模式，行为和现在完全一样（不用登录，谁都能改根 vault）。
 
 **命名**：`hebi8` 以后是一组东西的总名，这个应用对外叫 **hebi8/market**（页面标题、通知标题、Telegram 确认消息、webhook 的 `Title` 头），不能带斜杠的地方用 **hebi8m**（会话 cookie `hebi8m_session`、日志前缀 `[hebi8m]`）。cookie 不分端口，同一台机器上别的 hebi8 应用不会和它抢；配置目录也放在 `~/.config/hebi8/market/` 下。
 
