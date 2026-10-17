@@ -42,7 +42,7 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 | 触发 | job | 做什么 |
 |---|---|---|
-| push 到 master（合并 Release / 热补丁 PR） | `production` | GitHub 托管的 runner ssh 到线上机器（Environment 里有 Tailscale 的 secret 时先以 `tag:ci` 临时加入 tailnet），部署 key 的 forced command 是 `scripts/deploy-gate.sh`：N100 自己 `git fetch origin master`，确认这个 commit 在 master 上，再用这个 commit 的 `deploy.sh live <commit>`（备份、快进、构建、重启、健康检查、失败回滚，见[正式环境](#正式环境)）→ 成功后：版本没有 tag 就打 tag、发 Release、处理 issue → 把 master 合回 dev |
+| push 到 master（合并 Release / 热补丁 PR） | `production` | GitHub 托管的 runner ssh 到线上机器（Environment 里有 Tailscale 的 secret 时先以 `tag:ci` 临时加入 tailnet），部署 key 的 forced command 是 `scripts/deploy-gate.sh`：线上机器自己 `git fetch origin master`，确认这个 commit 在 master 上，再用这个 commit 的 `deploy.sh live <commit>`（备份、快进、构建、重启、健康检查、失败回滚，见[正式环境](#正式环境)）→ 成功后：版本没有 tag 就打 tag、发 Release、处理 issue → 把 master 合回 dev |
 
 - **版本从提交里读**：部署成功后读这个提交的 `package.json`。这个版本还没有 tag（或 tag 就在这个提交上：重跑）才打 tag、发 Release、处理 issue；已经在别的提交上（不是 Release / 热补丁 PR 的普通推送）就只部署。版本提交是 `chore(hotfix): vX.Y.Z` 的按热补丁处理（只认提交里的 `Fixes #n`，不碰 `status:next-release`），其余按发版。
 - **同时只部署一个**：production 的 `concurrency` 不取消正在跑的，后来的排队（GitHub 每组只留一个排队的，连续几次推送时中间的会被最新的那次替掉；最新的提交包含它们）。

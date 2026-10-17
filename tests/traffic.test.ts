@@ -12,7 +12,7 @@ describe("where a request comes from", () => {
   it("a public host name is the tunnel; addresses, single labels and MagicDNS names are the tailnet", () => {
     expect(originOf("market-hebi8.dreaife.tokyo")).toBe("public");
     expect(originOf("Market-Hebi8.dreaife.tokyo:443")).toBe("public");
-    for (const host of ["100.64.0.1:8808", "100.64.0.1", "localhost:3000", "devnuc:8808", "devnuc.tail1234.ts.net", "[fd7a:115c::1]:8808", "", null]) {
+    for (const host of ["100.64.0.1:8808", "100.64.0.1", "localhost:3000", "homebox:8808", "homebox.tail1234.ts.net", "[fd7a:115c::1]:8808", "", null]) {
       expect(originOf(host)).toBe("tailnet");
     }
   });
