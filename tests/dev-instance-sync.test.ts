@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { parse } from "yaml";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // The dev instance's daily copy (scripts/dev-instance/hebi8-dev.sh unit-sync) in a sandbox: a fake live checkout
@@ -58,7 +59,7 @@ function live(dir: string, vaultIsLink = false): string {
   writeFileSync(path.join(secrets, "notify.json"), '{"token":"SECRET-TOKEN"}\n');
   writeFileSync(path.join(secrets, "c.csv"), "SECRET-CSV\n");
   writeFileSync(path.join(vault, "users/someone/hebi8.yaml"), "THEIRS: true\n");
-  writeFileSync(path.join(vault, "hebi8.yaml"), `owner: someone\nsync:\n  at: [ "07:30", "17:30" ]\n  tz: Asia/Tokyo\ndatasets:\n  ds: ${ds}\n  bare: ${secrets}\n  remote: https://example.com/remote.git\n`);
+  writeFileSync(path.join(vault, "hebi8.yaml"), `owner: someone\nsync:\n  at: [ "07:30", "17:30" ]\n  tz: Asia/Tokyo\nx-where: &outside ${ds}\ndatasets:\n  ds: &local ${ds}\n  aliased: *local\n  elsewhere: *outside\n  bare: ${secrets}\n  remote: https://example.com/remote.git\n`);
   writeFileSync(path.join(vault, "notes/a.md"), "note\n");
   symlinkSync("../hebi8.yaml", path.join(vault, "notes/link.md"));
   symlinkSync(secrets, path.join(vault, "charts/outside"));
@@ -128,11 +129,15 @@ describe("hebi8-dev.sh sync", () => {
       const yaml = readFileSync(path.join(D, "vault/hebi8.yaml"), "utf8");
       expect(yaml).not.toMatch(/^owner:/m);
       expect(yaml).toContain('at: [ "08:00" ]');
-      // every local dataset points into the dev root, one without a manifest (nothing copied) too
-      expect(yaml).not.toContain(L);
-      expect(yaml).toContain(`ds: ${path.join(D, "datasets/ds")}`);
-      expect(yaml).toContain(`bare: ${path.join(D, "datasets/bare")}`);
-      expect(yaml).toContain("remote: https://example.com/remote.git");
+      // every local dataset points into the dev root: one without a manifest (nothing copied) and an alias too
+      expect(parse(yaml).datasets).toEqual({
+        ds: path.join(D, "datasets/ds"),
+        aliased: path.join(D, "datasets/aliased"),
+        elsewhere: path.join(D, "datasets/elsewhere"),
+        bare: path.join(D, "datasets/bare"),
+        remote: "https://example.com/remote.git",
+      });
+      expect(yaml).toContain(`ds: &local ${path.join(D, "datasets/ds")}`);
       expect(readFileSync(path.join(D, "vault/notes/a.md"), "utf8")).toBe("note\n");
       for (const skipped of ["vault/notes/link.md", "vault/charts/outside", "vault/charts/others", "datasets/ds/b.csv", "datasets/ds/sub/c.csv"]) {
         expect(r.log).toContain(`sync: skipped symbolic link ${skipped}`);
