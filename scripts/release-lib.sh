@@ -157,7 +157,9 @@ unknown_outcome() {
 
 stopped() {
   if (($1 == 0)); then return; fi
-  if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+  if [[ $STEP == merge-back ]]; then
+    echo "$SCRIPT: v$2 is live and released; only merging master back into dev is left. Do it as said above, or once that can go through, run scripts/hotfix.sh merge-back (in GitHub Actions: Re-run failed jobs)" >&2
+  elif [[ -n ${GITHUB_ACTIONS:-} ]]; then
     echo "::error::stopped at '$STEP'; the live instance already runs v$2. Re-run this workflow run (Re-run failed jobs): the deploy is skipped, the steps done are skipped" >&2
   else
     echo "$SCRIPT: stopped at '$STEP'; the live instance already runs v$2. Finish with: scripts/$SCRIPT publish $2 (from any checkout)" >&2
@@ -212,7 +214,7 @@ publish() {
 
   STEP=issues
   announce "$version" "$mode" "$c"
-  trap - EXIT
+  # the EXIT trap stays: merge_back comes next, and a stop there needs the same way on
   echo "released $tag"
 }
 
@@ -221,25 +223,32 @@ fixed_issues() {
   grep -oiE '\b(close[sd]?|fix(e[sd])?|resolve[sd]?):? +#[0-9]+' | grep -oE '[0-9]+$' || true
 }
 
-# <version> <release|hotfix> <version commit>: the issues this version fixed (on a release everything labelled
-# status:next-release, on both what the commits since the previous tag say they fix) get one comment, are
-# closed, and only then lose the label, so a run that stops is picked up again by the next. The comment
-# carries a marker, and an issue that already has it is not commented on again.
+# <version> <release|hotfix> <released commit>: the issues this version fixed get one comment, are closed, and
+# only then lose the label, so a run that stops is picked up again by the next. What it fixed is what the
+# commits it brings say they fix (closing keywords, from the previous tag to the released commit): those, and on
+# a release the issues labelled status:next-release among them. A labelled issue whose fix is not in the
+# released commit (merged into dev after the release branch was cut) keeps its label for the next one. The
+# comment carries a marker, and an issue that already has it is not commented on again.
 announce() {
-  local version=$1 mode=$2 c=$3 tag=v$1 prev n out info state pr labeled
+  local version=$1 mode=$2 c=$3 tag=v$1 prev range n out info state pr labeled fixed
   local marker="<!-- hebi8-release:$tag -->" url="https://github.com/$REPO/releases/tag/$tag" err
   bot_init
   err=$(mktemp)
   local issues=()
+  if prev=$(last_tag "$c^"); then range=$prev..$c; else range=$c; fi
+  fixed=$(git log --format=%B "$range" | fixed_issues | sort -nu)
+  # the first release has no previous tag: its whole history would name every old issue, so only labels count
+  if [[ -n $prev && -n $fixed ]]; then mapfile -t issues <<<"$fixed"; fi
   if [[ $mode == release ]]; then
     out=$(gh_bot issue list -R "$REPO" --label "$NEXT_LABEL" --state all --limit 500 --json number --jq '.[].number') ||
       fail "could not list the issues labelled $NEXT_LABEL"
-    if [[ -n $out ]]; then mapfile -t issues <<<"$out"; fi
-  fi
-  # the first release has no previous tag, and the whole history would name every old issue
-  if prev=$(last_tag "$c^"); then
-    out=$(git log --format=%B "$prev..$c" | fixed_issues)
-    if [[ -n $out ]]; then mapfile -t -O "${#issues[@]}" issues <<<"$out"; fi
+    for n in $out; do
+      if grep -qx "$n" <<<"$fixed"; then
+        issues+=("$n")
+      else
+        echo "kept #$n: no commit in $tag says it fixes #$n, so it stays labelled $NEXT_LABEL" >&2
+      fi
+    done
   fi
   for n in $(printf '%s\n' "${issues[@]}" | sort -nu); do
     # REST: a pull request is an issue with pull_request set; a missing or deleted one is a 404 / 410
@@ -295,7 +304,7 @@ merge_back() {
     echo "dev has master (${c:0:7}) already"
     return
   fi
-  title="Merge master ($(last_tag "$c" || git rev-parse --short "$c")) into dev"
+  title="Merge master (v$(version_at "$c")) into dev"
   tmp=$(mktemp -d)
   git worktree add -q --detach "$tmp" origin/dev
   if ! git -C "$tmp" merge -q --no-edit -m "$title" "$c"; then

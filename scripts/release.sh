@@ -78,14 +78,24 @@ release() {
   check_version "$version"
   if [[ $how == deploy ]]; then master_current; else git fetch -q origin; fi
   git merge-base --is-ancestor origin/master origin/dev ||
-    fail "origin's master is not an ancestor of its dev: merge the open master-into-dev pull request first (or scripts/hotfix.sh merge-back)"
+    fail "origin/master has commits origin/dev lacks: master was not merged back into dev (the deploy of the last pull request into master failed, or the merge-back pull request is still open). Run scripts/hotfix.sh merge-back (or merge that pull request), then this again"
   [[ -z $(git tag -l "$tag") ]] || fail "$tag already exists"
   current=$(version_at origin/master)
+  if [[ $version == "$current" ]]; then
+    fail "master says $current already, but it was never released (its deploy failed?): release a later version, or fix it with scripts/hotfix.sh start"
+  fi
   version_gt "$version" "$current" || fail "$version does not come after $current"
   changelog=$(git show origin/dev:CHANGELOG.md)
   has_section "$version" <<<"$changelog" ||
     fail "CHANGELOG.md on origin/dev has no '## $tag' section; run scripts/release.sh notes and get one into dev"
   if [[ $how == pr ]]; then
+    # a branch left from an earlier try is reused only while it still is origin/dev plus the version commit (a
+    # push or a pull request that did not go through); one cut from an older dev would leave out what came
+    # since. (--deploy always reuses it: after an unknown outcome its version commit may be live.)
+    if git rev-parse -q --verify "refs/heads/$branch" >/dev/null &&
+      [[ $(git log -1 --format=%s "$branch") == "chore(release): $tag" && $(git rev-parse "$branch^") != "$(git rev-parse origin/dev)" ]]; then
+      fail "$branch was cut from an older dev ($(git rev-parse --short "$branch^"); origin/dev is $(git rev-parse --short origin/dev)). If its pull request is closed, delete it (git branch -D $branch; git push origin --delete $branch) and run this again; if it is open, merge or close it first"
+    fi
     in_worktree "$branch" origin/dev "$version" release open_pr "$branch" "$version" "Release $tag"
   else
     in_worktree "$branch" origin/dev "$version" release ship "$branch" "$version"
