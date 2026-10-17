@@ -67,7 +67,10 @@ async function main() {
       if (!fs.existsSync(localDir(location))) continue;
       const dir = fs.realpathSync(localDir(location));
       const manifest = path.join(dir, "hebi8-dataset.yaml");
-      if (!fs.existsSync(manifest)) continue;
+      const kind = fs.lstatSync(manifest, { throwIfNoEntry: false });
+      if (!kind) continue;
+      // the list of files to copy is not taken from somewhere else
+      if (!kind.isFile()) throw new Error(`datasets.${name}: ${manifest} is a symbolic link or not a file; nothing exported`);
       const files = ["hebi8-dataset.yaml"];
       for (const s of YAML.parse(fs.readFileSync(manifest, "utf8"))?.series ?? []) {
         const file = typeof s?.file === "string" && s.file.trim() ? s.file.trim() : `${s?.id}.csv`;

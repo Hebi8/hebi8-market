@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Turns the live owner's hebi8.yaml into the dev instance's: drops `owner` (single-user mode, full
- * read and write over Tailscale without a login) and points each local dataset at the copy that came
- * with it. With HEBI8_DEV_SYNC_AT set, the dev instance syncs bars once a day at that time instead of at
+ * read and write over Tailscale without a login) and points each local dataset at <where that dir will
+ * be>/<name>, whether a copy came or not: never at the live directory. With HEBI8_DEV_SYNC_AT set, the dev instance syncs bars once a day at that time instead of at
  * the owner's sync.at: it takes the live cache every day anyway and shares the live instance's
  * upstream sources. Comments and order stay (parseDocument, as in src/lib/vault.ts).
  * Usage: node prepare-vault.mjs <app dir> <hebi8.yaml> <datasets dir> [<where that dir will be>]
@@ -31,7 +31,8 @@ const sets = doc.get("datasets");
 if (sets && typeof sets.items === "object") {
   for (const pair of sets.items) {
     const name = String(pair.key?.value ?? pair.key);
-    if (!fs.existsSync(path.join(datasets, name, "hebi8-dataset.yaml"))) continue;
+    const location = pair.value?.value ?? pair.value;
+    if (typeof location !== "string" || /^(https:\/\/|ssh:\/\/|file:\/\/|git@[^:]+:)/.test(location)) continue;
     const dir = path.join(final, name);
     // keep the scalar node so its trailing comment stays
     if (pair.value && "value" in pair.value) pair.value.value = dir;

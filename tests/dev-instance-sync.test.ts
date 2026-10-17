@@ -58,7 +58,7 @@ function live(dir: string, vaultIsLink = false): string {
   writeFileSync(path.join(secrets, "notify.json"), '{"token":"SECRET-TOKEN"}\n');
   writeFileSync(path.join(secrets, "c.csv"), "SECRET-CSV\n");
   writeFileSync(path.join(vault, "users/someone/hebi8.yaml"), "THEIRS: true\n");
-  writeFileSync(path.join(vault, "hebi8.yaml"), `owner: someone\nsync:\n  at: [ "07:30", "17:30" ]\n  tz: Asia/Tokyo\ndatasets:\n  ds: ${ds}\n`);
+  writeFileSync(path.join(vault, "hebi8.yaml"), `owner: someone\nsync:\n  at: [ "07:30", "17:30" ]\n  tz: Asia/Tokyo\ndatasets:\n  ds: ${ds}\n  bare: ${secrets}\n  remote: https://example.com/remote.git\n`);
   writeFileSync(path.join(vault, "notes/a.md"), "note\n");
   symlinkSync("../hebi8.yaml", path.join(vault, "notes/link.md"));
   symlinkSync(secrets, path.join(vault, "charts/outside"));
@@ -128,6 +128,11 @@ describe("hebi8-dev.sh sync", () => {
       const yaml = readFileSync(path.join(D, "vault/hebi8.yaml"), "utf8");
       expect(yaml).not.toMatch(/^owner:/m);
       expect(yaml).toContain('at: [ "08:00" ]');
+      // every local dataset points into the dev root, one without a manifest (nothing copied) too
+      expect(yaml).not.toContain(L);
+      expect(yaml).toContain(`ds: ${path.join(D, "datasets/ds")}`);
+      expect(yaml).toContain(`bare: ${path.join(D, "datasets/bare")}`);
+      expect(yaml).toContain("remote: https://example.com/remote.git");
       expect(readFileSync(path.join(D, "vault/notes/a.md"), "utf8")).toBe("note\n");
       for (const skipped of ["vault/notes/link.md", "vault/charts/outside", "vault/charts/others", "datasets/ds/b.csv", "datasets/ds/sub/c.csv"]) {
         expect(r.log).toContain(`sync: skipped symbolic link ${skipped}`);
@@ -158,6 +163,25 @@ describe("hebi8-dev.sh sync", () => {
     expect(r.log).toContain("sync: the export has symbolic links, nothing changed");
     expect(fingerprint(L)).toBe(before);
     expect(existsSync(path.join(D, "vault/hebi8.yaml"))).toBe(false);
+  });
+
+  it("fails the whole sync when a dataset's manifest is a link, keeping the dev data as it was", () => {
+    const L = live(path.join(root, "live-manifest"));
+    const D = devRoot(path.join(root, "dev-manifest"), `LIVE_DIR=${q(L)}\nLIVE_NODE=${q(process.execPath)}`);
+    expect(sync(D).log).toContain("sync: done");
+    // the manifest now a link to one that lists a secret
+    writeFileSync(path.join(L, "secrets/manifest.yaml"), "series:\n  - id: notify\n    file: ../secrets/notify.json\n");
+    rmSync(path.join(L, "ds/hebi8-dataset.yaml"));
+    symlinkSync(path.join(L, "secrets/manifest.yaml"), path.join(L, "ds/hebi8-dataset.yaml"));
+    const live0 = fingerprint(L);
+    const dev0 = fingerprint(path.join(D, "vault")) + fingerprint(path.join(D, "datasets")) + fingerprint(path.join(D, "data"));
+    const r = sync(D);
+    expect(r.status).toBe(1);
+    expect(r.log).toMatch(/sync: export failed: .*datasets\.ds: .*hebi8-dataset\.yaml is a symbolic link or not a file; nothing exported/);
+    expect(r.log).not.toContain("sync: done");
+    expect(fingerprint(L)).toBe(live0);
+    expect(fingerprint(path.join(D, "vault")) + fingerprint(path.join(D, "datasets")) + fingerprint(path.join(D, "data"))).toBe(dev0);
+    expect(devText(D)).not.toMatch(/SECRET|THEIRS/);
   });
 
   it("quotes LIVE_DIR and LIVE_NODE for the remote shell", () => {

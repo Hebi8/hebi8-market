@@ -224,7 +224,7 @@ exec 9>&-
 
 - 根 vault（owner 的）：`hebi8.yaml`、`notes/`、`journal/`、`charts/`。**`users/` 不带**，别人的 vault 不离开线上。换进来前由 `prepare-vault.mjs` 去掉 `owner`、把 `sync.at` 换成 `APP_SYNC_AT`、把本机数据集改指 `datasets/<名字>`。
 - 数据库快照（`db.backup()`），省得冷启动全量拉：`stats`、`alert_state` 只留根 vault（`vault = ''`）的行，`traffic`、`visitors`、`upstream`、`usage_alerts` 清空；K 线、标的、报价、标的资料原样。
-- 本机目录数据集（如 `cnCDIY`）的清单和 CSV；远端仓库的数据集 dev 自己克隆。
+- 本机目录数据集（如 `cnCDIY`）的清单和 CSV；远端仓库的数据集 dev 自己克隆。清单 `hebi8-dataset.yaml` 本身是符号链接的，整次同步失败（不去读它指向的清单），dev 保留原来的数据。dev 的 yaml 里每个本机数据集都改指 `datasets/<名字>`，没带回副本的也一样，不会留着线上的目录。
 
 没同步的：线上的密钥目录（会话、通知通道、Telegram、网页推送、GitHub App、MCP 令牌）一概不碰。
 
