@@ -409,7 +409,7 @@ date,open,high,low,close,volume
 {
   "telegram": { "token": "123:abc", "chat": "123456789", "api": "https://api.telegram.org" },
   "webhook": { "url": "https://ntfy.sh/hebi8-xxxx", "format": "text" },
-  "link": "http://100.92.194.31:8808"
+  "link": "https://market.example.com"
 }
 ```
 

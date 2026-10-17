@@ -199,11 +199,11 @@ alerts:
 {
   "telegram": { "token": "123456:ABC...", "chat": "123456789" },
   "webhook": "https://ntfy.sh/your-secret-topic",
-  "link": "http://100.92.194.31:8808"
+  "link": "https://market.example.com"
 }
 ```
 
-- `telegram`：找 @BotFather 建一个 hebi8/market 专用的 bot（用户名比如 `hebi8m_xxx_bot`）拿 token，给 bot 发一句话后从 `https://api.telegram.org/bot<token>/getUpdates` 里读 `chat.id`。用自建 Bot API 服务时加 `"api": "http://..."`；也可以给几个地址，比如 `"api": ["http://100.92.194.31:18081", "https://api.telegram.org"]`（不写就是 `https://api.telegram.org`）。几个地址时 hebi8 每 5 分钟对每个地址调一次 `getMe`（3 秒超时）测速，发消息先走能用且最快的那个（还没测过时按写的顺序）。一个地址明确没收到（域名解析失败，或者连接根本没建立：被拒、不可达、连接超时）就换下一个再发，到下次测速前它排到最后；请求可能已经发出去时（等回应超时、连上后断开或超时、回应没收完、回 5xx：网关超时回 504 时后面的服务器可能已经发了）不换地址重发，免得收到两条，这次 Telegram 算发送失败，这个地址同样排到最后；Telegram 自己回的错（chat 不存在、bot 被拉黑等 4xx）换地址也一样，原样报出来。
+- `telegram`：找 @BotFather 建一个 hebi8/market 专用的 bot（用户名比如 `hebi8m_xxx_bot`）拿 token，给 bot 发一句话后从 `https://api.telegram.org/bot<token>/getUpdates` 里读 `chat.id`。用自建 Bot API 服务时加 `"api": "http://..."`；也可以给几个地址，比如 `"api": ["http://bot-api.example:8081", "https://api.telegram.org"]`（不写就是 `https://api.telegram.org`）。几个地址时 hebi8 每 5 分钟对每个地址调一次 `getMe`（3 秒超时）测速，发消息先走能用且最快的那个（还没测过时按写的顺序）。一个地址明确没收到（域名解析失败，或者连接根本没建立：被拒、不可达、连接超时）就换下一个再发，到下次测速前它排到最后；请求可能已经发出去时（等回应超时、连上后断开或超时、回应没收完、回 5xx：网关超时回 504 时后面的服务器可能已经发了）不换地址重发，免得收到两条，这次 Telegram 算发送失败，这个地址同样排到最后；Telegram 自己回的错（chat 不存在、bot 被拉黑等 4xx）换地址也一样，原样报出来。
 - **共用实例的 owner 也可以在页面上设置 bot**：页头菜单「通知设置」里的「实例的 Telegram bot」，粘贴 token 后先用 `getMe` 校验，通过才写进 `notify.json`（只改 `telegram` 段，其他字段原样保留），之后只显示 `@bot 用户名`，不再显示 token；「移除」删掉整个 `telegram` 段。单用户模式没有登录，也就没有这个页面，bot 和通道都直接写 `notify.json`。
 - `webhook`：字符串，或 `{ "url": ..., "format": "json" }`。默认 `text` 把摘要当正文 POST，带 `Title: hebi8` 头，ntfy 直接能用；`json` 发 `{ title, text, events }`。
 - `link`：可选，有的话每条后面带图表页链接。

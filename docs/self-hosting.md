@@ -57,7 +57,7 @@ production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上
    | `DEPLOY_SSH_KEY` | secret | 第 2 步的私钥（`hebi8-deploy` 文件的全部内容） |
    | `DEPLOY_URL` | variable | 可选，部署记录上显示的地址 |
 
-6. **只在 tailnet 里连得到时**（能直连 ssh 的不需要）：在 Tailscale 后台建 OAuth client（Settings → OAuth clients，scope 选 Auth Keys 的 Write，tag 选 `tag:ci`），在 `production` 里放 secret `TS_OAUTH_CLIENT_ID`、`TS_OAUTH_SECRET`（放仓库级也能用，但 Environment 的 secret 只给限定分支上的 job，别的分支里改过的工作流拿不到；tag 不叫 `tag:ci` 时加变量 `TS_TAGS`）。runner 以 `tag:ci` 临时加入 tailnet，job 结束就下线。策略里要有 `"tagOwners": {"tag:ci": [...]}`，并让 `tag:ci` 只能连到线上那台的 22 端口，别的哪里都不行。
+6. **只在 tailnet 里连得到时**（线上那台有公网 SSH 就不需要，这一步整个跳过；放了这两个 secret，runner 就会先加入 tailnet 再 ping `DEPLOY_HOST` 的主机，ping 不通公网地址就失败，所以换成公网 SSH 时要把它们删掉）：在 Tailscale 后台建 OAuth client（Settings → OAuth clients，scope 选 Auth Keys 的 Write，tag 选 `tag:ci`），在 `production` 里放 secret `TS_OAUTH_CLIENT_ID`、`TS_OAUTH_SECRET`（放仓库级也能用，但 Environment 的 secret 只给限定分支上的 job，别的分支里改过的工作流拿不到；tag 不叫 `tag:ci` 时加变量 `TS_TAGS`）。runner 以 `tag:ci` 临时加入 tailnet，job 结束就下线。策略里要有 `"tagOwners": {"tag:ci": [...]}`，并让 `tag:ci` 只能连到线上那台的 22 端口，别的哪里都不行。
 7. **issue 用谁的名义**：不配时用 github-actions。想用自己的 GitHub App：App 只要 Issues 的读写，装到这个仓库，在 `production` 里加变量 `TRIAGE_APP_CLIENT_ID`（App 设置页的 Client ID）和 secret `TRIAGE_APP_PRIVATE_KEY`（生成的私钥 `.pem` 的全部内容）。
 8. **dev 只能经 PR 时**（分支保护或 ruleset）：合回 dev 的推送会被拒，工作流改开一个 master → dev 的 PR 并开启 auto-merge。要在 Settings → Actions → General 勾选 **Allow GitHub Actions to create and approve pull requests**，在 Settings → General 勾选 **Allow auto-merge**；master → dev 的 PR 只能用 merge commit 合并。
 
