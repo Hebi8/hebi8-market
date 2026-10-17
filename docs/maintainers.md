@@ -30,10 +30,10 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 ## 分支与发版
 
 - **`dev`**：日常开发和每日 issue 巡检的修复都经 PR 合进这里，不上线；[dev 实例](#dev-实例)每分钟自己看一次 origin 的 dev，合并后最多约一分钟（加上构建的时间）就更新上去。**进 dev 的 PR** 由巡检协调者在 Codex + Argon 两份审查都通过后自己合并（`gh pr merge <n> --merge --delete-branch`，用户的 gh 身份），用户也可以随时手动合。dev 在 GitHub 上合并，本地的 `dev` 分支会落后：要「基于 dev」或「和 dev 比」的地方一律先 `git fetch origin`，再用 `origin/dev`（脚本都这样做），不要 checkout 或更新本地的 `dev`。
-- **`master`**：线上版本，只经两种 PR 进来：Release PR（`release/vX.Y.Z` → master）和热补丁 PR（`hotfix/vX.Y.Z` → master），**只由用户手动合并**（协调者和 agent 不合），**都用 Create a merge commit 合并**（squash / rebase 会让 master 不再是 dev 的祖先）。**合并就是批准**：推到 master 就触发 Deploy 工作流部署到线上，没有额外的审批。每次部署后工作流把 master 合回 dev，所以 master 永远是 dev 的祖先。GitHub 默认分支仍是 master，提交里的 `Fixes #n` 在合进 master 时关掉 issue。
+- **`master`**：线上版本，只经两种 PR 进来：Release PR（`release/vX.Y.Z` → master）和热补丁 PR（`hotfix/vX.Y.Z` → master），**只由用户手动合并**（协调者和 agent 不合），**都用 Create a merge commit 合并**（squash / rebase 会让 master 不再是 dev 的祖先）。**合并就是批准**：推到 master 就触发 Deploy 工作流部署到线上，没有额外的审批。**master 是 dev 的祖先**是发版的前提，但不是时时成立：PR 的合并提交进了 master、还没合回 dev 的这段时间不成立，部署成功后工作流把 master 合回 dev 才恢复。部署失败（或合回卡住）时不会自动合回，要手动补（见下面「部署失败时」），不然下一次 `release.sh` 会因为「origin/master 有 origin/dev 没有的提交」拒绝。GitHub 默认分支仍是 master，提交里的 `Fixes #n` 在合进 master 时关掉 issue。
 - **版本号**：semver 0.x。minor（`0.Y.0`）= 有新功能，或 vault / `hebi8.yaml` / 密钥目录 / MCP 工具有变化；patch（`0.y.Z`）= 只有修复，热补丁总是 patch。版本号只写在 `package.json`：设置页底部、`/usage`、MCP 的 `serverInfo.version` 和页头「更新」的小圆点都读它。小圆点只为 minor 版本亮，记在浏览器的 localStorage 里，第一次来不亮。
 - **tag 和 Release**：每个版本一个带注释的 tag `vX.Y.Z`，打在部署上线的那个提交上（PR 的合并提交），一个 GitHub Release，正文是 `CHANGELOG.md` 的那一节。由工作流在部署成功后做，身份是 github-actions。
-- **issue 标签 `status:next-release`**：修复合进 dev 时巡检 bot 打上，并评论「已修复，下个版本上线」；发版部署成功后工作流去掉标签、评论「已在 vX.Y.Z 上线」、还开着的关掉。
+- **issue 标签 `status:next-release`**：修复合进 dev 时巡检 bot 打上，并评论「已修复，下个版本上线」；发版部署成功后，工作流对**修复确实在这次发布里**的（从上一个 tag 到发布的提交，有提交信息写着 `Fixes #n` / `closes #n` 等）评论「已在 vX.Y.Z 上线」、还开着的关掉、去掉标签；Release PR 切出之后才合进 dev 的修复不在发布里，标签留着，日志里写一行 `kept #n`，等下一个版本。所以修复的提交信息里要有 `Fixes #n`（巡检的修复都有），只写在 PR 正文里不算。
 - **用谁的身份**：开 PR、PR 上的评论（包括审查结论）、合并 PR 都用用户自己的 gh；issue 的标签和评论用巡检 bot（GitHub App「hebi8/market triage」，只有 Issues 读写，不加 Contents / Pull requests 权限；工作流里用 Secrets 里的私钥现取 token，本机用 `~/.local/share/hebi8/triage-token.sh`）。部署工作流里的 tag、Release、合回 dev（含它开的 master → dev PR）用工作流自己的 `GITHUB_TOKEN`。
 
 ### 部署工作流
@@ -50,7 +50,12 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 **部署失败时**（GitOps 的正常取舍）：master 已经合进去了，比线上新。
 
-- 退出码 1（`deploy.sh` 确认没部署：构建或检查失败，线上已退回原来的版本）：job 标红，tag、Release、issue、合回 dev 都没做。往前修：开新的 PR 修好再合（热补丁或下一个 Release），或者在 GitHub 上 revert 那个 PR 再合；下一次推送会从线上跑着的版本直接快进过去。
+- 退出码 1（`deploy.sh` 确认没部署：构建或检查失败，线上已退回原来的版本）：job 标红，tag、Release、issue、合回 dev 都没做。master 上已经有这个版本号（`package.json`），但它没有 tag、没上线。往前修，二选一：
+  - **热补丁**（快）：`scripts/hotfix.sh start <下一个 patch>`，从 master 修，合并后它带着没上线的那个版本的内容一起上线，issue 按从上一个 tag 起的提交公告，部署成功后照常合回 dev。
+  - **修在 dev 上、再发一个版本**：先 `scripts/hotfix.sh merge-back` 把 master 合回 dev（dev 只收 PR 时它开 master → dev 的 PR，用 merge commit 合掉），再把修复经 PR 合进 dev，然后 `release.sh <更大的版本>`（同一个版本号会被拒绝：master 上已经是它了）。
+  - 或者在 GitHub 上 revert 那个 PR 再合，回到原来的版本号；之后同样先合回再发版。
+
+  下一次推送会从线上跑着的版本直接快进过去。
 - 退出码 3（不知道结果：ssh 断了、事后也问不到，或者问到的状态说不清）：job 标红，日志里写着续跑方法：**等 N100 连得上，在这次运行的页面上 Re-run failed jobs**。N100 那边是幂等的：已经部署完的认出来直接返回，没做完的从进行中标记接着做或重做。
 - 部署成功、后面的步骤停了（打 tag、Release、issue、合回 dev，比如 GitHub 请求失败）：同样 Re-run failed jobs，部署那一步认出已经在跑，做过的步骤跳过（issue 的公告评论带隐藏标记，有了就不再评论；评论和关闭都成功后才去标签）。GitHub 请求失败（不是「没有这个 issue」或「这是 PR」）就停下，不当成做完。
 
@@ -82,7 +87,7 @@ scripts/release.sh 0.3.0    # 开 Release PR
 # 在 GitHub 上看一遍 PR，用 Create a merge commit 合并 → Deploy 工作流部署、发布
 ```
 
-`release.sh 0.3.0` 先 `git fetch`，检查：origin 的 master 是 dev 的祖先、tag 还不存在、版本号比 master 上的 `package.json` 大、origin 的 dev 上 CHANGELOG 有这一节。然后在一个临时 worktree 里从 origin/dev 切 `release/v0.3.0`，做版本提交 `chore(release): v0.3.0`（`package.json` 和 lockfile 的版本，这一节的日期填成今天），推这个分支，用你自己的 gh 开 PR → master，正文是 CHANGELOG 那一节，末尾提醒用 merge commit 合并。你的 checkout 一个都不动；推送或开 PR 失败了再跑一次，它认出分支上已有的版本提交接着做。
+`release.sh 0.3.0` 先 `git fetch`，检查：origin 的 master 是 dev 的祖先、tag 还不存在、版本号比 master 上的 `package.json` 大、origin 的 dev 上 CHANGELOG 有这一节。然后在一个临时 worktree 里从 origin/dev 切 `release/v0.3.0`，做版本提交 `chore(release): v0.3.0`（`package.json` 和 lockfile 的版本，这一节的日期填成今天），推这个分支，用你自己的 gh 开 PR → master，正文是 CHANGELOG 那一节，末尾提醒用 merge commit 合并。你的 checkout 一个都不动；推送或开 PR 失败了再跑一次，它认出分支上已有的版本提交接着做；但只在这个分支还是「当前的 origin/dev + 版本提交」时：dev 之后又动过（比如 PR 关掉了、过几天再发），它停下来让你先删掉旧的 `release/v0.3.0`（本地和 origin 上的），免得发出去的漏掉 dev 后来的提交。
 
 切分支而不是在 dev 上做版本提交：dev 只经 PR 进东西，没审过的提交不直接推上去；不想发了关掉 PR、删掉分支就行，dev 上什么都不用撤；版本提交在部署后随合回 dev 进入 dev。PR 开着的时候 dev 照常往前走，这次发的就是切分支时的 dev，之后的进下一个版本。CHANGELOG 的日期是开 PR 那天，隔几天才合就在 release 分支上改一下。
 

@@ -29,7 +29,7 @@ npm run dev        # http://localhost:3000
 
 `.github/workflows/deploy.yml`：push 到 `master`（合并 PR）部署到 GitHub Environment `production`。只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，从不在 pull_request 上跑。**仓库设置里没有 `production` 这个 Environment 就直接跳过**，所以不配置就什么都不发生，fork 里推送也不会连任何机器。合并就是批准，Environment 不需要审批人。想再跑一个跟着 `dev` 的实例先试新功能，不用工作流：照 `scripts/dev-instance/hebi8-dev.sh` 那样让它自己每分钟看一次分支（`git ls-remote`），动了才拉取、构建、切换。
 
-production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上：备份、构建、重启、检查、回滚），成功后，这个提交的 `package.json` 版本还没有 tag 的话，打带注释的 tag `v<版本>`、用 `CHANGELOG.md` 那一节发 GitHub Release、给修好的 issue 评论并关掉（`status:next-release` 标签的和提交里 `Fixes #n` 的），最后把 master 合回 dev。
+production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上：备份、构建、重启、检查、回滚），成功后，这个提交的 `package.json` 版本还没有 tag 的话，打带注释的 tag `v<版本>`、用 `CHANGELOG.md` 那一节发 GitHub Release、给修好的 issue 评论并关掉（从上一个 tag 到这个提交、提交信息里写着 `Fixes #n` 一类的；带 `status:next-release` 标签但修复不在这次发布里的不动），最后把 master 合回 dev。合回之前 master 不是 dev 的祖先；部署失败时不会合回，下次发版前先 `scripts/hotfix.sh merge-back`。
 
 **线上那台的部署 key 只能部署**：`authorized_keys` 里那一行是 forced command，只跑线上目录里的 `scripts/deploy-gate.sh`。它只接受 `live <40 位 commit>` 和 `status <40 位 commit>`，其它（短 commit、多余参数、`;`、换行、空命令、`git` 命令、shell）一律拒绝；`live` 时由线上那台自己 `git fetch origin master`、确认这个 commit 在 master 上，再跑这个 commit 自己的 `deploy.sh`。所以线上目录的 `origin` 要是 GitHub 上的这个仓库（公开仓库用 https 就行，不用凭据）。
 
