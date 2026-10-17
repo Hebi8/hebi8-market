@@ -28,7 +28,8 @@ SYNC_TZ=Asia/Tokyo
 APP_SYNC_AT=08:00              # the dev app's own bar sync, once a day in place of the owner's sync.at; empty keeps theirs
 LIVE_DIR=                      # the live checkout (absolute path, or relative to the remote home with LIVE_SHELL)
 LIVE_SHELL=()                  # empty: the live checkout is on this machine; else a command that runs its last argument there
-LIVE_NODE=node                 # the live service's node: its better-sqlite3 is built for it
+LIVE_NODE=node                 # the live service's node: its better-sqlite3 is built for it; set it with LIVE_SHELL
+                               # (NODE_BIN is only this machine's PATH)
 NODE_BIN=                      # put first on PATH for builds and next start
 KEEP=3                         # releases kept on disk, the running one included
 # shellcheck source=/dev/null
@@ -145,7 +146,7 @@ do_update() {
 # live checkout with the live Node) and swaps them in. One way only: what was changed on the dev instance
 # is gone afterwards.
 do_sync() {
-  local tmp script
+  local tmp script dir node links
   [[ -L $ROOT/current ]] || { log "sync: no release yet"; return 1; }
   [[ -n $LIVE_DIR ]] || { log "sync: LIVE_DIR is not set in config.env"; return 1; }
   tmp=$(mktemp -d "$ROOT/tmp/sync.XXXXXX")
@@ -153,7 +154,9 @@ do_sync() {
     log "sync: exporting from $LIVE_DIR via ${LIVE_SHELL[*]}"
     # the script travels in the command line: stdin of a remote shell is not always a clean channel
     script=$(base64 -w0 "$ROOT/bin/export.mjs")
-    "${LIVE_SHELL[@]}" "f=\$(mktemp /tmp/hebi8-dev-export.XXXXXX.mjs) && echo $script | base64 -d > \$f && cd $LIVE_DIR && $LIVE_NODE \$f; s=\$?; rm -f \$f; exit \$s" \
+    printf -v dir %q "$LIVE_DIR"
+    printf -v node %q "$LIVE_NODE"
+    "${LIVE_SHELL[@]}" "f=\$(mktemp /tmp/hebi8-dev-export.XXXXXX.mjs) && echo $script | base64 -d > \$f && cd $dir && $node \$f; s=\$?; rm -f \$f; exit \$s" \
       < /dev/null > "$tmp/raw" 2> "$tmp/err"
   else
     log "sync: exporting from $LIVE_DIR"
@@ -167,6 +170,13 @@ do_sync() {
   if ! tr -d '\r' < "$tmp/raw" | sed -n '/^HEBI8-DEV-EXPORT-BEGIN$/,/^HEBI8-DEV-EXPORT-END$/{/^HEBI8-DEV-EXPORT/d;p}' | base64 -d | tar xz -C "$tmp/new" \
     || [[ ! -f $tmp/new/vault/hebi8.yaml || ! -f $tmp/new/hebi8.db ]]; then
     log "sync: the export did not come through whole"
+    rm -rf "$tmp"
+    return 1
+  fi
+  # export.mjs copies what links point to; a link here would lead prepare-vault and the app into the live data
+  links=$(find "$tmp/new" -type l | head -3)
+  if [[ -n $links ]]; then
+    log "sync: the export has symbolic links, nothing changed: $(echo "$links" | sed "s|^$tmp/new/||" | tr '\n' ' ')"
     rm -rf "$tmp"
     return 1
   fi
@@ -233,6 +243,18 @@ job() {
   systemctl --user start "$1"
   s=$?
   journalctl --user -u "$1" --since "@$since" --no-pager -o cat
+  return $s
+}
+
+# A poll that was already running when asked returns without having seen state/update: run one more.
+update_now() {
+  local s
+  job "$APP-poll.service"
+  s=$?
+  if [[ -f $ROOT/state/update ]]; then
+    job "$APP-poll.service"
+    s=$?
+  fi
   return $s
 }
 
@@ -341,7 +363,7 @@ case ${1:-} in
   status) status ;;
   update)
     if [[ ${2:-} == --force ]]; then echo force > "$ROOT/state/update"; else : > "$ROOT/state/update"; fi
-    job "$APP-poll.service"
+    update_now
     ;;
   sync) job "$APP-sync.service" ;;
   branch)
@@ -350,7 +372,7 @@ case ${1:-} in
     if grep -q '^BRANCH=' "$ROOT/config.env"; then sed -i "s|^BRANCH=.*|BRANCH=$2|" "$ROOT/config.env"; else echo "BRANCH=$2" >> "$ROOT/config.env"; fi
     echo "branch set to $2"
     : > "$ROOT/state/update"
-    job "$APP-poll.service"
+    update_now
     ;;
   install)
     src=${2:?usage: hebi8-dev.sh install <scripts/dev-instance dir>}

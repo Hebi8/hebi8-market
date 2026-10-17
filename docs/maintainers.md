@@ -210,7 +210,7 @@ exec 9>&-
 
 | 路径（`~/hebi8-dev/`） | 是什么 |
 |---|---|
-| `config.env` | 这台机器的值（不进仓库）：`HOST`、`PORT`、`BRANCH`、`LIVE_DIR`（线上目录）、`NODE_BIN`（线上服务用的 Node 22 的 bin；N100 默认的 node 是 24，better-sqlite3 不认），以及 `SYNC_AT` / `SYNC_TZ`、`APP_SYNC_AT`、`LIVE_SHELL`（线上在别的机器时，在那边跑命令的前缀，如 `(ssh 用户@主机)`；空 = 本机）；缺省值在脚本开头 |
+| `config.env` | 这台机器的值（不进仓库）：`HOST`、`PORT`、`BRANCH`、`LIVE_DIR`（线上目录）、`NODE_BIN`（线上服务用的 Node 22 的 bin；N100 默认的 node 是 24，better-sqlite3 不认），以及 `SYNC_AT` / `SYNC_TZ`、`APP_SYNC_AT`、`LIVE_SHELL`（线上在别的机器时，在那边跑命令的前缀，如 `(ssh <user>@<host>)`；空 = 本机。远程时 `LIVE_DIR` 相对那边的 home，`LIVE_NODE` 要写成那边线上服务的 Node 的路径：`NODE_BIN` 只管本机的 `PATH`），以及 `LIVE_NODE`；缺省值在脚本开头 |
 | `repo/` | 仓库的 clone；每个版本是它的一个 worktree |
 | `releases/<commit>/`、`current` | 构建好的版本，`current` 指向正在跑的那个；保留最近 3 个 |
 | `vault/`、`data/hebi8.db`、`datasets/` | 每天从线上换进来的 vault、缓存快照和本机数据集 |
@@ -220,7 +220,7 @@ exec 9>&-
 
 **自动更新**：timer 每分钟用 `git ls-remote origin refs/heads/<分支>` 看分支指向哪个 commit（只问一句，不下载对象）。和正在跑的一样、或者是 `state/failed` 里那个，就什么都不做；不一样才 fetch 并在 `releases/<新 commit>/` 里另建一份：`package-lock.json` 和正在跑的版本一样就硬链接它的 `node_modules`，否则 `npm ci`；`npm run build` 的时候旧版本照常服务。构建成功才切换、重启 `hebi8-dev`，60 秒内首页不返回 200 就切回旧的。构建或启动失败都记进 `state/failed`，旧版本一直在跑。不推送，不备份。构建要几分钟，这期间 poll 服务一直在跑，timer 不会再起一个；这期间又合进来的几个提交，下一次看时一起看到，只建最新的那一个。同步和更新拿同一把锁，不会同时重启应用。
 
-**每天同步**：在线上目录里用 `NODE_BIN` 的 Node 跑 `export.mjs`（只读），带回三样，换进去后重启：
+**每天同步**：在线上目录里用 `LIVE_NODE`（本机时默认就是 `NODE_BIN` 里的 node）跑 `export.mjs`（只读），带回三样，换进去后重启。符号链接一律复制成它指向的文件（同一台机器上，留着链接就等于 dev 直接读写线上的文件）；带回来的东西里只要还有一个符号链接，就整个停下、什么都不换：
 
 - 根 vault（owner 的）：`hebi8.yaml`、`notes/`、`journal/`、`charts/`。**`users/` 不带**，别人的 vault 不离开线上。换进来前由 `prepare-vault.mjs` 去掉 `owner`、把 `sync.at` 换成 `APP_SYNC_AT`、把本机数据集改指 `datasets/<名字>`。
 - 数据库快照（`db.backup()`），省得冷启动全量拉：`stats`、`alert_state` 只留根 vault（`vault = ''`）的行，`traffic`、`visitors`、`upstream`、`usage_alerts` 清空；K 线、标的、报价、标的资料原样。
@@ -230,7 +230,7 @@ exec 9>&-
 
 **合并之后看它到了没有**：`journalctl --user -u hebi8-dev-poll -f`（`update dev: <旧> -> <新>`、`running <新>`，或者 `build of <新> failed` / `did not answer 200`），或者 `hebi8-dev.sh status`（正在跑的 commit、应用状态、两个 timer 上次和下次的时间）。
 
-常用命令（在 N100 上；从 devNuc 是 `ssh dreaife@100.102.150.101 '~/hebi8-dev/bin/hebi8-dev.sh status'`）：
+常用命令（在 N100 上；从别的机器是 `ssh <user>@<host> '~/hebi8-dev/bin/hebi8-dev.sh status'`）：
 
 ```bash
 H=~/hebi8-dev/bin/hebi8-dev.sh
@@ -241,10 +241,12 @@ $H branch dev                   # 改跟踪的分支（写进 config.env）并�
 $H update [--force]             # 不等下一分钟，立刻 fetch 并更新；--force 连 state/failed 里的也重试
 $H sync                         # 立刻从线上同步一次
 systemctl --user restart hebi8-dev                            # 只重启应用
-systemctl --user stop hebi8-dev hebi8-dev-poll.timer hebi8-dev-sync.timer    # 全停；start 同样三个恢复
+# 全停：timer、正在跑的构建 / 同步（含等着重试的）、应用；只停应用和 timer 的话，跑到一半的构建结束时会把应用再拉起来
+systemctl --user stop hebi8-dev-poll.timer hebi8-dev-sync.timer hebi8-dev-poll.service hebi8-dev-sync.service hebi8-dev
+systemctl --user start hebi8-dev hebi8-dev-poll.timer hebi8-dev-sync.timer                 # 恢复
 ```
 
-`update`、`sync`、`branch` 都是去启动对应的 unit 并等它跑完（输出来自 journal），所以和 timer 触发的一样低优先级、一样进日志；正在构建时 `update` 只留下标记，下一分钟那一次照办。
+`update`、`sync`、`branch` 都是去启动对应的 unit 并等它跑完（输出来自 journal），所以和 timer 触发的一样低优先级、一样进日志；正在构建时 `update` / `branch` 先等这一轮跑完，再自己跑一轮（那一轮开始时还没看到新的要求）。
 
 脚本本身不随分支自动更新（timer 不替换自己）。改了 `scripts/dev-instance/`、dev 实例跑上那个版本之后：`$H install ~/hebi8-dev/current/scripts/dev-instance`（重写 unit，`daemon-reload`）。
 
@@ -254,7 +256,7 @@ systemctl --user stop hebi8-dev hebi8-dev-poll.timer hebi8-dev-sync.timer    # �
 git clone https://github.com/Hebi8/hebi8-market.git ~/hebi8-dev/repo
 git -C ~/hebi8-dev/repo checkout -q --detach origin/dev
 cat > ~/hebi8-dev/config.env <<'CFG'
-HOST=100.102.150.101
+HOST=<这台机器的 Tailscale IP>
 PORT=8809
 LIVE_DIR=$HOME/dev/hebi8-market
 NODE_BIN=$HOME/.local/share/hebi8/node/bin

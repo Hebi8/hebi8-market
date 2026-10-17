@@ -6,7 +6,9 @@
  * - a snapshot of the cache without anyone else's rows: `stats` and `alert_state` keep vault '' only,
  *   traffic, visitors and upstream counts are dropped; bars, symbols, quotes, profiles stay;
  * - the manifest and the listed CSVs of each local dataset (remote ones the dev instance clones itself).
- * Writes them to stdout as a base64 tar.gz between marker lines, so a banner around it does no harm.
+ * Symbolic links are copied as the files they point to: on the same machine a link would lead the dev
+ * instance back into the live data. Writes them to stdout as a base64 tar.gz between marker lines, so a
+ * banner around it does no harm.
  * Never touches the secrets directory.
  */
 import { execFileSync } from "node:child_process";
@@ -32,6 +34,7 @@ async function main() {
     const out = path.join(tmp, "out");
     fs.cpSync(vault, path.join(out, "vault"), {
       recursive: true,
+      dereference: true,
       filter: (src) => path.relative(vault, src).split(path.sep)[0] !== "users",
     });
 
@@ -59,7 +62,7 @@ async function main() {
         const file = typeof s?.file === "string" && s.file.trim() ? s.file.trim() : `${s?.id}.csv`;
         if (inside(dir, file) && fs.existsSync(path.join(dir, file))) files.push(file);
       }
-      for (const file of files) fs.cpSync(path.join(dir, file), path.join(out, "datasets", name, file));
+      for (const file of files) fs.cpSync(path.join(dir, file), path.join(out, "datasets", name, file), { dereference: true });
       datasets.push({ name, files: files.length });
     }
 
