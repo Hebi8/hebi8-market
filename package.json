@@ -1,6 +1,6 @@
 {
   "name": "hebi8-market",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "scripts": {
     "dev": "next dev",
