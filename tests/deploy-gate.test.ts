@@ -78,12 +78,24 @@ describe("deploy-gate.sh", () => {
     expect(r.out).toContain("(third)");
   });
 
-  it("answers `status <commit>` with that commit's deploy.sh once it is here, else HEAD's", () => {
-    expect(gate(`status ${onMaster}`).out).toBe(`deploy.sh status ${onMaster} in ${live} (second)\n`);
+  it("answers `status <commit>` with HEAD's deploy.sh, whatever the commit", () => {
+    expect(gate(`status ${onMaster}`).out).toBe(`deploy.sh status ${onMaster} in ${live} (first)\n`);
     const unknown = "0123456789abcdef0123456789abcdef01234567";
     const r = gate(`status ${unknown}`);
     expect(r.status).toBe(0);
     expect(r.out).toBe(`deploy.sh status ${unknown} in ${live} (first)\n`);
+  });
+
+  it("never runs a commit that is here but not on master, for status or live", () => {
+    // a commit the live checkout has in its object store without it being on origin's master
+    git(live, "fetch", "-q", "origin", "other");
+    git(live, "cat-file", "-e", `${elsewhere}^{commit}`);
+    const s = gate(`status ${elsewhere}`);
+    expect(s.status).toBe(0);
+    expect(s.out).toBe(`deploy.sh status ${elsewhere} in ${live} (first)\n`);
+    const l = gate(`live ${elsewhere}`);
+    expect(l.status).toBe(2);
+    expect(l.ran).toBe(false);
   });
 
   it("refuses a commit that is not on origin's master", () => {
