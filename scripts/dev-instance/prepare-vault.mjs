@@ -2,7 +2,9 @@
 /**
  * Turns the live owner's hebi8.yaml into the dev instance's: drops `owner` (single-user mode, full
  * read and write over Tailscale without a login) and points each local dataset at the copy that came
- * with it. Comments and order stay (parseDocument, as in src/lib/vault.ts).
+ * with it. With HEBI8_DEV_SYNC_AT set, the dev instance syncs bars once a day at that time instead of at
+ * the owner's sync.at: it takes the live cache every day anyway and shares the live instance's
+ * upstream sources. Comments and order stay (parseDocument, as in src/lib/vault.ts).
  * Usage: node prepare-vault.mjs <app dir> <hebi8.yaml> <datasets dir> [<where that dir will be>]
  */
 import fs from "node:fs";
@@ -19,6 +21,12 @@ const { parseDocument } = createRequire(path.join(path.resolve(app), "package.js
 const doc = parseDocument(fs.readFileSync(file, "utf8"));
 if (doc.errors.length > 0) throw doc.errors[0];
 doc.delete("owner");
+if (process.env.HEBI8_DEV_SYNC_AT) {
+  const at = doc.createNode([process.env.HEBI8_DEV_SYNC_AT], { flow: true });
+  at.items[0].type = "QUOTE_DOUBLE";
+  at.comment = " dev 实例每天只同步一次（hebi8-dev.sh 的 APP_SYNC_AT）";
+  doc.setIn(["sync", "at"], at);
+}
 const sets = doc.get("datasets");
 if (sets && typeof sets.items === "object") {
   for (const pair of sets.items) {
