@@ -2,13 +2,11 @@
 # The dev instance on memoh-codex: follows a branch (dev), takes the live owner's vault once a day.
 # Everything lives under $HEBI8_DEV_ROOT (default /data/hebi8-dev, the disk that survives a reset of
 # the system layer); there is no systemd, so `daemon` is the watchdog: it keeps `next start` running,
-# checks the branch every UPDATE_EVERY seconds and runs the daily sync. /data/services/start.sh runs
-# `hebi8-dev.sh start` at boot. See docs/maintainers.md §dev 实例.
+# asks origin every UPDATE_EVERY seconds where the branch is (git ls-remote: no objects come down) and
+# fetches and rebuilds only when it moved, and runs the daily sync. Nothing connects in to deploy it.
+# /data/services/start.sh runs `hebi8-dev.sh start` at boot. See docs/maintainers.md §dev 实例.
 #
-# Usage: hebi8-dev.sh start | stop | status | update [--force] | deploy <commit> | sync | restart | branch <name>
-#        | install <dir> | daemon
-# `deploy <commit>` is for the deploy workflow after a push to dev: an update now, failed commits retried, that
-# ends 0 only when what runs contains <commit> (or the branch followed does not).
+# Usage: hebi8-dev.sh start | stop | status | update [--force] | sync | restart | branch <name> | install <dir> | daemon
 #
 # Each release is a git worktree in releases/<sha>, built while the old one keeps serving; `current`
 # points at the one that runs. A commit that fails to build or to answer 200 is remembered in
@@ -22,7 +20,7 @@ export PATH="/opt/memoh/toolkit/node-glibc/bin:$HOME/.local/bin:$PATH"
 BRANCH=master                  # a branch of origin, or any ref or commit the clone has
 HOST=100.107.245.93            # memoh-codex's Tailscale IP: tailnet only, no public entrance
 PORT=8809
-UPDATE_EVERY=600               # seconds between fetches
+UPDATE_EVERY=60                # seconds between looks at where the branch is
 SYNC_AT=04:30                  # daily copy from the live instance, SYNC_TZ clock; off the live 07:30 / 17:30 syncs
 SYNC_TZ=Asia/Tokyo
 LIVE_MACHINE=homeN100          # reached with `lody-lan lan shell`
@@ -236,6 +234,29 @@ do_sync() {
   rm -rf "$tmp"
 }
 
+# Where origin's BRANCH is, without fetching: one ls-remote, empty when BRANCH is no branch there (a commit,
+# a local ref), which then is not followed.
+remote_head() {
+  git -C "$ROOT/repo" ls-remote --quiet origin "refs/heads/$BRANCH" | cut -f1
+}
+
+# The watchdog's look: fetch and rebuild only when the branch is somewhere that neither runs nor failed. A
+# build takes the whole round (the daemon does one thing at a time), so commits that land meanwhile are seen
+# together on the next look and built once, as the newest.
+poll() {
+  local head cur
+  date +%s > "$ROOT/state/checked"
+  head=$(remote_head) || { log "ls-remote failed"; return 1; }
+  [[ -n $head ]] || return 0
+  cur=$(basename "$(readlink "$ROOT/current" 2> /dev/null)")
+  if [[ $head == "$cur" ]]; then
+    rm -f "$ROOT/state/failed"
+    return 0
+  fi
+  [[ $head == "$(cat "$ROOT/state/failed" 2> /dev/null)" ]] && return 0
+  do_update
+}
+
 # One round of the watchdog; holds the ops lock.
 tick() {
   local now last
@@ -248,7 +269,7 @@ tick() {
     fi
   fi
   last=$(cat "$ROOT/state/checked" 2> /dev/null || echo 0)
-  ((now - last >= UPDATE_EVERY)) && do_update
+  ((now - last >= UPDATE_EVERY)) && poll
   last=$(cat "$ROOT/state/synced" 2> /dev/null || echo 0)
   if ((last < $(sync_moment))); then
     # a failed sync waits half an hour before the next try
@@ -286,19 +307,6 @@ daemon() {
   done
 }
 
-# <commit>: update now and say whether it runs
-deploy() {
-  local sha=$1 cur
-  do_update --force || return 1
-  if ! git -C "$ROOT/repo" merge-base --is-ancestor "$sha" "$(target_commit)" 2>/dev/null; then
-    echo "$BRANCH does not contain ${sha:0:7}; running $(commit_of current), as $BRANCH says"
-    return 0
-  fi
-  cur=$(basename "$(readlink -f "$ROOT/current")")
-  git -C "$ROOT/repo" merge-base --is-ancestor "$sha" "$cur" || { echo "${sha:0:7} is not running (${cur:0:7} is)"; return 1; }
-  echo "running ${cur:0:7} ($BRANCH), which has ${sha:0:7}"
-}
-
 status() {
   local pid
   echo "url:      $URL"
@@ -328,7 +336,6 @@ case ${1:-} in
     ;;
   status) status ;;
   update) locked wait do_update "${2:-}" ;;
-  deploy) locked wait deploy "${2:?usage: hebi8-dev.sh deploy <commit>}" ;;
   sync) locked wait do_sync ;;
   restart) locked wait restart_app ;;
   branch)
@@ -349,7 +356,7 @@ case ${1:-} in
     echo "installed into $ROOT/bin; restart the daemon (stop, start) to use the new hebi8-dev.sh"
     ;;
   *)
-    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac
