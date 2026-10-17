@@ -27,9 +27,9 @@ npm run dev        # http://localhost:3000
 
 ### 用 GitHub Actions 自动部署（可选）
 
-`.github/workflows/deploy.yml`：push 到 `master`（合并 PR）部署到 GitHub Environment `production`，push 到 `dev` 部署到 `development`（第二个实例，比如给自己先试新功能的，可以不要）。只在 push 和手动运行（Actions 页的 Run workflow）时跑，从不在 pull_request 上跑；`master` 只去 `production`，`dev` 只去 `development`。**仓库设置里没有那个 Environment 的 job 直接跳过**，所以不配置就什么都不发生，fork 里推送也不会连任何机器。合并就是批准，Environment 不需要审批人。
+`.github/workflows/deploy.yml`：push 到 `master`（合并 PR）部署到 GitHub Environment `production`。只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，从不在 pull_request 上跑。**仓库设置里没有 `production` 这个 Environment 就直接跳过**，所以不配置就什么都不发生，fork 里推送也不会连任何机器。合并就是批准，Environment 不需要审批人。想再跑一个跟着 `dev` 的实例先试新功能，不用工作流：照 `scripts/dev-instance/hebi8-dev.sh` 那样让它自己每分钟看一次分支（`git ls-remote`），动了才拉取、构建、切换。
 
-production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上：备份、构建、重启、检查、回滚），成功后，这个提交的 `package.json` 版本还没有 tag 的话，打带注释的 tag `v<版本>`、用 `CHANGELOG.md` 那一节发 GitHub Release、给修好的 issue 评论并关掉（`status:next-release` 标签的和提交里 `Fixes #n` 的），最后把 master 合回 dev。development 做的事：ssh 到那台跑你给的更新命令，后面接 commit。
+production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上：备份、构建、重启、检查、回滚），成功后，这个提交的 `package.json` 版本还没有 tag 的话，打带注释的 tag `v<版本>`、用 `CHANGELOG.md` 那一节发 GitHub Release、给修好的 issue 评论并关掉（`status:next-release` 标签的和提交里 `Fixes #n` 的），最后把 master 合回 dev。
 
 **线上那台的部署 key 只能部署**：`authorized_keys` 里那一行是 forced command，只跑线上目录里的 `scripts/deploy-gate.sh`。它只接受 `live <40 位 commit>` 和 `status <40 位 commit>`，其它（短 commit、多余参数、`;`、换行、空命令、`git` 命令、shell）一律拒绝；`live` 时由线上那台自己 `git fetch origin master`、确认这个 commit 在 master 上，再跑这个 commit 自己的 `deploy.sh`。所以线上目录的 `origin` 要是 GitHub 上的这个仓库（公开仓库用 https 就行，不用凭据）。
 
@@ -48,23 +48,20 @@ production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上
 
    试一下（`-o IdentitiesOnly=yes`：不然 ssh 可能先用了你自己的 key）：`ssh -o IdentitiesOnly=yes -i hebi8-deploy <user>@<host> status 0000000000000000000000000000000000000000` 应该回答 `unclear …` 或 `not-live`，同样的参数换成 `ls` 应该是 `deploy-gate: refused`。
 4. **主机指纹**：`ssh-keyscan -t ed25519 <host>`，和那台上 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 的指纹对一下。
-5. **建 Environment**（仓库 Settings → Environments → New environment）：`production`，Deployment branches and tags 选 Selected branches and tags，只加 `master`；要 dev 实例的再建 `development`，只加 `dev`。不加 Required reviewers。各自填：
+5. **建 Environment**（仓库 Settings → Environments → New environment）：`production`，Deployment branches and tags 选 Selected branches and tags，只加 `master`，不加 Required reviewers。填：
 
-   | 名字 | 种类 | production | development |
-   |---|---|---|---|
-   | `DEPLOY_HOST` | variable | `<user>@<host>` | `<user>@<host>` |
-   | `DEPLOY_KNOWN_HOSTS` | variable | 第 4 步的那一行 | 同样取那台的 |
-   | `DEPLOY_SSH_KEY` | secret | 第 2 步的私钥（`hebi8-deploy` 文件的全部内容） | 可选：用 Tailscale SSH 时不要 |
-   | `DEPLOY_COMMAND` | variable | — | 那台上的更新命令，工作流在后面接 commit，比如 `/data/hebi8-dev/bin/hebi8-dev.sh deploy` |
-   | `DEPLOY_URL` | variable | 可选，部署记录上显示的地址 | 可选 |
+   | 名字 | 种类 | 值 |
+   |---|---|---|
+   | `DEPLOY_HOST` | variable | `<user>@<host>` |
+   | `DEPLOY_KNOWN_HOSTS` | variable | 第 4 步的那一行 |
+   | `DEPLOY_SSH_KEY` | secret | 第 2 步的私钥（`hebi8-deploy` 文件的全部内容） |
+   | `DEPLOY_URL` | variable | 可选，部署记录上显示的地址 |
 
-6. **只在 tailnet 里连得到时**（能直连 ssh 的不需要）：在 Tailscale 后台建 OAuth client（Settings → OAuth clients，scope 选 Auth Keys 的 Write，tag 选 `tag:ci`），在两个 Environment 里各放一份 secret `TS_OAUTH_CLIENT_ID`、`TS_OAUTH_SECRET`（放仓库级也能用，但 Environment 的 secret 只给限定分支上的 job，别的分支里改过的工作流拿不到；tag 不叫 `tag:ci` 时加变量 `TS_TAGS`）。runner 以 `tag:ci` 临时加入 tailnet，job 结束就下线。策略里要有 `"tagOwners": {"tag:ci": [...]}`，并让 `tag:ci` 只能连到线上那台的 22 端口。dev 实例那台没有 sshd 的话用 Tailscale SSH：给它打一个 tag，策略里加一条 `ssh` 规则允许 `tag:ci` 以那个用户登录（打了 tag 的节点只能被 Tailscale SSH 规则里的 tag 连），`DEPLOY_SSH_KEY` 留空。
+6. **只在 tailnet 里连得到时**（能直连 ssh 的不需要）：在 Tailscale 后台建 OAuth client（Settings → OAuth clients，scope 选 Auth Keys 的 Write，tag 选 `tag:ci`），在 `production` 里放 secret `TS_OAUTH_CLIENT_ID`、`TS_OAUTH_SECRET`（放仓库级也能用，但 Environment 的 secret 只给限定分支上的 job，别的分支里改过的工作流拿不到；tag 不叫 `tag:ci` 时加变量 `TS_TAGS`）。runner 以 `tag:ci` 临时加入 tailnet，job 结束就下线。策略里要有 `"tagOwners": {"tag:ci": [...]}`，并让 `tag:ci` 只能连到线上那台的 22 端口，别的哪里都不行。
 7. **issue 用谁的名义**：不配时用 github-actions。想用自己的 GitHub App：App 只要 Issues 的读写，装到这个仓库，在 `production` 里加变量 `TRIAGE_APP_CLIENT_ID`（App 设置页的 Client ID）和 secret `TRIAGE_APP_PRIVATE_KEY`（生成的私钥 `.pem` 的全部内容）。
 8. **dev 只能经 PR 时**（分支保护或 ruleset）：合回 dev 的推送会被拒，工作流改开一个 master → dev 的 PR 并开启 auto-merge。要在 Settings → Actions → General 勾选 **Allow GitHub Actions to create and approve pull requests**，在 Settings → General 勾选 **Allow auto-merge**；master → dev 的 PR 只能用 merge commit 合并。
 
 **部署失败时**，master 已经比线上新（合并在前、部署在后）：退出码 1 是确认没部署、线上已退回，往前修（新 PR）或 revert 那个 PR；退出码 3 是不知道结果，等那台连得上，在那次运行上点 **Re-run failed jobs**（线上那台是幂等的：做完了的认出来，没做完的接着做）。部署后面的步骤（tag、Release、issue、合回 dev）停了也是重跑。线上真正在跑的版本以线上目录的 `refs/hebi8/live` 和仓库的 Deployments 页（最后一次成功的部署）为准。
-
-工作流用 `GITHUB_TOKEN` 推送和合并的东西不会触发别的工作流，所以合回 dev 不会部署 dev 实例；dev 实例最好自己也定时跟着 dev 更新（本仓库的 `scripts/dev-instance/hebi8-dev.sh` 每 10 分钟 fetch 一次）。
 
 ## 环境变量
 

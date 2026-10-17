@@ -29,7 +29,7 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 ## 分支与发版
 
-- **`dev`**：日常开发和每日 issue 巡检的修复都经 PR 合进这里，不上线；合并后 Deploy 工作流把 [dev 实例](#dev-实例)更新到它。**进 dev 的 PR** 由巡检协调者在 Codex + Argon 两份审查都通过后自己合并（`gh pr merge <n> --merge --delete-branch`，用户的 gh 身份），用户也可以随时手动合。dev 在 GitHub 上合并，本地的 `dev` 分支会落后：要「基于 dev」或「和 dev 比」的地方一律先 `git fetch origin`，再用 `origin/dev`（脚本都这样做），不要 checkout 或更新本地的 `dev`。
+- **`dev`**：日常开发和每日 issue 巡检的修复都经 PR 合进这里，不上线；[dev 实例](#dev-实例)每分钟自己看一次 origin 的 dev，合并后最多约一分钟（加上构建的时间）就更新上去。**进 dev 的 PR** 由巡检协调者在 Codex + Argon 两份审查都通过后自己合并（`gh pr merge <n> --merge --delete-branch`，用户的 gh 身份），用户也可以随时手动合。dev 在 GitHub 上合并，本地的 `dev` 分支会落后：要「基于 dev」或「和 dev 比」的地方一律先 `git fetch origin`，再用 `origin/dev`（脚本都这样做），不要 checkout 或更新本地的 `dev`。
 - **`master`**：线上版本，只经两种 PR 进来：Release PR（`release/vX.Y.Z` → master）和热补丁 PR（`hotfix/vX.Y.Z` → master），**只由用户手动合并**（协调者和 agent 不合），**都用 Create a merge commit 合并**（squash / rebase 会让 master 不再是 dev 的祖先）。**合并就是批准**：推到 master 就触发 Deploy 工作流部署到线上，没有额外的审批。每次部署后工作流把 master 合回 dev，所以 master 永远是 dev 的祖先。GitHub 默认分支仍是 master，提交里的 `Fixes #n` 在合进 master 时关掉 issue。
 - **版本号**：semver 0.x。minor（`0.Y.0`）= 有新功能，或 vault / `hebi8.yaml` / 密钥目录 / MCP 工具有变化；patch（`0.y.Z`）= 只有修复，热补丁总是 patch。版本号只写在 `package.json`：设置页底部、`/usage`、MCP 的 `serverInfo.version` 和页头「更新」的小圆点都读它。小圆点只为 minor 版本亮，记在浏览器的 localStorage 里，第一次来不亮。
 - **tag 和 Release**：每个版本一个带注释的 tag `vX.Y.Z`，打在部署上线的那个提交上（PR 的合并提交），一个 GitHub Release，正文是 `CHANGELOG.md` 的那一节。由工作流在部署成功后做，身份是 github-actions。
@@ -38,16 +38,15 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 ### 部署工作流
 
-`.github/workflows/deploy.yml`，只在 push 到 master / dev 和手动运行（Actions 页的 Run workflow）时跑，**从不在 pull_request 上跑**。master 只部署到 `production`，dev 只部署到 `development`（工作流里判断，不只靠 Environment 的分支限定）；仓库设置里没有对应的 Environment 就跳过，所以 fork 里推送不报错，也不连任何人的机器。配置（Environment 的 variables / secrets、Tailscale、forced command）见 [self-hosting.md](self-hosting.md#用-github-actions-自动部署可选)。
+`.github/workflows/deploy.yml`，只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，**从不在 pull_request 上跑**，只部署到 `production`（工作流里判断分支，不只靠 Environment 的分支限定）；仓库设置里没有 `production` 这个 Environment 就跳过，所以 fork 里推送不报错，也不连任何人的机器。dev 不经工作流：没有任何东西从外面连进 memoh，[dev 实例](#dev-实例)自己拉。配置（Environment 的 variables / secrets、Tailscale、forced command）见 [self-hosting.md](self-hosting.md#用-github-actions-自动部署可选)。
 
 | 触发 | job | 做什么 |
 |---|---|---|
 | push 到 master（合并 Release / 热补丁 PR） | `production` | GitHub 托管的 runner 以 `tag:ci` 临时加入 tailnet → ssh 到 homeN100，部署 key 的 forced command 是 `scripts/deploy-gate.sh`：N100 自己 `git fetch origin master`，确认这个 commit 在 master 上，再用这个 commit 的 `deploy.sh live <commit>`（备份、快进、构建、重启、健康检查、失败回滚，见[正式环境](#正式环境)）→ 成功后：版本没有 tag 就打 tag、发 Release、处理 issue → 把 master 合回 dev |
-| push 到 dev（合并进 dev 的 PR） | `development` | 同样加入 tailnet → Tailscale SSH 到 memoh-codex（用户 `user`），跑 `/data/hebi8-dev/bin/hebi8-dev.sh deploy <commit>`；失败只标红，不挡任何东西 |
 
 - **版本从提交里读**：部署成功后读这个提交的 `package.json`。这个版本还没有 tag（或 tag 就在这个提交上：重跑）才打 tag、发 Release、处理 issue；已经在别的提交上（不是 Release / 热补丁 PR 的普通推送）就只部署。版本提交是 `chore(hotfix): vX.Y.Z` 的按热补丁处理（只认提交里的 `Fixes #n`，不碰 `status:next-release`），其余按发版。
-- **同时只部署一个**：production 的 `concurrency` 不取消正在跑的，后来的排队（GitHub 每组只留一个排队的，连续几次推送时中间的会被最新的那次替掉；最新的提交包含它们）；development 新的取消旧的。
-- **合回 dev**：先用 `GITHUB_TOKEN` 直接推 dev（能快进就快进，否则一个 `Merge master (vX.Y.Z) into dev` 合并提交）。dev 开了「只能经 PR」的保护、推送被拒时，自动开一个 master → dev 的 PR 并开启 auto-merge，GitHub 说不需要等就直接合并（merge commit）；两样都不允许时留一条警告，下次发版前自己用 merge commit 合掉（`release.sh` 会因为 master 不是 dev 的祖先拒绝开 Release PR）。合并有冲突时 job 标红：从 dev 开分支 `git merge origin/master`，解决后经 PR 合进 dev。`GITHUB_TOKEN` 的推送和它合并的 PR 不会触发别的工作流，所以合回 dev 不触发 development 部署，由 memoh 看门狗每 10 分钟的 fetch 兜底。改了 `.github/workflows/` 的热补丁，`GITHUB_TOKEN` 推不进 dev（它没有 workflows 权限），也走 PR。
+- **同时只部署一个**：production 的 `concurrency` 不取消正在跑的，后来的排队（GitHub 每组只留一个排队的，连续几次推送时中间的会被最新的那次替掉；最新的提交包含它们）。
+- **合回 dev**：先用 `GITHUB_TOKEN` 直接推 dev（能快进就快进，否则一个 `Merge master (vX.Y.Z) into dev` 合并提交）。dev 开了「只能经 PR」的保护、推送被拒时，自动开一个 master → dev 的 PR 并开启 auto-merge，GitHub 说不需要等就直接合并（merge commit）；两样都不允许时留一条警告，下次发版前自己用 merge commit 合掉（`release.sh` 会因为 master 不是 dev 的祖先拒绝开 Release PR）。合并有冲突时 job 标红：从 dev 开分支 `git merge origin/master`，解决后经 PR 合进 dev。合回 dev 之后 dev 实例照常在一分钟内自己拉到。改了 `.github/workflows/` 的热补丁，`GITHUB_TOKEN` 推不进 dev（它没有 workflows 权限），也走 PR。
 
 **部署失败时**（GitOps 的正常取舍）：master 已经合进去了，比线上新。
 
@@ -70,7 +69,7 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 - **审什么**：先 `git fetch origin`，审分支相对 `origin/dev` 的改动（热补丁相对 `origin/master`），按 blocking / suggestion 分级，结论原样交给协调者。
 - **怎么处理意见**：协调者把两份合在一起，筛掉只是「多加防御性检查」的意见；真问题修完后，由提出它的那个审查者复审，直到两边都没有 blocking。
 - **结论贴在 PR 上**：两份审查（最后一轮的结论，以及修过什么）作为 PR 评论贴上，用户的 gh 身份（`gh pr comment <n> --body-file …`）。
-- **谁合并**：进 dev 的 PR，两边都没有 blocking 后协调者 `gh pr merge <n> --merge --delete-branch`；用户也可以随时自己合。热补丁 PR 和 Release PR 进 master，只由用户手动合并。
+- **谁合并**：进 dev 的 PR，两边都没有 blocking 后协调者 `gh pr merge <n> --merge --delete-branch`；用户也可以随时自己合。合并后 dev 实例约一分钟内自己拉到（加上构建的几分钟），到没到看 memoh 上的 `logs/daemon.log`（见 [dev 实例](#dev-实例)）。热补丁 PR 和 Release PR 进 master，只由用户手动合并。
 
 ### 发版
 
@@ -187,17 +186,17 @@ exec 9>&-
 
 ## dev 实例
 
-平时的开发合进 `dev`，发版时才进 master 上线。在那之前想先用上新功能，就开 dev 实例：**http://100.107.245.93:8809/**（memoh-codex 的 Tailscale 地址，没有公网入口）。PR 合进 dev 后部署工作流立刻把它更新到 dev，每天用线上 owner 的 vault 覆盖一遍，所以看到的是自己的自选、警报和画线。
+平时的开发合进 `dev`，发版时才进 master 上线。在那之前想先用上新功能，就开 dev 实例：**http://100.107.245.93:8809/**（memoh-codex 的 Tailscale 地址，没有公网入口）。它每分钟自己看一次 origin 的 dev，PR 合进 dev 后最多约一分钟就开始构建、建好就换上；每天用线上 owner 的 vault 覆盖一遍，所以看到的是自己的自选、警报和画线。
 
 - **单用户模式**：yaml 里的 `owner` 去掉了，经 Tailscale 打开就能改，不用登录。改动第二天被覆盖，这是有意的：只单向从线上到 dev。
 - **不发通知**：密钥目录是它自己的、空的（`/data/hebi8-dev/secrets`），没有任何通道，警报照常判断但不发出，不会和线上重复推送。不要把线上的 `~/.config/hebi8/market` 拷过去。
 - **行情自己同步**：按 yaml 里的 `sync.at` 自己拉 K 线、每 5 分钟取报价，走的是 memoh 的出口 IP，不占线上的配额。
 
-脚本在 `scripts/dev-instance/`，memoh 上用的是装进 `/data/hebi8-dev/bin/` 的那份。memoh 没有 systemd 和 cron，`hebi8-dev.sh daemon` 自己当看门狗：每 15 秒看一眼应用，没在跑就拉起来；每 10 分钟 fetch 一次；到了每天的同步时间就同步。开机时 memoh 的自启项（`~/.config/autostart` → `/data/services/start.sh`）最后一步调 `hebi8-dev.sh start`。
+脚本在 `scripts/dev-instance/`，memoh 上用的是装进 `/data/hebi8-dev/bin/` 的那份。memoh 没有 systemd 和 cron，`hebi8-dev.sh daemon` 自己当看门狗：每 15 秒看一眼应用，没在跑就拉起来；每分钟（`UPDATE_EVERY`）问一次 origin 分支在哪；到了每天的同步时间就同步。只有 memoh 往外连（GitHub、homeN100），没有任何部署从外面连进来。开机时 memoh 的自启项（`~/.config/autostart` → `/data/services/start.sh`）最后一步调 `hebi8-dev.sh start`。
 
 | 路径（`/data/hebi8-dev/`） | 是什么 |
 |---|---|
-| `config.env` | 跟踪的分支 `BRANCH`，以及 `HOST`、`PORT`、`SYNC_AT` / `SYNC_TZ`（默认 04:30 Asia/Tokyo，避开线上 07:30 / 17:30 的同步）、`UPDATE_EVERY`；缺省值在脚本开头 |
+| `config.env` | 跟踪的分支 `BRANCH`，以及 `HOST`、`PORT`、`SYNC_AT` / `SYNC_TZ`（默认 04:30 Asia/Tokyo，避开线上 07:30 / 17:30 的同步）、`UPDATE_EVERY`（默认 60 秒）；缺省值在脚本开头 |
 | `repo/` | 仓库的 clone；每个版本是它的一个 worktree |
 | `releases/<commit>/`、`current` | 构建好的版本，`current` 指向正在跑的那个；保留最近 3 个 |
 | `vault/`、`data/hebi8.db`、`datasets/` | 每天从线上换进来的 vault、缓存快照和本机数据集 |
@@ -205,9 +204,9 @@ exec 9>&-
 | `logs/app.log`、`logs/build-<commit>.log` | `next start` 的输出（`[hebi8m]` 调度日志也在这里）；每次构建的输出 |
 | `state/failed` | 构建失败或起不来的 commit，分支动了之前不再重试 |
 
-**部署工作流**：push 到 dev 后，development job 以 `tag:ci` 加入 tailnet，经 **Tailscale SSH**（memoh 没有 sshd；memoh 打着 `tag:hebi8-dev`，tailnet 策略只允许 `tag:ci` 以用户 `user` 登录它）跑 `/data/hebi8-dev/bin/hebi8-dev.sh deploy <commit>`：拿着和看门狗同一把锁立刻 fetch 并更新（`state/failed` 里的也重试），正在跑的版本包含这个 commit 才算成功；跟踪的分支（`config.env` 的 `BRANCH`）不包含它就什么都不做、算成功。失败只让那次运行标红。memoh 掉线、或者是 `GITHUB_TOKEN` 的推送（合回 dev）不触发工作流时，看门狗每 10 分钟的 fetch 照样会更新上去。
+**自动更新**：看门狗每分钟用 `git ls-remote origin refs/heads/<分支>` 看分支指向哪个 commit（只问一句，不下载对象）。和正在跑的一样、或者是 `state/failed` 里那个，就什么都不做；不一样才 fetch 并在 `releases/<新 commit>/` 里另建一份：`package-lock.json` 和正在跑的版本一样就硬链接它的 `node_modules`，否则 `npm ci`（better-sqlite3 要现场编译，缺编译器时自动 `apt-get install build-essential`）；`npm run build` 的时候旧版本照常服务。构建成功才停旧的、起新的，60 秒内首页不返回 200 就切回旧的。构建或启动失败都记进 `state/failed`，旧版本一直在跑。不推送，不备份。看门狗一次只做一件事：构建要几分钟，这期间又合进来的几个提交，等这一轮建完下一次看时一起看到，只建最新的那一个。memoh 掉线期间什么都不做，回来后第一次看就跟上。
 
-**自动更新**：分支动了，就在 `releases/<新 commit>/` 里另建一份：`package-lock.json` 和正在跑的版本一样就硬链接它的 `node_modules`，否则 `npm ci`（better-sqlite3 要现场编译，缺编译器时自动 `apt-get install build-essential`）；`npm run build` 的时候旧版本照常服务。构建成功才停旧的、起新的，60 秒内首页不返回 200 就切回旧的。构建或启动失败都记进 `state/failed`，旧版本一直在跑。不推送，不备份。
+**合并之后看它到了没有**：在 memoh 上 `tail -f /data/hebi8-dev/logs/daemon.log`（`update dev: <旧> -> <新>`、`running <新>`，或者 `build of <新> failed` / `did not answer 200`），或者 `hebi8-dev.sh status`（`running` 是正在跑的 commit，`checked` 是上次看分支的时间）；从 devNuc：`lody-lan lan shell memoh-codex -- 'tail -n 20 /data/hebi8-dev/logs/daemon.log'`。
 
 **每天同步**：由 memoh 拉，经 `lody-lan lan shell homeN100` 在线上目录里用线上服务的 Node（`~/.local/share/hebi8/node`）跑 `export.mjs`（只读），带回三样，换进去后重启：
 
@@ -224,8 +223,7 @@ H=/data/hebi8-dev/bin/hebi8-dev.sh
 $H status                       # 地址、分支、正在跑的 commit、上次检查和同步
 tail -f /data/hebi8-dev/logs/daemon.log
 $H branch dev                   # 改跟踪的分支（写进 config.env）并立刻更新；也可以填某个 commit
-$H update [--force]             # 立刻 fetch；--force 连 state/failed 里的也重试
-$H deploy <commit>              # 部署工作流用的：立刻更新（同 --force），跑着的版本包含这个 commit 才返回 0
+$H update [--force]             # 不等下一分钟，立刻 fetch 并更新；--force 连 state/failed 里的也重试
 $H sync                         # 立刻从线上同步一次
 $H restart                      # 只重启应用
 $H stop | start                 # 停 / 起看门狗和应用；stop 之后到下次开机或 start 之前都不会自己起来
