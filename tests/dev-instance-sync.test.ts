@@ -41,8 +41,9 @@ function links(dir: string): string[] {
   return readdirSync(dir, { recursive: true, encoding: "utf8" }).filter((p) => lstatSync(path.join(dir, p)).isSymbolicLink());
 }
 
-// A live checkout: the vault (or, with vaultIsLink, a link to it) holds a link to its own yaml and one to a
-// directory outside it, plus someone else's vault under users/.
+// A live checkout whose vault (or, with vaultIsLink, the real directory a `vault` link points to) has links: to
+// its own yaml, to a secrets directory outside it, to its own users/ (someone else's vault); and a dataset with a
+// plain CSV, a CSV that is a link into the secrets and one under a linked directory.
 function live(dir: string, vaultIsLink = false): string {
   mkdirSync(path.join(dir, "data"), { recursive: true });
   copyFileSync("package.json", path.join(dir, "package.json"));
@@ -51,18 +52,34 @@ function live(dir: string, vaultIsLink = false): string {
   sh(dir, "git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init");
   const vault = path.join(dir, vaultIsLink ? "realvault" : "vault");
   if (vaultIsLink) symlinkSync("realvault", path.join(dir, "vault"));
-  for (const d of ["notes", "charts", "users/someone"]) mkdirSync(path.join(vault, d), { recursive: true });
-  mkdirSync(path.join(dir, "elsewhere"));
-  writeFileSync(path.join(vault, "hebi8.yaml"), 'owner: someone\nsync:\n  at: [ "07:30", "17:30" ]\n  tz: Asia/Tokyo\n');
+  for (const d of ["notes", "charts", "users/someone", "../secrets", "../ds"]) mkdirSync(path.join(vault, d), { recursive: true });
+  const secrets = path.join(dir, "secrets");
+  const ds = path.join(dir, "ds");
+  writeFileSync(path.join(secrets, "notify.json"), '{"token":"SECRET-TOKEN"}\n');
+  writeFileSync(path.join(secrets, "c.csv"), "SECRET-CSV\n");
+  writeFileSync(path.join(vault, "users/someone/hebi8.yaml"), "THEIRS: true\n");
+  writeFileSync(path.join(vault, "hebi8.yaml"), `owner: someone\nsync:\n  at: [ "07:30", "17:30" ]\n  tz: Asia/Tokyo\ndatasets:\n  ds: ${ds}\n`);
   writeFileSync(path.join(vault, "notes/a.md"), "note\n");
   symlinkSync("../hebi8.yaml", path.join(vault, "notes/link.md"));
-  writeFileSync(path.join(dir, "elsewhere/c.json"), "{}\n");
-  symlinkSync(path.join(dir, "elsewhere"), path.join(vault, "charts/linked"));
-  writeFileSync(path.join(vault, "users/someone/hebi8.yaml"), "theirs: true\n");
+  symlinkSync(secrets, path.join(vault, "charts/outside"));
+  symlinkSync("../users", path.join(vault, "charts/others"));
+  writeFileSync(path.join(ds, "hebi8-dataset.yaml"), "series:\n  - id: a\n  - id: b\n  - id: c\n    file: sub/c.csv\n");
+  writeFileSync(path.join(ds, "a.csv"), "date,close\n2026-01-01,1\n");
+  symlinkSync(path.join(secrets, "notify.json"), path.join(ds, "b.csv"));
+  symlinkSync(secrets, path.join(ds, "sub"));
   const db = new Database(path.join(dir, "data/hebi8.db"));
   db.exec("CREATE TABLE stats (vault TEXT, k TEXT); INSERT INTO stats VALUES ('', 'a'), ('x', 'b')");
   db.close();
   return dir;
+}
+
+// Everything the dev root got, as text.
+function devText(dev: string): string {
+  return ["vault", "datasets"]
+    .flatMap((d) => readdirSync(path.join(dev, d), { recursive: true, encoding: "utf8" }).map((p) => path.join(dev, d, p)))
+    .filter((p) => lstatSync(p).isFile())
+    .map((p) => readFileSync(p, "utf8"))
+    .join("\n");
 }
 
 // A dev root whose `current` is this checkout (prepare-vault takes `yaml` from it); config lines are added as given.
@@ -99,7 +116,7 @@ afterAll(() => {
 
 describe("hebi8-dev.sh sync", () => {
   for (const vaultIsLink of [false, true]) {
-    it(`leaves the live data as it was and copies links as files${vaultIsLink ? " (the vault itself a link)" : ""}`, () => {
+    it(`leaves links out and the live data as it was${vaultIsLink ? " (the vault itself a link)" : ""}`, () => {
       const L = live(path.join(root, `live-${vaultIsLink}`), vaultIsLink);
       const D = devRoot(path.join(root, `dev-${vaultIsLink}`), `LIVE_DIR=${q(L)}\nLIVE_NODE=${q(process.execPath)}`);
       const before = fingerprint(L);
@@ -111,9 +128,14 @@ describe("hebi8-dev.sh sync", () => {
       const yaml = readFileSync(path.join(D, "vault/hebi8.yaml"), "utf8");
       expect(yaml).not.toMatch(/^owner:/m);
       expect(yaml).toContain('at: [ "08:00" ]');
-      expect(readFileSync(path.join(D, "vault/notes/link.md"), "utf8")).toContain("owner: someone");
-      expect(existsSync(path.join(D, "vault/charts/linked/c.json"))).toBe(true);
+      expect(readFileSync(path.join(D, "vault/notes/a.md"), "utf8")).toBe("note\n");
+      for (const skipped of ["vault/notes/link.md", "vault/charts/outside", "vault/charts/others", "datasets/ds/b.csv", "datasets/ds/sub/c.csv"]) {
+        expect(r.log).toContain(`sync: skipped symbolic link ${skipped}`);
+        expect(existsSync(path.join(D, skipped))).toBe(false);
+      }
       expect(existsSync(path.join(D, "vault/users"))).toBe(false);
+      expect(readdirSync(path.join(D, "datasets/ds")).sort()).toEqual(["a.csv", "hebi8-dataset.yaml"]);
+      expect(devText(D)).not.toMatch(/SECRET|THEIRS/);
       const db = new Database(path.join(D, "data/hebi8.db"), { readonly: true });
       expect(db.prepare("SELECT vault, k FROM stats").all()).toEqual([{ vault: "", k: "a" }]);
       db.close();

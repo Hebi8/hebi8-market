@@ -173,7 +173,8 @@ do_sync() {
     rm -rf "$tmp"
     return 1
   fi
-  # export.mjs copies what links point to; a link here would lead prepare-vault and the app into the live data
+  tr -d '\r' < "$tmp/err" | sed -n 's/^export\.mjs: \(skipped .*\)/sync: \1/p' >&2
+  # export.mjs leaves links out; one here would lead prepare-vault and the app into the live data
   links=$(find "$tmp/new" -type l | head -3)
   if [[ -n $links ]]; then
     log "sync: the export has symbolic links, nothing changed: $(echo "$links" | sed "s|^$tmp/new/||" | tr '\n' ' ')"

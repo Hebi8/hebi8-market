@@ -220,7 +220,7 @@ exec 9>&-
 
 **自动更新**：timer 每分钟用 `git ls-remote origin refs/heads/<分支>` 看分支指向哪个 commit（只问一句，不下载对象）。和正在跑的一样、或者是 `state/failed` 里那个，就什么都不做；不一样才 fetch 并在 `releases/<新 commit>/` 里另建一份：`package-lock.json` 和正在跑的版本一样就硬链接它的 `node_modules`，否则 `npm ci`；`npm run build` 的时候旧版本照常服务。构建成功才切换、重启 `hebi8-dev`，60 秒内首页不返回 200 就切回旧的。构建或启动失败都记进 `state/failed`，旧版本一直在跑。不推送，不备份。构建要几分钟，这期间 poll 服务一直在跑，timer 不会再起一个；这期间又合进来的几个提交，下一次看时一起看到，只建最新的那一个。同步和更新拿同一把锁，不会同时重启应用。
 
-**每天同步**：在线上目录里用 `LIVE_NODE`（本机时默认就是 `NODE_BIN` 里的 node）跑 `export.mjs`（只读），带回三样，换进去后重启。符号链接一律复制成它指向的文件（同一台机器上，留着链接就等于 dev 直接读写线上的文件）；带回来的东西里只要还有一个符号链接，就整个停下、什么都不换：
+**每天同步**：在线上目录里用 `LIVE_NODE`（本机时默认就是 `NODE_BIN` 里的 node）跑 `export.mjs`（只读），带回三样，换进去后重启。只复制普通文件和目录：vault 和数据集目录里的**符号链接一律跳过**，不管它指向哪里（同一台机器上，留着链接就等于 dev 直接读写线上的文件，跟着链接复制又会把 vault 外的东西、`users/` 带过来），跳过的在同步日志里列成 `sync: skipped symbolic link <路径>`；vault 目录本身、数据集目录本身是链接的照常按它的真实位置复制。带回来的东西里要是还有符号链接，就整个停下、什么都不换：
 
 - 根 vault（owner 的）：`hebi8.yaml`、`notes/`、`journal/`、`charts/`。**`users/` 不带**，别人的 vault 不离开线上。换进来前由 `prepare-vault.mjs` 去掉 `owner`、把 `sync.at` 换成 `APP_SYNC_AT`、把本机数据集改指 `datasets/<名字>`。
 - 数据库快照（`db.backup()`），省得冷启动全量拉：`stats`、`alert_state` 只留根 vault（`vault = ''`）的行，`traffic`、`visitors`、`upstream`、`usage_alerts` 清空；K 线、标的、报价、标的资料原样。
