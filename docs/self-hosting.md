@@ -27,7 +27,7 @@ npm run dev        # http://localhost:3000
 
 ### 用 GitHub Actions 自动部署（可选）
 
-`.github/workflows/deploy.yml`：push 到 `master`（合并 PR）部署到 GitHub Environment `production`。只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，从不在 pull_request 上跑。**仓库设置里没有 `production` 这个 Environment 就直接跳过**，所以不配置就什么都不发生，fork 里推送也不会连任何机器。合并就是批准，Environment 不需要审批人。想再跑一个跟着 `dev` 的实例先试新功能，不用工作流：照 `scripts/dev-instance/hebi8-dev.sh` 那样让它自己每分钟看一次分支（`git ls-remote`），动了才拉取、构建、切换。
+`.github/workflows/deploy.yml`：push 到 `master`（合并 PR）部署到 GitHub Environment `production`。只在 push 到 master 和对 master 手动运行（Actions 页的 Run workflow）时跑，从不在 pull_request 上跑。**仓库设置里没有 `production` 这个 Environment 就直接跳过**，所以不配置就什么都不发生，fork 里推送也不会连任何机器。合并就是批准，Environment 不需要审批人。想再跑一个跟着 `dev` 的实例先试新功能，不用工作流：照 `scripts/dev-instance/hebi8-dev.sh` 那样让它自己每分钟看一次分支（systemd 用户 timer 跑 `git ls-remote`），动了才拉取、构建、切换；它可以和线上在同一台机器上，单独的目录、数据库和空的密钥目录，优先级调低。
 
 production 做的事：ssh 到线上那台跑 `deploy.sh live <commit>`（同上：备份、构建、重启、检查、回滚），成功后，这个提交的 `package.json` 版本还没有 tag 的话，打带注释的 tag `v<版本>`、用 `CHANGELOG.md` 那一节发 GitHub Release、给修好的 issue 评论并关掉（从上一个 tag 到这个提交、提交信息里写着 `Fixes #n` 一类的；带 `status:next-release` 标签但修复不在这次发布里的不动），最后把 master 合回 dev。合回之前 master 不是 dev 的祖先；部署失败时不会合回，下次发版前先 `scripts/hotfix.sh merge-back`。
 
