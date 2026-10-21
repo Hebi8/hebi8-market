@@ -350,7 +350,8 @@ describe("a session beginning between two polls", () => {
     expect(between("2026-10-21T13:30", "2026-10-21T14:03", NASDAQ)).toBe(false);
     expect(between("2026-10-21T08:00", "2026-10-21T09:00", NASDAQ)).toBe(false);
     // Thanksgiving and a Saturday have no open
-    expect(between("2026-11-26T13:08", "2026-11-26T14:03", NASDAQ)).toBe(false);
+    expect(between("2026-11-26T14:08", "2026-11-26T15:03", NASDAQ)).toBe(false);
+    expect(between("2026-11-25T14:08", "2026-11-25T15:03", NASDAQ)).toBe(true);
     expect(between("2026-10-24T13:08", "2026-10-24T14:03", NASDAQ)).toBe(false);
   });
 
@@ -366,6 +367,14 @@ describe("a session beginning between two polls", () => {
     // Sunday 17:00 in Chicago (22:00 UTC) opens Monday's session
     expect(between("2026-10-25T21:30", "2026-10-25T22:05", ES)).toBe(true);
     expect(between("2026-10-24T21:30", "2026-10-24T22:05", ES)).toBe(false);
+  });
+
+  it("opens `0000-0000` at its own midnight, not the evening before", () => {
+    const allDay = { ...plain("0000-0000", "UTC"), corrections: "dayoff:20261022" };
+    // closed on Thursday, Friday opens at midnight
+    expect(between("2026-10-22T23:48", "2026-10-23T00:03", allDay)).toBe(true);
+    // Sunday midnight opens nothing
+    expect(between("2026-10-24T23:48", "2026-10-25T00:03", allDay)).toBe(false);
   });
 
   it("knows nothing without hours, and nothing begins around the clock", () => {

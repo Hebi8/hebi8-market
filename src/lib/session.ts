@@ -200,7 +200,8 @@ export function sessionStartsBetween(from: number, to: number, calendar: Trading
     for (const session of sessionsOn(calendar, day)?.split(/[,SU]/) ?? []) {
       const m = /^(\d{2})(\d{2})(F\d*)?-(\d{4})/.exec(session);
       if (!m) continue;
-      const back = m[3] !== undefined ? Number(m[3].slice(1) || 1) : m[1] + m[2] >= m[4] ? 1 : 0;
+      // a start not before the end is the evening before, except `0000-0000`: the whole day from its midnight
+      const back = m[3] !== undefined ? Number(m[3].slice(1) || 1) : m[1] + m[2] >= m[4] && m[1] + m[2] !== "0000" ? 1 : 0;
       const start = zonedToUtc({ ...dayOf(day, -back), hh: Number(m[1]), mm: Number(m[2]) }, timezone);
       if (start > from && start <= to) return true;
     }
