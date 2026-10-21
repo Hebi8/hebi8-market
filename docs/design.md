@@ -477,7 +477,7 @@ date,open,high,low,close,volume
 **节奏**（`src/lib/quotes.ts` 的轮询器，和调度器一样从 `instrumentation` 启动、`globalThis` 防重复）：每 5 分钟醒一次，每个标的按上一次拿到的 `session` 决定这次要不要取：
 
 - `always`（加密）和 `open`（交易所在常规交易时段）：每 5 分钟。
-- `pre` / `post` / `closed`：每小时。
+- `pre` / `post` / `closed`：每小时；但上次取过之后它的交易日历里有时段开始了（盘前之后的开盘、午休结束、跨夜时段的晚上开盘，`sessionStartsBetween()`；集合竞价不算），开盘后的第一轮就取，不等满一小时。交易时段不知道的只能等满一小时。
 - 新加进来的标的立刻取一次。连续 3 轮没有任何回应的源退避到每小时，日志里记一次，不刷屏。
 - 同一个源的标的一次批量请求：Yahoo 用 `quote()`（开盘 `regularMarketOpen`、成交量 `regularMarketVolume`），Binance 用 `/api/v3/ticker/tradingDay?symbols=…`（UTC 自然日的开高低量，和它的日线一致；滚动 24 小时的 `ticker/24hr` 不能当日线用），TradingView 用库的 quote 会话（`open_price`、`volume`；一轮开一个客户端，取完就关）。源报不出时段（盘中 / 休市）时适配器不填，由轮询器按这个标的的交易日历填：所属交易日是交易日算 `open`，周末和假日算 `closed`（`scheduledSession()`）。交易日按交易所当地时钟定：跨夜时段（`1700-1600`）从前一晚开盘起就算第二天的，到当天收盘为止，所以周日晚上算周一、假日当晚算下一个交易日、周五收盘后的晚上不算谁的（`closed`）；白天的时段整个当地自然日都算（和以前一样只到天，不到小时）；`24x7` 每天都是交易日；连交易时段都不知道的，工作日算 `open`。成交量为 0（外汇、CFD）或 TradingView 的 1e100（收益率）按没有记。
 - **交易时段**（`symbols.hours`）在日线同步时存：Yahoo 取 chart meta 的 `currentTradingPeriod.regular` 换成交易所当地的 `HHMM-HHMM`，TradingView 取 symbol info 的 `session`（`0930-1600`、跨夜的 `1700-1600`、`24x7`），Binance 固定 `24x7`。
@@ -486,7 +486,7 @@ date,open,high,low,close,volume
   - **Yahoo 的标的**没有假日表（chart meta 只有当天的时段），按 Yahoo 的交易所代码借 TradingView 上同一交易所一个代表标的的日历（`src/lib/sources/calendar.ts` 的 `EXCHANGE_SYMBOL`：美股各板块和指数 → `NASDAQ:AAPL`，`HKG` → `HKEX:700`，`SHH` / `SHZ` → `SSE:600519` / `SZSE:000001`，`JPX` / `OSA` → `TSE:7203`，另有伦敦、法兰克福、巴黎、多伦多、悉尼、首尔、台北、印度、新加坡）。每个交易所一次请求（symbol info 一到就结束；库的 `setMarket` 会顺带要 K 线，所以请求里带一根日线，不等它），进程里缓存 6 小时，计入 `upstream` 的 tv。外汇、加密、期货（`CCY` / `CCC` / `CME`）和表里没有的交易所没有日历。
   - **取不到时**（这台机器连不上 TradingView，或那次请求失败）不报错：这次同步不写这两列，原来存的留着；从来没有的就是不知道假日，每个工作日都当完整交易日，和接日历之前一样。
   - **覆盖范围**取决于 TradingView：美股系（股票、指数、TVC 的贵金属 / 原油 / 美债 / 美元指数、CME 期货）到明年年底，港股、日本、欧洲多数到今年年底，A 股到已经公布的假期；每天同步都重读，新一年的表 TradingView 有了就有。外汇只有圣诞节。港股的半日市（平安夜、除夕、农历除夕）TradingView 没有，按全天算。
-  - **读法**（`sessionsOn()`）：某一天先看 `corrections` 有没有这一天（有就用它的时段，`dayoff` 是休市；它压过假日表：CME 期货在多数假日照常或缩短交易，就是这么表示的），再看是不是 `holidays`，最后按星期取 `hours` 里的时段；周末没有点名就不交易。用在四处：倒计时（§5.2）、「日线收盘」警报的已收盘判断（§2.5）、源不报时段时的兜底（上一条）、报价归到哪个交易日（本节开头）。轮询节奏不看日历，照旧跟着数据源报的时段走。
+  - **读法**（`sessionsOn()`）：某一天先看 `corrections` 有没有这一天（有就用它的时段，`dayoff` 是休市；它压过假日表：CME 期货在多数假日照常或缩短交易，就是这么表示的），再看是不是 `holidays`，最后按星期取 `hours` 里的时段；周末没有点名就不交易。用在四处：倒计时（§5.2）、「日线收盘」警报的已收盘判断（§2.5）、源不报时段时的兜底（上一条）、报价归到哪个交易日（本节开头）。轮询节奏跟着数据源报的时段走，只有一处看日历：盘前、盘后、休市的标的上次取过之后到了某个时段的开始，下一轮就取（`sessionStartsBetween()`，见下面「节奏」）。
 
 **适配器接口**加一个可选方法：
 

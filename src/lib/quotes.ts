@@ -11,7 +11,7 @@ import { runAlerts } from "./alerts";
 import { loadDaily } from "./bars";
 import { allItems, findItem, isLive, type Config } from "./config";
 import type { Bar } from "./series";
-import { QUOTE_ROUND_MS, QUOTE_SLOW_MS, quoteIsCurrent, scheduledSession, tradingDayAt, type TradingCalendar } from "./session";
+import { QUOTE_ROUND_MS, QUOTE_SLOW_MS, quoteIsCurrent, scheduledSession, sessionStartsBetween, tradingDayAt, type TradingCalendar } from "./session";
 import { adapters } from "./sources";
 import type { Quote, QuoteSession } from "./sources/types";
 import { computeStats, type Stats } from "./stats";
@@ -102,12 +102,17 @@ export function quoteKeys(configs: Config[]): string[] {
   return [...keys];
 }
 
-/** Which keys a round fetches: never asked → now; open or always → every round; otherwise hourly. */
-export function dueKeys(keys: string[], seen: State["seen"], now: number): string[] {
+/**
+ * Which keys a round fetches: never asked → now; open or always → every round; otherwise hourly,
+ * and as soon as one of the symbol's sessions has begun since it was last asked (the open after
+ * the pre-market, the end of a lunch break).
+ */
+export function dueKeys(keys: string[], seen: State["seen"], now: number, calendarOf: (key: string) => TradingCalendar): string[] {
   return keys.filter((key) => {
     const last = seen.get(key);
     if (!last) return true;
-    return now - last.at >= (FAST.includes(last.session) ? ROUND_MS : SLOW_MS) - SLACK_MS;
+    if (now - last.at >= (FAST.includes(last.session) ? ROUND_MS : SLOW_MS) - SLACK_MS) return true;
+    return !FAST.includes(last.session) && sessionStartsBetween(last.at, now, calendarOf(key));
   });
 }
 
@@ -218,7 +223,8 @@ export async function quoteRound(now = Date.now(), vaults: VaultConfig[] = loadV
     // after a restart the table says what was asked when, so nothing is fetched twice at once
     for (const q of Object.values(readQuotes())) state.seen.set(q.key, { at: q.fetchedAt, session: q.session });
   }
-  const due = dueKeys(quoteKeys(vaults.map((v) => v.config)), state.seen, now);
+  const symbols = listSymbols();
+  const due = dueKeys(quoteKeys(vaults.map((v) => v.config)), state.seen, now, (key) => calendarOfRow(symbols[key]));
   const bySource = new Map<Source, string[]>();
   for (const key of due) {
     const source = parseKey(key).source;
