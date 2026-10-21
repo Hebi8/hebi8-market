@@ -477,7 +477,7 @@ date,open,high,low,close,volume
 **节奏**（`src/lib/quotes.ts` 的轮询器，和调度器一样从 `instrumentation` 启动、`globalThis` 防重复）：每 5 分钟醒一次，每个标的按上一次拿到的 `session` 决定这次要不要取：
 
 - `always`（加密）和 `open`（交易所在常规交易时段）：每 5 分钟。
-- `pre` / `post` / `closed`：每小时。
+- `pre` / `post` / `closed`：每小时；但上次取过之后它的交易日历里有时段开始了（盘前之后的开盘、午休结束、跨夜时段的晚上开盘，`sessionStartsBetween()`；集合竞价不算），这一轮就取，不等满一小时。交易时段不知道的只能等满一小时。
 - 新加进来的标的立刻取一次。连续 3 轮没有任何回应的源退避到每小时，日志里记一次，不刷屏。
 - 同一个源的标的一次批量请求：Yahoo 用 `quote()`（开盘 `regularMarketOpen`、成交量 `regularMarketVolume`），Binance 用 `/api/v3/ticker/tradingDay?symbols=…`（UTC 自然日的开高低量，和它的日线一致；滚动 24 小时的 `ticker/24hr` 不能当日线用），TradingView 用库的 quote 会话（`open_price`、`volume`；一轮开一个客户端，取完就关）。源报不出时段（盘中 / 休市）时适配器不填，由轮询器按这个标的的交易日历填：所属交易日是交易日算 `open`，周末和假日算 `closed`（`scheduledSession()`）。交易日按交易所当地时钟定：跨夜时段（`1700-1600`）从前一晚开盘起就算第二天的，到当天收盘为止，所以周日晚上算周一、假日当晚算下一个交易日、周五收盘后的晚上不算谁的（`closed`）；白天的时段整个当地自然日都算（和以前一样只到天，不到小时）；`24x7` 每天都是交易日；连交易时段都不知道的，工作日算 `open`。成交量为 0（外汇、CFD）或 TradingView 的 1e100（收益率）按没有记。
 - **交易时段**（`symbols.hours`）在日线同步时存：Yahoo 取 chart meta 的 `currentTradingPeriod.regular` 换成交易所当地的 `HHMM-HHMM`，TradingView 取 symbol info 的 `session`（`0930-1600`、跨夜的 `1700-1600`、`24x7`），Binance 固定 `24x7`。

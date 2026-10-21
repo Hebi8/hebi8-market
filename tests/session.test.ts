@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { barCloseAt, closeOn, weekendTrading, dayCloseAt, fmtCountdown, quoteIsCurrent, scheduledSession, sessionsOn, tradingDayAt, type SessionClock, type TradingCalendar } from "@/lib/session";
+import { barCloseAt, closeOn, weekendTrading, dayCloseAt, fmtCountdown, quoteIsCurrent, scheduledSession, sessionStartsBetween, sessionsOn, tradingDayAt, type SessionClock, type TradingCalendar } from "@/lib/session";
 
 const utc = (s: string) => Date.parse(`${s}Z`);
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString().slice(0, 16));
@@ -338,5 +338,38 @@ describe("the countdown to the bar's close", () => {
     expect(fmtCountdown((12 * 60 + 9) * 1000)).toBe("12:09");
     expect(fmtCountdown((5 * 3600 + 12 * 60 + 9) * 1000 + 999)).toBe("05:12:09");
     expect(fmtCountdown((2 * 86400 + 5 * 3600 + 59 * 60) * 1000)).toBe("2d 5h");
+  });
+});
+
+describe("a session beginning between two polls", () => {
+  const between = (from: string, to: string, calendar: TradingCalendar) => sessionStartsBetween(utc(from), utc(to), calendar);
+
+  it("sees the open after the pre-market, once", () => {
+    // 09:30 in New York is 13:30 UTC in October
+    expect(between("2026-10-21T13:08", "2026-10-21T14:03", NASDAQ)).toBe(true);
+    expect(between("2026-10-21T13:30", "2026-10-21T14:03", NASDAQ)).toBe(false);
+    expect(between("2026-10-21T08:00", "2026-10-21T09:00", NASDAQ)).toBe(false);
+    // Thanksgiving and a Saturday have no open
+    expect(between("2026-11-26T13:08", "2026-11-26T14:03", NASDAQ)).toBe(false);
+    expect(between("2026-10-24T13:08", "2026-10-24T14:03", NASDAQ)).toBe(false);
+  });
+
+  it("sees the end of a lunch break, not the auction before the open", () => {
+    // 12:30 → 13:05 in Hong Kong
+    expect(between("2026-10-21T04:30", "2026-10-21T05:05", HKEX)).toBe(true);
+    // 09:00 → 09:25: only the pre-opening auction has begun
+    expect(between("2026-10-21T01:00", "2026-10-21T01:25", HKEX)).toBe(false);
+    expect(between("2026-10-21T01:25", "2026-10-21T01:31", HKEX)).toBe(true);
+  });
+
+  it("sees a session that begins the evening before its day", () => {
+    // Sunday 17:00 in Chicago (22:00 UTC) opens Monday's session
+    expect(between("2026-10-25T21:30", "2026-10-25T22:05", ES)).toBe(true);
+    expect(between("2026-10-24T21:30", "2026-10-24T22:05", ES)).toBe(false);
+  });
+
+  it("knows nothing without hours, and nothing begins around the clock", () => {
+    expect(between("2026-10-21T13:08", "2026-10-21T14:03", plain(null, "America/New_York"))).toBe(false);
+    expect(between("2026-10-21T23:30", "2026-10-22T00:30", plain("24x7", "UTC"))).toBe(false);
   });
 });
