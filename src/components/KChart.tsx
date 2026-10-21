@@ -34,13 +34,14 @@ import type { CompareEntry, OverlaySpec } from "@/lib/vault";
 import { ChartLegend, createLegendStore, type ChartLegendProps } from "./ChartLegend";
 import { indicatorLines, styleRows } from "./indicator-style";
 import { IconAlarm } from "./chart-icons";
+import { timeAxisBarSpace } from "./chart-gestures";
 import { registerDrawingTemplates, setOverlayChart, setOverlayTheme, snapToBar, textOf, textSizeOf } from "./chart-overlays";
 import { LOG_AXIS } from "./log-axis";
 import { extensionOf, historyOf, record, redo, TREND_LINES, undo, withExtension, type History } from "./drawing-edit";
 import { drawingOf, specOf, type DrawingFlags } from "./drawing-spec";
 import { dashOf, drawingStyles, lineOf, withAlpha } from "./drawing-style";
 import { FIB_DRAWINGS, fibSettingsOf } from "./fib";
-import { COMPARE_COLORS, MEASURE_TOOL, MONO, OPEN_DRAWINGS, SANS, SCALED_DRAWINGS, TEXT_DRAWINGS, type ChartControl, type IndicatorLine, type IndicatorSpec, type LegendValue } from "./chart-types";
+import { COMPARE_COLORS, DRAW_DONE, MEASURE_TOOL, MONO, OPEN_DRAWINGS, SANS, SCALED_DRAWINGS, TEXT_DRAWINGS, type ChartControl, type IndicatorLine, type IndicatorSpec, type LegendValue } from "./chart-types";
 import { DrawingSettings, DrawingToolbar, TextEditor, type DrawingChange, type DrawingInfo } from "./DrawingToolbar";
 
 export interface DrawingModes {
@@ -103,8 +104,6 @@ const MEASURE_GROUP = "measure";
 const isDrawing = (o: Overlay) => o.groupId !== ALERT_GROUP && o.groupId !== MEASURE_GROUP;
 /** Drawings whose floating toolbar offers 添加警报 (the line's price is copied). */
 const PRICE_LINES = new Set(["horizontalStraightLine", "horizontalRayLine", "crossLine"]);
-/** KLineChart's `currentStep` once a drawing is finished. */
-const DRAW_DONE = -1;
 
 /** The y-axis object behind `getYAxes`; KLineChart keeps these methods off its public type. */
 interface AxisImpl {
@@ -116,17 +115,14 @@ interface AxisImpl {
   setAutoCalcTickFlag: (flag: boolean) => void;
 }
 
-/** The drawing being dragged, as KLineChart's store (`chart.getChartStore()`, off its public type) holds it. */
-interface PressedOverlay {
-  paneId: string;
-  overlay: Overlay | null;
-  figureType: string;
-  figureIndex: number;
-  figure: OverlayFigure | null;
+/** KLineChart's event dispatcher (`chart._chartEvent`, off its public type): it asks this for the pane and axis under every event. */
+interface WidgetHit {
+  pane: unknown;
+  widget: unknown;
 }
-interface StoreImpl {
-  getPressedOverlayInfo: () => PressedOverlay;
-  setPressedOverlayInfo: (info: PressedOverlay) => void;
+interface ChartEvents {
+  _findWidgetByEvent: (e: Coordinate) => WidgetHit;
+  pinchStartEvent: () => boolean;
 }
 
 const PERIODS = {
@@ -152,6 +148,7 @@ const MAIN_PANE_SHARE = 0.45;
 const SUB_PANE_HEIGHT = 100;
 const SUB_PANE_MIN_HEIGHT = 60;
 const MIN_BAR_SPACE = 1;
+const MAX_BAR_SPACE = 50;
 const BOTTOM_GAP = 0.1;
 const MAX_COMPARE = COMPARE_COLORS.length;
 /**
@@ -993,7 +990,7 @@ export function KChart({
     const chart = init(el, {
       locale: "zh-CN",
       timezone: "UTC",
-      layout: { pane: { height: SUB_PANE_HEIGHT, minHeight: SUB_PANE_MIN_HEIGHT }, barSpaceLimit: { min: MIN_BAR_SPACE, max: 50 } },
+      layout: { pane: { height: SUB_PANE_HEIGHT, minHeight: SUB_PANE_MIN_HEIGHT }, barSpaceLimit: { min: MIN_BAR_SPACE, max: MAX_BAR_SPACE } },
     });
     if (!chart) return;
     chartRef.current = chart;
@@ -1079,16 +1076,71 @@ export function KChart({
       if (e.shiftKey && !drawingRef.current && onMainPane(e)) startMeasure();
     };
     el.addEventListener("pointerdown", onMeasurePress, true);
-    // the base of a price-axis drag or a vertical pan, before KLineChart's own mousedown takes it
-    const onPress = () => {
+    // TradingView: a drag stays with what it started on (the time axis, the price axis, the chart, a
+    // drawing) until it is let go, wherever the pointer goes. KLineChart looks up the pane and axis
+    // under the pointer on every move and drops the drag once that is another one, so the one
+    // pressed answers every lookup until the release, which also ends a drawing's drag outside the chart
+    const events = (chart as unknown as { _chartEvent: ChartEvents })._chartEvent;
+    const findWidget = events._findWidgetByEvent.bind(events);
+    let held: WidgetHit | null = null;
+    events._findWidgetByEvent = (e) => held ?? findWidget(e);
+    // TradingView's time axis drag: the right edge keeps its bar and the bar grabbed follows the
+    // pointer (KLineChart zooms about the point pressed, by how far the pointer is from the page's edge)
+    chart.overrideXAxis({ scrollZoomEnabled: false });
+    // ...which also takes the axis' resize cursor away
+    chart.getDom(X_AXIS_PANE, "main")!.style.cursor = "ew-resize";
+    let axisDrag: { from: number; space: number } | null = null;
+    /** The pointer that pressed: other fingers neither start nor end its drag. */
+    let press: { id: number; mouse: boolean } | null = null;
+    const plotX = (e: PointerEvent) => e.clientX - el.getBoundingClientRect().left - (chart.getSize(CANDLE_PANE, "main")?.left ?? 0);
+    // a pointer event comes before the mouse or touch event KLineChart takes the press from
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button !== 0 || !e.isPrimary) return;
+      press = { id: e.pointerId, mouse: e.pointerType === "mouse" };
+      // the base of a price-axis drag or a vertical pan
       const range = candleAxis()?.getRange();
       gestureRef.current = range ? { ...range } : null;
+      const box = el.getBoundingClientRect();
+      const at = { x: e.clientX - box.left, y: e.clientY - box.top };
+      const hit = findWidget(at);
+      held = hit.widget ? hit : null;
+      const axis = chart.getSize(X_AXIS_PANE, "main");
+      const onAxis = axis && at.x >= axis.left && at.x <= axis.left + axis.width && at.y >= axis.top && at.y <= axis.top + axis.height;
+      axisDrag = onAxis ? { from: plotX(e), space: chart.getBarSpace().bar } : null;
     };
-    const onRelease = () => {
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerId !== press?.id || !axisDrag) return;
+      const width = chart.getSize(CANDLE_PANE, "main")?.width ?? 0;
+      chart.setBarSpace(timeAxisBarSpace(axisDrag.space, width, axisDrag.from, plotX(e), { min: MIN_BAR_SPACE, max: MAX_BAR_SPACE }));
+    };
+    const release = () => {
+      press = null;
+      axisDrag = null;
+    };
+    // the press is let go on the mouse or touch release that follows, after KLineChart had its turn
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerId === press?.id) release();
+    };
+    // a cancelled touch gets no release
+    const onPointerCancel = (e: PointerEvent) => {
+      if (e.pointerId !== press?.id) return;
+      release();
+      held = null;
       gestureRef.current = null;
     };
-    el.addEventListener("mousedown", onPress, true);
-    el.addEventListener("touchstart", onPress, { capture: true, passive: true });
+    // a second finger turns the drag into KLineChart's pinch (it decides when), about the point between the two;
+    // a drawing being dragged keeps its press, so that the release that ends it, wherever it is, saves it
+    const store = (chart as unknown as { getChartStore: () => { getPressedOverlayInfo: () => { overlay: Overlay | null } } }).getChartStore();
+    const pinchStart = events.pinchStartEvent.bind(events);
+    events.pinchStartEvent = () => {
+      if (!store.getPressedOverlayInfo().overlay) held = null;
+      axisDrag = null;
+      return pinchStart();
+    };
+    el.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
     // the browser menu is no use on a canvas; drawings bring their own (onRightClick), the main pane offers 添加警报
     const onContextMenu = (e: MouseEvent) => {
       e.preventDefault();
@@ -1110,18 +1162,14 @@ export function KChart({
       clearTimeout(checkTimer);
       checkTimer = setTimeout(() => onAutoScaleRef.current(yAxisAuto()), 30);
     };
-    // KLineChart hears a release anywhere in the page, but ends a drawing's drag (onPressedMoveEnd, which
-    // saves) only when it is over one of its panes or axes: finish one let go anywhere else, after it had its turn
-    const store = (chart as unknown as { getChartStore: () => StoreImpl }).getChartStore();
-    const endDrag = () => {
-      const { paneId, overlay, figure } = store.getPressedOverlayInfo();
-      if (!overlay) return;
-      store.setPressedOverlayInfo({ paneId, overlay: null, figureType: "none", figureIndex: -1, figure: null });
-      overlay.onPressedMoveEnd?.({ chart, overlay, figure: figure ?? undefined });
-    };
-    const onUp = () => {
-      onRelease();
-      endDrag();
+    // KLineChart hears a release on the page before the window does; another finger lifted keeps the press.
+    // A mouse press ends with its left button, before any other held with it is let go (and the pointerup)
+    const onUp = (e: MouseEvent | TouchEvent) => {
+      if (press?.mouse && e.type === "mouseup" && (e as MouseEvent).button === 0) release();
+      if (!press) {
+        held = null;
+        gestureRef.current = null;
+      }
       checkAuto();
     };
     window.addEventListener("mouseup", onUp);
@@ -1149,8 +1197,10 @@ export function KChart({
       el.removeEventListener("mouseleave", onLeave);
       window.removeEventListener("keydown", onKey);
       el.removeEventListener("pointerdown", onMeasurePress, true);
-      el.removeEventListener("mousedown", onPress, true);
-      el.removeEventListener("touchstart", onPress, true);
+      el.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
       el.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("mouseup", onUp);
       window.removeEventListener("touchend", onUp);
@@ -1197,7 +1247,7 @@ export function KChart({
         }
         const count = bars.length - from;
         const space = (plotWidth() - chart.getOffsetRightDistance()) / count;
-        chart.setBarSpace(Math.min(50, Math.max(MIN_BAR_SPACE, space)));
+        chart.setBarSpace(Math.min(MAX_BAR_SPACE, Math.max(MIN_BAR_SPACE, space)));
         chart.scrollToRealTime();
         return space >= MIN_BAR_SPACE;
       },
