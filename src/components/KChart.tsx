@@ -1128,10 +1128,12 @@ export function KChart({
       held = null;
       gestureRef.current = null;
     };
-    // a second finger turns the drag into KLineChart's pinch (it decides when), about the point between the two
+    // a second finger turns the drag into KLineChart's pinch (it decides when), about the point between the two;
+    // a drawing being dragged keeps its press, so that the release that ends it, wherever it is, saves it
+    const store = (chart as unknown as { getChartStore: () => { getPressedOverlayInfo: () => { overlay: Overlay | null } } }).getChartStore();
     const pinchStart = events.pinchStartEvent.bind(events);
     events.pinchStartEvent = () => {
-      held = null;
+      if (!store.getPressedOverlayInfo().overlay) held = null;
       axisDrag = null;
       return pinchStart();
     };

@@ -915,11 +915,14 @@ function position(name: string, long: boolean): Template {
       });
       const cx = x0 + width / 2;
       const up = t.y < s.y;
+      // the entry may have been dragged past the target or the stop
+      const top = Math.min(e.y, t.y, s.y);
+      const bottom = Math.max(e.y, t.y, s.y);
       return [
         box(e.y, t.y, theme.up),
         box(e.y, s.y, theme.down),
         // the zones' outer edges, not drawn: they take a drag while the zones let one through to the chart
-        line([{ x: x0, y: t.y }, { x: x0 + width, y: t.y }, { x: x0 + width, y: s.y }, { x: x0, y: s.y }, { x: x0, y: t.y }], { color: "transparent" }),
+        line([{ x: x0, y: top }, { x: x0 + width, y: top }, { x: x0 + width, y: bottom }, { x: x0, y: bottom }, { x: x0, y: top }], { color: "transparent" }),
         line([{ x: x0, y: e.y }, { x: x0 + width, y: e.y }], { color: theme.text, size: 1 }),
         tag(p, cx, t.y + (up ? -4 : 4), `目标 ${fmt(p.chart, pt.value ?? 0)} (${pct(entry, pt.value ?? 0).toFixed(2)}%)`, "center", up ? "bottom" : "top", theme.up),
         tag(p, cx, s.y + (up ? 4 : -4), `止损 ${fmt(p.chart, ps.value ?? 0)} (${pct(entry, ps.value ?? 0).toFixed(2)}%)`, "center", up ? "top" : "bottom", theme.down),
