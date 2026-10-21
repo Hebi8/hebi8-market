@@ -18,11 +18,12 @@ import {
   type OverlayTemplate,
   type Point,
 } from "klinecharts";
-import { MEASURE_TOOL, SCALED_DRAWINGS } from "./chart-types";
+import { DRAW_DONE, MEASURE_TOOL, SCALED_DRAWINGS } from "./chart-types";
 import { bendLine, bendPolygon, bendRect, fitLine, fromSpace, makeWarp, movePrices, toSpace, type PriceScale, type Warp } from "./drawing-scale";
 import { lineOf, withAlpha } from "./drawing-style";
 import { BOX_HANDLES, boxHandleAt, channelHandles, dragBoxBy, dragChannel, drawable, yAt, type ChannelHandle } from "./drawing-edit";
 import { FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
+import { hasOutline, isSeeThrough, outlineOf } from "./chart-gestures";
 import { measureLines, pct, priceChangeText, volumeBetween } from "./measure";
 import { tradingDayOffset, tradingDayTimestamp } from "./drawing-time";
 
@@ -159,6 +160,33 @@ function bendFigure(f: OverlayFigure, warp: Warp): Figures {
       return at ? [{ ...a, y: at.y }] : [];
     });
   return attrs.length ? [{ ...f, attrs }] : [];
+}
+
+// ---------------------------------------------------------------------------- see-through areas
+
+/**
+ * TradingView: a drag that starts inside a drawing's see-through area (a rectangle's or a
+ * channel's fill, the inside of a circle, a position's zones) moves the chart until the drawing is
+ * selected; its outline and handles take a drag as always, and a click inside selects it. While the
+ * drawing is not selected the area passes presses on (hovering it still highlights the drawing),
+ * and an invisible line along its outline takes them instead. A fill alone has no outline (a
+ * channel's ends, an arc's chord): the lines drawn with it are its edges.
+ */
+function seeThrough(t: Template): Template {
+  const create = t.createPointFigures!;
+  return {
+    ...t,
+    createPointFigures: (p) => {
+      const figures = [create(p)].flat();
+      // a drawing in progress takes no events, and a selected one is dragged from anywhere
+      if (p.overlay.currentStep !== DRAW_DONE || storeOf(p.chart).getClickOverlayInfo().overlay?.id === p.overlay.id) return figures;
+      return figures.flatMap((f) => {
+        if (!isSeeThrough(f)) return [f];
+        const area: OverlayFigure = { ...f, ignoreEvent: ["onPressedMoveStart"] };
+        return hasOutline(f) ? [area, { type: "line", attrs: outlineOf(f).map((coordinates) => ({ coordinates })), styles: { color: "transparent" } }] : [area];
+      });
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------- labels and numbers
@@ -887,9 +915,14 @@ function position(name: string, long: boolean): Template {
       });
       const cx = x0 + width / 2;
       const up = t.y < s.y;
+      // the entry may have been dragged past the target or the stop
+      const top = Math.min(e.y, t.y, s.y);
+      const bottom = Math.max(e.y, t.y, s.y);
       return [
         box(e.y, t.y, theme.up),
         box(e.y, s.y, theme.down),
+        // the zones' outer edges, not drawn: they take a drag while the zones let one through to the chart
+        line([{ x: x0, y: top }, { x: x0 + width, y: top }, { x: x0 + width, y: bottom }, { x: x0, y: bottom }, { x: x0, y: top }], { color: "transparent" }),
         line([{ x: x0, y: e.y }, { x: x0 + width, y: e.y }], { color: theme.text, size: 1 }),
         tag(p, cx, t.y + (up ? -4 : 4), `目标 ${fmt(p.chart, pt.value ?? 0)} (${pct(entry, pt.value ?? 0).toFixed(2)}%)`, "center", up ? "bottom" : "top", theme.up),
         tag(p, cx, s.y + (up ? 4 : -4), `止损 ${fmt(p.chart, ps.value ?? 0)} (${pct(entry, ps.value ?? 0).toFixed(2)}%)`, "center", up ? "top" : "bottom", theme.down),
@@ -1255,6 +1288,6 @@ let registered = false;
 export function registerDrawingTemplates() {
   if (registered) return;
   registered = true;
-  for (const t of [...lines, ...fib, ...patterns, ...measure, ...shapes, ...annotation]) registerOverlay(SCALED_DRAWINGS.has(t.name) ? scaled(t) : t);
+  for (const t of [...lines, ...fib, ...patterns, ...measure, ...shapes, ...annotation]) registerOverlay(seeThrough(SCALED_DRAWINGS.has(t.name) ? scaled(t) : t));
   patchMoves();
 }
