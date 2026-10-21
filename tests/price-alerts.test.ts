@@ -201,7 +201,17 @@ describe("quote polling", () => {
       ["closed", { at: now - 30 * 60_000, session: "closed" as const }],
       ["post", { at: now - 60 * 60_000, session: "post" as const }],
     ]);
-    expect(dueKeys(["new", "open", "crypto", "fresh", "closed", "post"], seen, now)).toEqual(["new", "open", "crypto", "post"]);
+    const unknown = { hours: null, timezone: null, holidays: null, corrections: null };
+    expect(dueKeys(["new", "open", "crypto", "fresh", "closed", "post"], seen, now, () => unknown)).toEqual(["new", "open", "crypto", "post"]);
+  });
+
+  it("asks a pre-market symbol again as soon as its market opens", async () => {
+    const { dueKeys } = await import("@/lib/quotes");
+    const nasdaq = { hours: "0930-1600", timezone: "America/New_York", holidays: null, corrections: null };
+    // asked at 13:08 UTC, the open is 13:30
+    const seen = new Map([["pre", { at: Date.parse("2026-10-21T13:08:00Z"), session: "pre" as const }]]);
+    expect(dueKeys(["pre"], seen, Date.parse("2026-10-21T13:28:00Z"), () => nasdaq)).toEqual([]);
+    expect(dueKeys(["pre"], seen, Date.parse("2026-10-21T13:33:00Z"), () => nasdaq)).toEqual(["pre"]);
   });
 
   it("puts a quote on the local day of its trade: crypto on the UTC day, a stock on the exchange's date", async () => {

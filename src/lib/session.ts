@@ -184,6 +184,31 @@ export function scheduledSession(now: number, calendar: TradingCalendar): QuoteS
   return "open";
 }
 
+/**
+ * Whether a session of the calendar begins after `from` and by `to` (ms): the open that ends a
+ * market's pre-market, the end of a lunch break, an evening session. False while the hours are
+ * not known.
+ */
+export function sessionStartsBetween(from: number, to: number, calendar: TradingCalendar): boolean {
+  if (!calendar.hours || calendar.hours === "24x7") return false;
+  const timezone = calendar.timezone ?? "UTC";
+  const first = dayOf(partsIn(new Date(from), timezone));
+  const last = secondsOf(dayOf(partsIn(new Date(to), timezone)));
+  // a day's sessions may start evenings before it (`F6` at most)
+  for (let day = first; secondsOf(day) <= last + 6 * 86400; day = dayOf(day, 1)) {
+    // each session up to its auction windows
+    for (const session of sessionsOn(calendar, day)?.split(/[,SU]/) ?? []) {
+      const m = /^(\d{2})(\d{2})(F\d*)?-(\d{4})/.exec(session);
+      if (!m) continue;
+      // a start not before the end is the evening before, except `0000-0000`: the whole day from its midnight
+      const back = m[3] !== undefined ? Number(m[3].slice(1) || 1) : m[1] + m[2] >= m[4] && m[1] + m[2] !== "0000" ? 1 : 0;
+      const start = zonedToUtc({ ...dayOf(day, -back), hh: Number(m[1]), mm: Number(m[2]) }, timezone);
+      if (start > from && start <= to) return true;
+    }
+  }
+  return false;
+}
+
 /** The trading day whose bar a day's sessions make: that day, or the one before when they start two evenings back (`1700F2`). */
 function barDayOf(calendar: TradingCalendar, day: Parts): Parts {
   return dayOf(day, 1 - (eveningStart(sessionsOn(calendar, day))?.back ?? 1));
