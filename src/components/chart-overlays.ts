@@ -23,6 +23,7 @@ import { bendLine, bendPolygon, bendRect, fitLine, fromSpace, makeWarp, movePric
 import { lineOf, withAlpha } from "./drawing-style";
 import { BOX_HANDLES, boxHandleAt, channelHandles, dragBoxBy, dragChannel, drawable, yAt, type ChannelHandle } from "./drawing-edit";
 import { FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
+import { hasOutline, isSeeThrough, outlineOf } from "./chart-gestures";
 import { measureLines, pct, priceChangeText, volumeBetween } from "./measure";
 import { tradingDayOffset, tradingDayTimestamp } from "./drawing-time";
 
@@ -159,6 +160,31 @@ function bendFigure(f: OverlayFigure, warp: Warp): Figures {
       return at ? [{ ...a, y: at.y }] : [];
     });
   return attrs.length ? [{ ...f, attrs }] : [];
+}
+
+// ---------------------------------------------------------------------------- see-through areas
+
+/**
+ * TradingView: a drag that starts inside a drawing's see-through area (a rectangle's or a
+ * channel's fill, the inside of a circle) moves the chart until the drawing is selected; its
+ * outline and handles take a drag as always, and a click inside selects it. While the drawing is
+ * not selected the area passes presses on (it stays clickable), and an invisible line along its
+ * outline takes them instead.
+ */
+function seeThrough(t: Template): Template {
+  const create = t.createPointFigures!;
+  return {
+    ...t,
+    createPointFigures: (p) => {
+      const figures = [create(p)].flat();
+      if (storeOf(p.chart).getClickOverlayInfo().overlay?.id === p.overlay.id) return figures;
+      return figures.flatMap((f) => {
+        if (!isSeeThrough(f)) return [f];
+        const area: OverlayFigure = { ...f, ignoreEvent: ["onPressedMoveStart", "onMouseMove"] };
+        return hasOutline(f) ? [area, { type: "line", attrs: outlineOf(f).map((coordinates) => ({ coordinates })), styles: { color: "transparent" } }] : [area];
+      });
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------- labels and numbers
@@ -1255,6 +1281,6 @@ let registered = false;
 export function registerDrawingTemplates() {
   if (registered) return;
   registered = true;
-  for (const t of [...lines, ...fib, ...patterns, ...measure, ...shapes, ...annotation]) registerOverlay(SCALED_DRAWINGS.has(t.name) ? scaled(t) : t);
+  for (const t of [...lines, ...fib, ...patterns, ...measure, ...shapes, ...annotation]) registerOverlay(seeThrough(SCALED_DRAWINGS.has(t.name) ? scaled(t) : t));
   patchMoves();
 }
