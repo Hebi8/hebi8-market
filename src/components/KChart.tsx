@@ -122,6 +122,7 @@ interface WidgetHit {
 }
 interface ChartEvents {
   _findWidgetByEvent: (e: Coordinate) => WidgetHit;
+  pinchStartEvent: () => boolean;
 }
 
 const PERIODS = {
@@ -1090,20 +1091,12 @@ export function KChart({
     chart.getDom(X_AXIS_PANE, "main")!.style.cursor = "ew-resize";
     let axisDrag: { from: number; space: number } | null = null;
     /** The pointer that pressed: other fingers neither start nor end its drag. */
-    let press: { id: number; moved: boolean } | null = null;
+    let press: { id: number; mouse: boolean } | null = null;
     const plotX = (e: PointerEvent) => e.clientX - el.getBoundingClientRect().left - (chart.getSize(CANDLE_PANE, "main")?.left ?? 0);
     // a pointer event comes before the mouse or touch event KLineChart takes the press from
     const onPointerDown = (e: PointerEvent) => {
-      if (!e.isPrimary) {
-        // a second finger before the first moved is KLineChart's pinch, about the point between the two
-        if (press && !press.moved) {
-          held = null;
-          axisDrag = null;
-        }
-        return;
-      }
-      if (e.button !== 0) return;
-      press = { id: e.pointerId, moved: false };
+      if (e.button !== 0 || !e.isPrimary) return;
+      press = { id: e.pointerId, mouse: e.pointerType === "mouse" };
       // the base of a price-axis drag or a vertical pan
       const range = candleAxis()?.getRange();
       gestureRef.current = range ? { ...range } : null;
@@ -1116,24 +1109,31 @@ export function KChart({
       axisDrag = onAxis ? { from: plotX(e), space: chart.getBarSpace().bar } : null;
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (e.pointerId !== press?.id) return;
-      press.moved = true;
-      if (!axisDrag) return;
+      if (e.pointerId !== press?.id || !axisDrag) return;
       const width = chart.getSize(CANDLE_PANE, "main")?.width ?? 0;
       chart.setBarSpace(timeAxisBarSpace(axisDrag.space, width, axisDrag.from, plotX(e), { min: MIN_BAR_SPACE, max: MAX_BAR_SPACE }));
     };
-    // the press is let go on the mouse or touch release that follows, after KLineChart had its turn
-    const onPointerUp = (e: PointerEvent) => {
-      if (e.pointerId !== press?.id) return;
+    const release = () => {
       press = null;
       axisDrag = null;
+    };
+    // the press is let go on the mouse or touch release that follows, after KLineChart had its turn
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.pointerId === press?.id) release();
     };
     // a cancelled touch gets no release
     const onPointerCancel = (e: PointerEvent) => {
       if (e.pointerId !== press?.id) return;
-      onPointerUp(e);
+      release();
       held = null;
       gestureRef.current = null;
+    };
+    // a second finger turns the drag into KLineChart's pinch (it decides when), about the point between the two
+    const pinchStart = events.pinchStartEvent.bind(events);
+    events.pinchStartEvent = () => {
+      held = null;
+      axisDrag = null;
+      return pinchStart();
     };
     el.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("pointermove", onPointerMove);
@@ -1160,8 +1160,10 @@ export function KChart({
       clearTimeout(checkTimer);
       checkTimer = setTimeout(() => onAutoScaleRef.current(yAxisAuto()), 30);
     };
-    // KLineChart hears a release on the page before the window does; another finger lifted keeps the press
-    const onUp = () => {
+    // KLineChart hears a release on the page before the window does; another finger lifted keeps the press.
+    // A mouse press ends with its left button, before any other held with it is let go (and the pointerup)
+    const onUp = (e: MouseEvent | TouchEvent) => {
+      if (press?.mouse && e.type === "mouseup" && (e as MouseEvent).button === 0) release();
       if (!press) {
         held = null;
         gestureRef.current = null;

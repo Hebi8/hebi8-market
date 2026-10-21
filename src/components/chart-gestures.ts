@@ -36,6 +36,9 @@ export function isSeeThrough(figure: OverlayFigure): boolean {
   return !styles?.color || alphaOf(styles.color) < 1;
 }
 
+/** Whether the area has an outline drawn round it: a fill alone has no edge to take a drag. */
+export const hasOutline = (figure: OverlayFigure) => (figure.styles as { style?: string } | undefined)?.style !== "fill";
+
 const CIRCLE_STEPS = 72;
 
 /** The outline of an area figure as closed polylines, one per shape in its `attrs`. */
