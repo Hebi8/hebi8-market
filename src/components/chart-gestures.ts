@@ -24,19 +24,17 @@ function alphaOf(color: string): number {
 
 /**
  * An area the chart shows through (a translucent fill, or only an outline), as opposed to a solid
- * mark (an arrow, a flag, a handle). KLineChart hit-tests rects, circles and polygons by their
- * whole area, outline or not. Without a colour of its own a figure takes the drawing's fill, which
- * is translucent.
+ * mark (an arrow, a flag). KLineChart hit-tests rects, circles and polygons by their whole area,
+ * outline or not. Without a colour of its own a figure takes the drawing's fill, which is
+ * translucent. A handle is a circle too, and is told by its key (the templates find the handle
+ * dragged by it).
  */
 export function isSeeThrough(figure: OverlayFigure): boolean {
-  if (!AREAS.has(figure.type) || figure.ignoreEvent === true) return false;
+  if (!AREAS.has(figure.type) || figure.ignoreEvent === true || figure.key) return false;
   const styles = figure.styles as { style?: string; color?: string } | undefined;
   if (styles?.style === "stroke") return true;
   return !styles?.color || alphaOf(styles.color) < 1;
 }
-
-/** Whether the area has an outline drawn round it. */
-export const hasOutline = (figure: OverlayFigure) => (figure.styles as { style?: string } | undefined)?.style !== "fill";
 
 const CIRCLE_STEPS = 72;
 

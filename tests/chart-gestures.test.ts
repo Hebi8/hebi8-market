@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OverlayFigure } from "klinecharts";
-import { hasOutline, isSeeThrough, outlineOf, timeAxisBarSpace } from "@/components/chart-gestures";
+import { isSeeThrough, outlineOf, timeAxisBarSpace } from "@/components/chart-gestures";
 import { withAlpha } from "@/components/drawing-style";
 
 const limit = { min: 1, max: 50 };
@@ -34,10 +34,8 @@ describe("see-through areas", () => {
     expect(isSeeThrough({ type: "line", attrs: { coordinates: [] } })).toBe(false);
   });
 
-  it("outlines only what draws a border", () => {
-    expect(hasOutline(rect({ style: "stroke_fill" }))).toBe(true);
-    expect(hasOutline(rect())).toBe(true);
-    expect(hasOutline(rect({ style: "fill" }))).toBe(false);
+  it("leaves a handle alone, however see-through its ring", () => {
+    expect(isSeeThrough({ key: "handle:x0", type: "circle", attrs: { x: 0, y: 0, r: 6 }, styles: { style: "fill", color: withAlpha("#2962ff", 0.35) } })).toBe(false);
   });
 
   it("closes the outline of each shape", () => {

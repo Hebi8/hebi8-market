@@ -275,6 +275,9 @@ export const DRAW_TOOLS: DrawTool[] = DRAW_GROUPS.flatMap((g) => g.sections.flat
  */
 export const MEASURE_TOOL = "measure";
 
+/** KLineChart's `currentStep` once a drawing is finished. */
+export const DRAW_DONE = -1;
+
 /** Tools whose floating toolbar edits text (font size and the text) instead of line width and dash. */
 export const TEXT_DRAWINGS = new Set(["text", "simpleAnnotation"]);
 

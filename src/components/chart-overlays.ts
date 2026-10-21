@@ -18,12 +18,12 @@ import {
   type OverlayTemplate,
   type Point,
 } from "klinecharts";
-import { MEASURE_TOOL, SCALED_DRAWINGS } from "./chart-types";
+import { DRAW_DONE, MEASURE_TOOL, SCALED_DRAWINGS } from "./chart-types";
 import { bendLine, bendPolygon, bendRect, fitLine, fromSpace, makeWarp, movePrices, toSpace, type PriceScale, type Warp } from "./drawing-scale";
 import { lineOf, withAlpha } from "./drawing-style";
 import { BOX_HANDLES, boxHandleAt, channelHandles, dragBoxBy, dragChannel, drawable, yAt, type ChannelHandle } from "./drawing-edit";
 import { FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
-import { hasOutline, isSeeThrough, outlineOf } from "./chart-gestures";
+import { isSeeThrough, outlineOf } from "./chart-gestures";
 import { measureLines, pct, priceChangeText, volumeBetween } from "./measure";
 import { tradingDayOffset, tradingDayTimestamp } from "./drawing-time";
 
@@ -166,10 +166,10 @@ function bendFigure(f: OverlayFigure, warp: Warp): Figures {
 
 /**
  * TradingView: a drag that starts inside a drawing's see-through area (a rectangle's or a
- * channel's fill, the inside of a circle) moves the chart until the drawing is selected; its
- * outline and handles take a drag as always, and a click inside selects it. While the drawing is
- * not selected the area passes presses on (it stays clickable), and an invisible line along its
- * outline takes them instead.
+ * channel's fill, the inside of a circle, a position's zones) moves the chart until the drawing is
+ * selected; its edges and handles take a drag as always, and a click inside selects it. While the
+ * drawing is not selected the area passes presses on (hovering it still highlights the drawing),
+ * and an invisible line along its edge takes them instead.
  */
 function seeThrough(t: Template): Template {
   const create = t.createPointFigures!;
@@ -177,12 +177,16 @@ function seeThrough(t: Template): Template {
     ...t,
     createPointFigures: (p) => {
       const figures = [create(p)].flat();
-      if (storeOf(p.chart).getClickOverlayInfo().overlay?.id === p.overlay.id) return figures;
-      return figures.flatMap((f) => {
-        if (!isSeeThrough(f)) return [f];
-        const area: OverlayFigure = { ...f, ignoreEvent: ["onPressedMoveStart", "onMouseMove"] };
-        return hasOutline(f) ? [area, { type: "line", attrs: outlineOf(f).map((coordinates) => ({ coordinates })), styles: { color: "transparent" } }] : [area];
-      });
+      // a drawing in progress takes no events, and a selected one is dragged from anywhere
+      if (p.overlay.currentStep !== DRAW_DONE || storeOf(p.chart).getClickOverlayInfo().overlay?.id === p.overlay.id) return figures;
+      return figures.flatMap((f) =>
+        isSeeThrough(f)
+          ? [
+              { ...f, ignoreEvent: ["onPressedMoveStart"] },
+              { type: "line", attrs: outlineOf(f).map((coordinates) => ({ coordinates })), styles: { color: "transparent" } },
+            ]
+          : [f],
+      );
     },
   };
 }
