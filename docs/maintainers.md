@@ -6,7 +6,7 @@
 
 | 文件 | 写什么 |
 |---|---|
-| [`README.md`](../README.md) | 给第一次来的人：一句话介绍、核心功能各一两句、快速开始、数据源概览、文档索引。不写操作细节 |
+| [`README.md`](../README.md)、[`README.cn.md`](../README.cn.md) | 给第一次来的人，英文和中文各一份：一句话介绍、核心功能各一两句、快速开始、数据源概览、文档索引。不写操作细节 |
 | [`docs/usage.md`](usage.md) | 每项功能的完整操作、快捷键、公式、警报和通知、代码指标、MCP 接入 |
 | [`docs/self-hosting.md`](self-hosting.md) | 生产运行、`deploy.sh`、GitHub Actions 自动部署、环境变量、vault、实例状态、多人共用、放到公网、网页登录 |
 | [`docs/architecture.md`](architecture.md) | 英文：代码地图和各模块要守的约定（vault、viewer、行情和警报、MCP、标的资料、指标）、issue 和分支的流程概要、文档分工、验证命令 |
@@ -14,7 +14,7 @@
 | [`docs/design.md`](design.md) | 设计：数据模型、同步、接口、页面行为的规格 |
 | [`CHANGELOG.md`](../CHANGELOG.md) | 每个版本的更新记录，给用的人看；写法见[分支与发版](#分支与发版) |
 
-新功能或改了行为时，操作说明写进 `usage.md`（运维相关写进 `self-hosting.md`），规格写进 `design.md`；README 只在功能列表需要多一行、或快速开始变了时才改。代码里的约定变了（新的不变量、共用的写操作该放哪）改 `architecture.md`。
+新功能或改了行为时，操作说明写进 `usage.md`（运维相关写进 `self-hosting.md`），规格写进 `design.md`；README 只在功能列表需要多一行、或快速开始变了时才改，两个 README 结构一一对应，改一边就同步改另一边。代码里的约定变了（新的不变量、共用的写操作该放哪）改 `architecture.md`。
 
 ## 反馈用的 GitHub App
 

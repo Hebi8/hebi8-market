@@ -948,7 +948,7 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 
 **原则**：抽屉里只放用的时候要的东西：怎么用、快捷键、反馈、隐私说明和登录状态。项目介绍、架构、数据源细节、yaml 字段、版本 / commit、vault 路径、缓存统计、部署信息都写在 README（概览和文档索引）、`docs/` 下的 usage / self-hosting / maintainers / architecture 和本文档，界面上只留一个「项目文档」链接到仓库。owner 需要的实例状态在 `/usage`（§1.7）；通知设置在自己的抽屉里（§2.5），不是这里的页签。
 
-**使用页签**（纯前端，不请求接口）：「怎么用」一句话 +「打开三步引导」（§1.6 的引导面板）；快捷键表；「项目文档」（仓库首页，即 README，从它的文档索引进各篇）和「隐私说明」两个链接。
+**使用页签**（纯前端，不请求接口）：「怎么用」一句话 +「打开三步引导」（§1.6 的引导面板）；快捷键表；「项目文档」（仓库首页，即英文的 README，顶部链到中文版 README.cn.md；从文档索引进各篇）和「隐私说明」两个链接。
 
 **版本**：`package.json` version + 构建时的 `git rev-parse --short HEAD` + 构建时间（`next.config.ts` 的 `env` 注入 `HEBI8_VERSION / HEBI8_COMMIT / HEBI8_BUILT_AT`，取不到 commit 时为 `unknown`）。只出现在反馈的 `hebi8-context` 里和 owner 的 `/usage` 上。
 
