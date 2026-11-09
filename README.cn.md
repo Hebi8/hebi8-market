@@ -38,7 +38,7 @@ Next.js + [KLineChart](https://github.com/klinecharts/KLineChart) + SQLite。你
 
 ## 快速开始
 
-需要 Node.js 20.9 或更高（线上用的是 22）。
+需要 Node.js 22.12 或更高（线上用的是 22）。
 
 ```bash
 npm install

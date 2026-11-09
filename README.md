@@ -9,7 +9,7 @@ A self-hosted market dashboard for a weekly review, not a TradingView replacemen
 | Step | Page | The question it answers |
 |---|---|---|
 | Scan | `/` overview: grouped table, my alerts, this week's triggers | Where does everything I follow stand right now? |
-| Look closer | `/chart/[key]` chart: candles, indicators, compare, drawings, notes | How are the few worth a closer look shaped, and how do they compare with others? |
+| Look closer | `/chart/[key]` chart: candles, indicators, compare, drawings, notes | What's the structure of the few worth a closer look, and how do they compare with others? |
 | Write down | `/review` review: this week's journal, last week's, a summary of this week's changes | What did I think last week, and what do I think now? |
 
 ![Example watchlist overview: quotes by group, period changes and two-year sparklines](docs/images/overview.png)
@@ -38,7 +38,7 @@ Every feature in full, with the hotkey table, is in [docs/usage.md](docs/usage.m
 
 ## Quick start
 
-Requires Node.js 20.9 or later (production runs Node 22).
+Requires Node.js 22.12 or later (production runs Node 22).
 
 ```bash
 npm install

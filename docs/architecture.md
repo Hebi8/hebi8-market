@@ -1,6 +1,6 @@
 # Architecture and conventions
 
-The code map and the rules the code keeps, for anyone changing hebi8/market. The specs behind each part are in [design.md](design.md), the source tree in [maintainers.md](maintainers.md#源码结构), branches and releases in [maintainers.md](maintainers.md#分支与发版); those two docs are in Chinese, like the app's interface. Code and comments are in English.
+A map of the code and the conventions it follows, for anyone changing hebi8/market. The specs behind each part are in [design.md](design.md), the source tree in [maintainers.md](maintainers.md#源码结构), branches and releases in [maintainers.md](maintainers.md#分支与发版); those two docs are in Chinese, like the app's interface. Code and comments are in English.
 
 ## Vault and cache
 
