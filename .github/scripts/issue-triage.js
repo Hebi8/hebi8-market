@@ -31,7 +31,7 @@ const LABELS = {
   "area:data": { color: "c5def5", description: "Data sources, sync, stats, formulas" },
   "area:account": { color: "c5def5", description: "Login, shared instance, feedback, usage" },
   "area:docs": { color: "c5def5", description: "README and design docs" },
-  "triage:simple": { color: "0e8a16", description: "Small, clear and verifiable: the daily run may fix it" },
+  "triage:simple": { color: "0e8a16", description: "Small, clear and verifiable: a candidate for a fix without the maintainer" },
   "triage:judgment": { color: "d93f0b", description: "Needs the maintainer to decide" },
 };
 
