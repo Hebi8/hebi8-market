@@ -1,0 +1,67 @@
+# Architecture and conventions
+
+A map of the code and the conventions it follows, for anyone changing hebi8/market. The specs behind each part are in [design.md](design.md), the source tree in [maintainers.md](maintainers.md#源码结构), branches and releases in [maintainers.md](maintainers.md#分支与发版); those two docs are in Chinese, like the app's interface. Code and comments are in English.
+
+## Vault and cache
+
+- `vault/` is the user's content (`hebi8.yaml`, notes, journal, chart state; gitignored, `HEBI8_VAULT`); `data/hebi8.db` is a cache that is rebuilt by syncing. Read [design.md](design.md) before changing either layout.
+- On a shared instance (`owner` in the root yaml) each GitHub login has its own vault under `vault/users/<login>/`. Every page, route and Server Action resolves the viewer (`src/lib/viewer.ts`) first and reads and writes only `viewer.dir`; vault functions take the directory explicitly. `stats` and `alert_state` rows are keyed by `vault` ('' = root).
+- `hebi8.yaml` is edited through `src/lib/vault.ts` with the `yaml` package's `parseDocument` so comments and order survive; writes are atomic. `src/lib/config.ts` is the typed, validated view of it.
+
+## Bars, sources and quotes
+
+- Daily bars are the only stored granularity (`bars` table, unix seconds at UTC midnight of the trading day, split-adjusted prices plus a dividend factor `adj`); weekly/monthly/quarterly are aggregated on read in `src/lib/series.ts`. Synthetic symbols (`=BTC/GOLD`) are computed on read in `src/lib/synth.ts`.
+- Source adapters live in `src/lib/sources/` and must map timestamps through `tradingDay()` with the exchange timezone (the `data` source is the exception: its CSV dates are already calendar days, stored as UTC midnight).
+- Every watched symbol is polled for a quote every 5 minutes (`src/lib/quotes.ts`, started from `src/instrumentation.ts`; a few batched requests per source). Alerts (`src/lib/alerts.ts`, delivery in `notify.ts`) run at the end of `syncAll` and after each quote round. Intraday prices only go to the `quotes` table and to memory (today's unfinished daily bar is built on read for the chart, the overview and the alerts), never to `bars`. Channels live in the secrets dir, never in the vault.
+
+## Pages and sync
+
+- Pages are RSCs that read SQLite/vault directly and must stay `force-dynamic`; reads never touch the network. Syncing happens in `src/lib/sync.ts` (scheduler in `src/lib/scheduler.ts`, started from `src/instrumentation.ts`) and recomputes `stats` afterwards.
+- This is Next.js 16, which has breaking changes from earlier versions: read the relevant guide in `node_modules/next/dist/docs/` before relying on habits from older ones. How the app uses it (dynamic rendering, Server Actions, instrumentation) is in [design.md](design.md) §7.
+
+## Agents (MCP)
+
+- Agents come in through `/mcp` (`src/app/mcp/route.ts` → `src/lib/mcp/`): MCP over stateless Streamable HTTP on the official SDK, a personal token on every request in every mode. Tokens are made on the settings page and kept as hashes in `mcp-tokens.json` in the secrets dir; `tokenViewer()` in `viewer.ts` is the one place a token becomes a `Viewer`, the same one its owner gets when logged in.
+- A write that both the page and an agent can do lives once in `src/lib/ops.ts` and takes the viewer; the Server Action and the MCP tool are thin shells around it, so add new shared writes there, not in `actions.ts`.
+- MCP reads follow the page rule (no network, cached symbols only; search and add-symbol excepted).
+- An alert an agent saves is marked `by: agent`, and one on the whole watchlist is a `draft: true` that only the page can confirm; `isLive()` in `config.ts` is what judging, polling and the overview go by.
+
+## Symbol profiles
+
+What a symbol is: the chart's 商品详情 (symbol details) panel and MCP `get_profile`, [design.md](design.md) §2.8.
+
+- Each adapter's optional `profile()` gives the slow facts, kept in the `profiles` table and fetched by `src/lib/profiles.ts` after the scheduled sync once they are a week old, and with a symbol's first `syncOne`. Nothing waits for a profile fetch: not the scheduler's next run, not `syncOne`.
+- Only facts are stored; market cap, P/E and yield are computed on read from them and the latest price as traded (`valuation()` in `src/lib/profile.ts`, `tradedPrice()` in `quotes.ts`: never the dividend-adjusted price of a `total` chart).
+- The panel's 相关链接 (related links) are computed on read by `profileLinks()` in `src/lib/links.ts` (rules per listing, a table of fund issuers, a table of official pages per asset): open and read a page before adding its URL there.
+- A description is translated only when someone who may write clicks 翻译 (Translate) (`translateProfile` → `src/lib/translate.ts`, the server's one model call, configured by a hand-written `llm.json` in the secrets dir) and kept in `translations` with the hash of the text it translates; wherever a translation travels it carries its source text.
+
+## Indicators and formulas
+
+- Pure math in `src/indicators/calc.ts`, KLineChart templates in `custom.ts`, UI registration in `catalog.ts`; the formula engine in `formula.ts` serves chart indicators, overview conditions and comparisons.
+
+## Issues, branches and releases
+
+The full procedure, with what the scripts check and what to do when a deploy fails, is in [maintainers.md](maintainers.md#分支与发版).
+
+- Issues are labelled on open by `.github/workflows/issue-triage.yml` (a model behind an OpenAI-compatible API, context in `.github/triage-context.md`): a type, `area:*`, and `triage:simple` (clear, small, verifiable, trusted author) or `triage:judgment`. `triage:simple` issues are candidates for a fix without the maintainer, but the label alone is not enough: each one's scope is checked again before work starts. `triage:judgment` goes to the maintainer.
+- Work lands on `dev` through pull requests (an issue fixed there gets `status:next-release`); `master` is what is live, and an ancestor of `dev` again once a deploy has merged it back (a failed deploy does not: run `scripts/hotfix.sh merge-back` before the next release). `dev` moves on GitHub, so the local `dev` lags: fetch and use `origin/dev` wherever something is based on or compared with dev.
+- Every branch, hotfix branches included, gets two read-only code reviews before it lands on dev or its hotfix PR is opened; the reviews are posted as PR comments. A PR into dev is merged with `gh pr merge <n> --merge --delete-branch` once neither review has a blocking finding left, or by the maintainer at any time. PRs into master are merged only by the maintainer. PRs, PR comments and merges are the maintainer's own GitHub account; issue labels and comments are the triage bot's (Issues only).
+- Merging a pull request into `master` deploys (`.github/workflows/deploy.yml`). Those are a Release PR from `scripts/release.sh <x.y.z>` or a hotfix PR from `scripts/hotfix.sh start|<x.y.z>`, always merged with a merge commit. The workflow deploys to production, then tags, publishes the GitHub Release, tells the issues whose fix is in the released commit (a commit since the last tag says `Fixes #n`; a labelled issue fixed later keeps its label) and merges master back into dev. It never runs on pull_request, and is skipped when the `production` Environment is not set up.
+- Nothing deploys into the dev instance from outside: it asks origin where `dev` is every minute (`scripts/dev-instance/hebi8-dev.sh`, `git ls-remote`) and rebuilds when it moved, so a merge into dev shows up there within about a minute plus the build. It runs on a machine of its own under systemd user units at a lower priority; its log is `journalctl --user -u hebi8-dev-poll` there ([maintainers.md](maintainers.md#dev-实例)).
+- The live instance runs on one machine with its own public SSH ([maintainers.md](maintainers.md#正式环境)): the workflow reaches it there (over Tailscale only when the Environment has Tailscale secrets) with a key whose forced command is `scripts/deploy-gate.sh`, which fetches the commit from GitHub itself and runs that commit's `deploy.sh live`.
+- Keep hosts, addresses and user names out of code: the workflow reads them from its Environments, a manual `scripts/deploy.sh` from `deploy.env` (`--deploy` on release.sh / hotfix.sh is the path without Actions).
+- What changed for users goes in `CHANGELOG.md` (Chinese, one line each), which `/changelog` renders; the version lives only in `package.json`.
+
+## Docs
+
+- Docs are split by reader ([maintainers.md](maintainers.md#文档放哪)): `README.md` (English) and `README.cn.md` (Chinese) are only for a first-time visitor (one line per feature, quick start, data sources, doc index) and change together; how to use a feature, its hotkeys, formulas, alerts, notifications and MCP go in `docs/usage.md`; running, deploying, env vars, the vault and the shared instance in `docs/self-hosting.md`; specs in `docs/design.md`; the code map and its rules in this file.
+- When a change needs documenting, write it there, not into the README. Moving a heading changes its anchor: grep for links to it.
+
+## Verify
+
+```bash
+npm test
+npm run typecheck
+npm run lint
+npm run build
+```

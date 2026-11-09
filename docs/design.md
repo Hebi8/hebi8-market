@@ -946,9 +946,9 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 
 **入口**：页头最右的圆形「?」，或焦点不在输入框时按 `?`（Shift+/）；图表页全屏时页头隐藏，顶栏全屏按钮旁出现同样的「?」。右侧抽屉 380px（≤768px 为底部抽屉 85dvh），两个页签「使用 / 反馈」，上次的页签记在 localStorage（`hebi8:help:tab`，「使用」的值是 `project`，存着已经去掉的 `notify` 时回到「使用」）。Esc、点外面、再按 `?` 关闭；抽屉内的按键不冒泡到页面（图表的 Space / 方向键 / 字母搜索不会在背后触发）。`?help=feedback|project` 打开抽屉并从地址栏去掉这个参数。全程不用原生 alert / confirm / prompt（会退出全屏）。
 
-**原则**：抽屉里只放用的时候要的东西：怎么用、快捷键、反馈、隐私说明和登录状态。项目介绍、架构、数据源细节、yaml 字段、版本 / commit、vault 路径、缓存统计、部署信息都写在 README（概览和文档索引）、`docs/` 下的 usage / self-hosting / maintainers 和本文档，界面上只留一个「项目文档」链接到仓库。owner 需要的实例状态在 `/usage`（§1.7）；通知设置在自己的抽屉里（§2.5），不是这里的页签。
+**原则**：抽屉里只放用的时候要的东西：怎么用、快捷键、反馈、隐私说明和登录状态。项目介绍、架构、数据源细节、yaml 字段、版本 / commit、vault 路径、缓存统计、部署信息都写在 README（概览和文档索引）、`docs/` 下的 usage / self-hosting / maintainers / architecture 和本文档，界面上只留一个「项目文档」链接到仓库。owner 需要的实例状态在 `/usage`（§1.7）；通知设置在自己的抽屉里（§2.5），不是这里的页签。
 
-**使用页签**（纯前端，不请求接口）：「怎么用」一句话 +「打开三步引导」（§1.6 的引导面板）；快捷键表；「项目文档」（仓库首页，即 README，从它的文档索引进各篇）和「隐私说明」两个链接。
+**使用页签**（纯前端，不请求接口）：「怎么用」一句话 +「打开三步引导」（§1.6 的引导面板）；快捷键表；「项目文档」（仓库首页，即英文的 README，顶部链到中文版 README.cn.md；从文档索引进各篇）和「隐私说明」两个链接。
 
 **版本**：`package.json` version + 构建时的 `git rev-parse --short HEAD` + 构建时间（`next.config.ts` 的 `env` 注入 `HEBI8_VERSION / HEBI8_COMMIT / HEBI8_BUILT_AT`，取不到 commit 时为 `unknown`）。只出现在反馈的 `hebi8-context` 里和 owner 的 `/usage` 上。
 
@@ -1058,7 +1058,7 @@ client id 不是秘密（device flow 的设计就是给拿不住密钥的客户�
 
 **标签：GitHub Actions**（`.github/workflows/app-feedback.yml`，逻辑在 `.github/scripts/feedback-labels.js`，有单元测试）。`issues: [opened, edited]`，权限 `contents: read` + `issues: write`，`actions/checkout@v5`（只稀疏检出 `.github/scripts`，不留凭据）+ `actions/github-script@v8`。正文只当数据：用正则取出 ```` ```json hebi8-context ```` 块，`JSON.parse` 包在 try/catch 里，只认白名单里的 `type`（`bug` / `ux` / `data` / `idea`）和 `autoFix === true`，事件里的内容不拼进脚本或 shell。有块就确保标签存在（缺的按颜色和说明创建）并加上 `from-app` + 类型标签；`autoFix` 为真时，作者的 `author_association` 是 `OWNER` / `MEMBER` / `COLLABORATOR` 才加 `auto-fix-ok`，否则加 `auto-fix-requested`。只加不删。所有人的 issue 都适用，实例里不需要任何密钥。
 
-**分类：GitHub Actions**（`.github/workflows/issue-triage.yml`，逻辑在 `.github/scripts/issue-triage.js`，有单元测试）。所有新开或重开的 issue（也可手动 `workflow_dispatch` 指定编号重跑），把标题、正文（截到 8000 字）、其他打开的 issue 标题和 `.github/triage-context.md`（项目简介、类型、模块、难度标准）发给一个 OpenAI 兼容的 chat completions 接口（变量 `TRIAGE_API_BASE`、`TRIAGE_MODEL`，密钥 `TRIAGE_API_KEY`；没配就跳过）。回答只能从白名单里选：类型（`bug` / `ux` / `data` / `idea` / `question` / `documentation`，应用内反馈已经带类型的不再加）、一到两个 `area:*`、`duplicate`（只认打开的 issue 编号）、难度。`triage:simple` 还要作者是 `OWNER` / `MEMBER` / `COLLABORATOR`，由脚本判断，不由模型；其余、重复的、调用或解析失败的都是 `triage:judgment`。已经有难度标签的不再问。理由只写进运行摘要，不在 issue 上评论。每天一次的巡检会话把 `triage:simple` 当候选自动修复、验证、合进 dev（随下一次发版上线），`triage:judgment` 交给维护者。
+**分类：GitHub Actions**（`.github/workflows/issue-triage.yml`，逻辑在 `.github/scripts/issue-triage.js`，有单元测试）。所有新开或重开的 issue（也可手动 `workflow_dispatch` 指定编号重跑），把标题、正文（截到 8000 字）、其他打开的 issue 标题和 `.github/triage-context.md`（项目简介、类型、模块、难度标准）发给一个 OpenAI 兼容的 chat completions 接口（变量 `TRIAGE_API_BASE`、`TRIAGE_MODEL`，密钥 `TRIAGE_API_KEY`；没配就跳过）。回答只能从白名单里选：类型（`bug` / `ux` / `data` / `idea` / `question` / `documentation`，应用内反馈已经带类型的不再加）、一到两个 `area:*`、`duplicate`（只认打开的 issue 编号）、难度。`triage:simple` 还要作者是 `OWNER` / `MEMBER` / `COLLABORATOR`，由脚本判断，不由模型；其余、重复的、调用或解析失败的都是 `triage:judgment`。已经有难度标签的不再问。理由只写进运行摘要，不在 issue 上评论。`triage:simple` 是不用等维护者就能修的候选：修复、验证后经 PR 合进 dev（随下一次发版上线），动手前仍要再核对一次范围；`triage:judgment` 交给维护者。
 
 **给以后的自动化**：只有带 `auto-fix-ok` 且作者是仓库 owner / 成员 / 协作者的 issue 才算自动修复候选（标签任何有写权限的人都能加，作者关联才是授权依据，自动化应再核对一次）；上下文从 ```` ```json hebi8-context ```` 块里解析，`v` 不认识就跳过。
 
@@ -1164,7 +1164,7 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 
 ---
 
-## 7. Next.js 用法（这版 Next 与训练数据不同，写代码前读 `node_modules/next/dist/docs/01-app/`）
+## 7. Next.js 用法（Next 16 和以前的版本差别很大，写代码前读 `node_modules/next/dist/docs/01-app/`）
 
 必读：`01-getting-started/06-fetching-data.md`、`08-caching.md`、`09-revalidating.md`、`15-route-handlers.md`、`02-guides/server-actions.md`、`02-guides/instrumentation.md`、`03-api-reference/03-file-conventions/02-route-segment-config/`。
 
