@@ -9,6 +9,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { publicPost } from "./public-address";
 import { publicUrl } from "./app-info";
 import { callBot } from "./bot-api";
 import { fmtPrice } from "./format";
@@ -22,6 +23,8 @@ export interface Webhook {
 }
 
 export interface NotifyConfig {
+  /** Derived from the vault, never read from notify.json or user input. */
+  publicOnly?: boolean;
   /** `chat` is where the root vault's alerts go; a bot without one only serves people who bind on the page */
   /** `apis`: the Bot API addresses to choose from (`bot-api.ts`), Telegram's own when none are given */
   telegram?: { token: string; chat?: string; apis: string[] };
@@ -225,7 +228,7 @@ export function channelsFor(vault: string, owner: string | null): { config: Noti
   const own = login ? readNotifyUsers()[login] : undefined;
   const chat = own?.telegram?.chat ?? (vault === "" ? instance.telegram?.chat : undefined);
   const webhook = own?.webhook ?? (vault === "" ? instance.webhook : undefined);
-  const config: NotifyConfig = {};
+  const config: NotifyConfig = vault ? { publicOnly: true } : {};
   if (instance.telegram && chat) config.telegram = { ...instance.telegram, chat };
   if (webhook) config.webhook = webhook;
   if (instance.link) config.link = instance.link;
@@ -293,19 +296,24 @@ export async function sendTelegram(cfg: { token: string; chat: string; apis: str
   await callBot(cfg, "sendMessage", { chat_id: cfg.chat, text, disable_web_page_preview: true });
 }
 
-async function sendWebhook(cfg: NonNullable<NotifyConfig["webhook"]>, title: string, text: string, events: AlertEvent[]): Promise<void> {
-  const init: RequestInit =
+async function sendWebhook(cfg: NonNullable<NotifyConfig["webhook"]>, title: string, text: string, events: AlertEvent[], publicOnly = false): Promise<void> {
+  const init: { headers: Record<string, string>; body: string } =
     cfg.format === "json"
       ? { headers: { "content-type": "application/json" }, body: JSON.stringify({ title, text, events }) }
       : { headers: { "content-type": "text/plain; charset=utf-8", Title: "hebi8/market" }, body: text };
-  let res: Response;
+  let res: Response | undefined;
+  let status: number;
   try {
-    res = await fetch(cfg.url, { method: "POST", ...init, signal: AbortSignal.timeout(TIMEOUT) });
+    if (publicOnly) status = await publicPost(cfg.url, init.headers, init.body, AbortSignal.timeout(TIMEOUT));
+    else {
+      res = await fetch(cfg.url, { method: "POST", ...init, signal: AbortSignal.timeout(TIMEOUT) });
+      status = res.status;
+    }
   } catch (err) {
     // ntfy topics are secrets too, so the URL stays out of the message
     throw new Error(`webhook 请求失败（${err instanceof Error ? err.name : "error"}）`);
   }
-  if (!res.ok) throw new Error(`webhook ${res.status}：${(await res.text().catch(() => "")).slice(0, 200)}`);
+  if (status < 200 || status >= 300) throw new Error(`webhook ${status}${publicOnly ? "" : `：${(await res!.text().catch(() => "")).slice(0, 200)}`}`);
 }
 
 /**
@@ -334,8 +342,8 @@ export function pushPayload(title: string, text: string, events: AlertEvent[]): 
 }
 
 /** Every device at once; ones the push service no longer knows are removed. Fails only when none got it. */
-async function sendPushes(cfg: NonNullable<NotifyConfig["push"]>, payload: PushPayload): Promise<void> {
-  const results = await Promise.allSettled(cfg.devices.map((d) => sendPush(d, payload)));
+async function sendPushes(cfg: NonNullable<NotifyConfig["push"]>, payload: PushPayload, publicOnly = false): Promise<void> {
+  const results = await Promise.allSettled(cfg.devices.map((d) => sendPush(d, payload, publicOnly)));
   const gone = cfg.devices.filter((_, i) => results[i].status === "fulfilled" && results[i].value === "gone");
   if (gone.length) removePushDevices(cfg.login, gone.map((d) => pushDeviceId(d.endpoint)));
   if (results.some((r) => r.status === "fulfilled" && r.value === "sent")) return;
@@ -350,8 +358,8 @@ export async function deliver(cfg: NotifyConfig, title: string, text: string, ev
   const telegram = cfg.telegram;
   const chat = telegram?.chat;
   if (telegram && chat) jobs.push(["telegram", () => sendTelegram({ ...telegram, chat }, text)]);
-  if (cfg.webhook) jobs.push(["webhook", () => sendWebhook(cfg.webhook!, title, text, events)]);
-  if (cfg.push) jobs.push(["push", () => sendPushes(cfg.push!, pushPayload(title, text, events))]);
+  if (cfg.webhook) jobs.push(["webhook", () => sendWebhook(cfg.webhook!, title, text, events, cfg.publicOnly)]);
+  if (cfg.push) jobs.push(["push", () => sendPushes(cfg.push!, pushPayload(title, text, events), cfg.publicOnly)]);
   const results = await Promise.allSettled(jobs.map(([, job]) => job()));
   const out: Delivery = { sent: [], failed: [] };
   results.forEach((r, i) => {
