@@ -6,8 +6,8 @@
  *
  * The issue is untrusted input: it only reaches the model as text, and the model's answer only
  * picks from the allowlists below. `triage:simple` additionally needs a trusted author, decided
- * here from author_association, never by the model. The daily issue run fixes `triage:simple`
- * issues on its own and brings `triage:judgment` ones to the maintainer.
+ * here from author_association, never by the model. `triage:simple` issues are candidates for a
+ * fix without the maintainer; `triage:judgment` ones go to the maintainer.
  */
 
 const TYPES = ["bug", "ux", "data", "idea", "question", "documentation"];
