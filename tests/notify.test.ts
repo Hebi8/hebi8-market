@@ -132,10 +132,10 @@ describe("per-person channels", () => {
 
   it("anyone else gets only what they bound, through the instance's bot", async () => {
     const { channelNames, channelsFor, setUserChannel } = await import("@/lib/notify");
-    expect(channelsFor("alice", "Owner").config).toEqual({ link: ORIGIN });
+    expect(channelsFor("alice", "Owner").config).toEqual({ publicOnly: true, link: ORIGIN });
     setUserChannel("alice", "telegram", { chat: "3003" });
-    expect(channelsFor("alice", "Owner").config).toEqual({ telegram: { token: TOKEN, chat: "3003", apis: [api] }, link: ORIGIN });
-    expect(channelsFor("bob", "Owner").config).toEqual({ link: ORIGIN });
+    expect(channelsFor("alice", "Owner").config).toEqual({ publicOnly: true, telegram: { token: TOKEN, chat: "3003", apis: [api] }, link: ORIGIN });
+    expect(channelsFor("bob", "Owner").config).toEqual({ publicOnly: true, link: ORIGIN });
     // no bot in notify.json: a bound chat cannot be reached
     writeNotify({ link: ORIGIN });
     expect(channelNames(channelsFor("alice", "Owner").config)).toEqual([]);
@@ -314,7 +314,7 @@ describe("/api/notify", () => {
     const { GET } = await import("@/app/api/notify/route");
     const webhook = await import("@/app/api/notify/webhook/route");
     const test = await import("@/app/api/notify/test/route");
-    const { readNotifyUsers } = await import("@/lib/notify");
+    const { readNotifyUsers, setUserChannel } = await import("@/lib/notify");
 
     expect(await (await GET(req("/api/notify", { session: sessions.alice }))).json()).toMatchObject({ bot: true, telegram: null, webhook: null, push: { devices: [] } });
     expect((await test.POST(req("/api/notify/test", { method: "POST", session: sessions.alice }))).status).toBe(409);
@@ -325,14 +325,17 @@ describe("/api/notify", () => {
     expect((await webhook.PUT(req("/api/notify/webhook", { method: "PUT", session: sessions.alice, body: { url: `${api}/hook` }, origin: "http://evil.example" }))).status).toBe(403);
 
     // a login in the body is not who it is for
-    const ok = await webhook.PUT(req("/api/notify/webhook", { method: "PUT", session: sessions.alice, body: { url: `${api}/hook`, login: "bob" } }));
-    expect(await ok.json()).toMatchObject({ bot: true, telegram: null, webhook: { host: api.slice(7), format: "text", fromFile: false } });
-    expect(readNotifyUsers()).toEqual({ alice: { webhook: { url: `${api}/hook`, format: "text" } } });
+    const publicUrl = "https://8.8.8.8/hook";
+    const ok = await webhook.PUT(req("/api/notify/webhook", { method: "PUT", session: sessions.alice, body: { url: publicUrl, login: "bob" } }));
+    expect(await ok.json()).toMatchObject({ bot: true, telegram: null, webhook: { host: "8.8.8.8", format: "text", fromFile: false } });
+    expect(readNotifyUsers()).toEqual({ alice: { webhook: { url: publicUrl, format: "text" } } });
 
+    // Previously saved private addresses must also be refused at delivery.
+    setUserChannel("alice", "webhook", { url: `${api}/hook`, format: "text" });
     hooks.length = 0;
     const sent = await test.POST(req("/api/notify/test", { method: "POST", session: sessions.alice }));
-    expect(await sent.json()).toEqual({ sent: ["webhook"], failed: [] });
-    expect(hooks[0]).toContain("通知通道可用");
+    expect(await sent.json()).toEqual({ sent: [], failed: [{ channel: "webhook", error: "webhook 请求失败（Error）" }] });
+    expect(hooks).toEqual([]);
 
     expect(await (await webhook.DELETE(req("/api/notify/webhook", { method: "DELETE", session: sessions.alice }))).json()).toMatchObject({ webhook: null });
     expect(readNotifyUsers()).toEqual({});
