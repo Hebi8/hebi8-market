@@ -1,10 +1,11 @@
 /**
  * Web Push (design §2.7): the instance's VAPID keys and one request to a push service. The keys
  * are made the first time anything needs them and kept in `vapid.json` in the secrets dir; the
- * payload is encrypted by `web-push`, the request goes out with fetch like every other channel.
+ * payload is encrypted by `web-push`, delivery checks public addresses for other users.
  * Which devices someone has is in notify-users.json, kept by `notify.ts`.
  */
 import webpush from "web-push";
+import { publicPost } from "./public-address";
 import { REPO_URL, publicUrl } from "./app-info";
 import { readJson, writeJson } from "./secrets";
 
@@ -44,7 +45,8 @@ export function vapidSubject(): string {
 }
 
 /** "gone": the push service says the subscription no longer exists (404/410), so it can be dropped. */
-export async function sendPush(device: PushDevice, payload: PushPayload): Promise<"sent" | "gone"> {
+export async function sendPush(device: PushDevice, payload: PushPayload, publicOnly = false): Promise<"sent" | "gone"> {
+  if (publicOnly && new URL(device.endpoint).protocol !== "https:") throw new Error("推送地址只支持 https");
   const { publicKey, privateKey } = vapidKeys();
   const req = webpush.generateRequestDetails({ endpoint: device.endpoint, keys: device.keys }, JSON.stringify(payload), {
     vapidDetails: { subject: vapidSubject(), publicKey, privateKey },
@@ -52,15 +54,20 @@ export async function sendPush(device: PushDevice, payload: PushPayload): Promis
     urgency: "high",
   });
   const host = new URL(device.endpoint).host;
-  let res: Response;
+  let res: Response | undefined;
+  let status: number;
   try {
-    res = await fetch(req.endpoint, { method: req.method, headers: req.headers, body: new Uint8Array(req.body), signal: AbortSignal.timeout(TIMEOUT) });
+    if (publicOnly) status = await publicPost(req.endpoint, req.headers, new Uint8Array(req.body), AbortSignal.timeout(TIMEOUT));
+    else {
+      res = await fetch(req.endpoint, { method: req.method, headers: req.headers, body: new Uint8Array(req.body), signal: AbortSignal.timeout(TIMEOUT) });
+      status = res.status;
+    }
   } catch (err) {
     // the endpoint is the subscription's secret, so only its host goes into logs
     throw new Error(`${host} 请求失败（${err instanceof Error ? err.name : "error"}）`);
   }
-  if (res.status === 404 || res.status === 410) return "gone";
-  if (!res.ok) throw new Error(`${host} ${res.status}：${(await res.text().catch(() => "")).slice(0, 200)}`);
+  if (status === 404 || status === 410) return "gone";
+  if (status < 200 || status >= 300) throw new Error(`${host} ${status}${publicOnly ? "" : `：${(await res!.text().catch(() => "")).slice(0, 200)}`}`);
   return "sent";
 }
 

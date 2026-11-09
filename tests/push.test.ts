@@ -1,3 +1,5 @@
+import dns from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
@@ -6,9 +8,12 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertEvent } from "@/lib/notify";
 import type { PushDevice } from "@/lib/push";
+
+// Narrow the overload used by the address policy.
+const resolver = dns as { lookup: (host: string, options: { all: true }) => Promise<LookupAddress[]> };
 
 // web-push's own decoder, to read what a device would receive
 const ece = createRequire(import.meta.url)("http_ece") as { decrypt: (body: Buffer, params: Record<string, unknown>) => Buffer };
@@ -93,6 +98,8 @@ afterAll(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+afterEach(() => vi.restoreAllMocks());
+
 beforeEach(() => {
   fs.rmSync(usersFile, { force: true });
   fs.writeFileSync(path.join(secrets, "notify.json"), JSON.stringify({ telegram: { token: TOKEN, api }, link: ORIGIN }));
@@ -171,6 +178,7 @@ describe("/api/notify/push", () => {
     expect((await route.PUT(req("/api/notify/push", { method: "PUT", session: sessions.alice, body: sub }))).status).toBe(400);
     expect(readNotifyUsers()).toEqual({});
 
+    vi.spyOn(resolver, "lookup").mockResolvedValue([{ address: "8.8.8.8", family: 4 }]);
     const https = { ...sub, endpoint: "https://fcm.googleapis.com/fcm/send/abc" };
     const res = await route.PUT(req("/api/notify/push", { method: "PUT", session: sessions.alice, body: https }));
     const id = pushDeviceId(https.endpoint);
@@ -199,12 +207,12 @@ describe("delivery", () => {
     const { addPushDevice, channelsFor, deliver, formatDigest, setUserChannel } = await import("@/lib/notify");
     const phone = browser("phone");
     const laptop = browser("laptop");
-    setUserChannel("alice", "telegram", { chat: "42" });
-    setUserChannel("alice", "webhook", { url: `${api}/hook`, format: "text" });
-    addPushDevice("alice", phone.device);
-    addPushDevice("alice", laptop.device);
+    setUserChannel("owner", "telegram", { chat: "42" });
+    setUserChannel("owner", "webhook", { url: `${api}/hook`, format: "text" });
+    addPushDevice("owner", phone.device);
+    addPushDevice("owner", laptop.device);
 
-    const { config } = channelsFor("alice", "Owner");
+    const { config } = channelsFor("", "Owner");
     const { title, text } = formatDigest([btc], config.link);
     expect(await deliver(config, title, text, [btc])).toEqual({ sent: ["telegram", "webhook", "push"], failed: [] });
     expect(telegram[0].text).toBe(text);
@@ -244,12 +252,12 @@ describe("delivery", () => {
     const { addPushDevice, channelsFor, deliver } = await import("@/lib/notify");
     const { REPO_URL } = await import("@/lib/app-info");
     const subject = () => JSON.parse(Buffer.from(/^vapid t=([^,]+),/.exec(String(pushed.at(-1)!.headers.authorization))![1].split(".")[1], "base64url").toString()).sub;
-    addPushDevice("alice", browser("phone").device);
-    expect((await deliver(channelsFor("alice", "Owner").config, "t", "t\n\nx", [btc])).sent).toEqual(["push"]);
+    addPushDevice("owner", browser("phone").device);
+    expect((await deliver(channelsFor("", "Owner").config, "t", "t\n\nx", [btc])).sent).toEqual(["push"]);
     expect(subject()).toBe(ORIGIN);
     process.env.HEBI8_PUBLIC_URL = "http://localhost:3000";
     try {
-      expect(await deliver(channelsFor("alice", "Owner").config, "t", "t\n\nx", [btc])).toEqual({ sent: ["push"], failed: [] });
+      expect(await deliver(channelsFor("", "Owner").config, "t", "t\n\nx", [btc])).toEqual({ sent: ["push"], failed: [] });
       expect(subject()).toBe(REPO_URL);
     } finally {
       process.env.HEBI8_PUBLIC_URL = ORIGIN;
@@ -258,29 +266,29 @@ describe("delivery", () => {
 
   it("removes a device the push service no longer knows; the channel counts as sent while one device got it", async () => {
     const { addPushDevice, channelsFor, deliver, readNotifyUsers } = await import("@/lib/notify");
-    for (const name of ["kept", "gone", "missing"]) addPushDevice("alice", browser(name).device);
+    for (const name of ["kept", "gone", "missing"]) addPushDevice("owner", browser(name).device);
     status.gone = 410;
     status.missing = 404;
-    expect(await deliver(channelsFor("alice", "Owner").config, "t", "t\n\nx", [btc])).toEqual({ sent: ["push"], failed: [] });
-    expect(readNotifyUsers().alice.push?.map((d) => d.label)).toEqual(["kept"]);
+    expect(await deliver(channelsFor("", "Owner").config, "t", "t\n\nx", [btc])).toEqual({ sent: ["push"], failed: [] });
+    expect(readNotifyUsers().owner.push?.map((d) => d.label)).toEqual(["kept"]);
   });
 
   it("fails push alone when no device got it: an error keeps the device, a gone one is removed", async () => {
     const { addPushDevice, channelNames, channelsFor, deliver, readNotifyUsers, setUserChannel } = await import("@/lib/notify");
-    setUserChannel("alice", "webhook", { url: `${api}/hook`, format: "text" });
-    addPushDevice("alice", browser("down").device);
-    addPushDevice("alice", browser("gone").device);
+    setUserChannel("owner", "webhook", { url: `${api}/hook`, format: "text" });
+    addPushDevice("owner", browser("down").device);
+    addPushDevice("owner", browser("gone").device);
     status.down = 500;
     status.gone = 410;
-    const delivery = await deliver(channelsFor("alice", "Owner").config, "t", "t\n\nx", [btc]);
+    const delivery = await deliver(channelsFor("", "Owner").config, "t", "t\n\nx", [btc]);
     expect(delivery.sent).toEqual(["webhook"]);
     expect(delivery.failed).toEqual([{ channel: "push", error: `${api.slice(7)} 500：push service says no；1 台设备的订阅已失效，已移除` }]);
-    expect(readNotifyUsers().alice.push?.map((d) => d.label)).toEqual(["down"]);
+    expect(readNotifyUsers().owner.push?.map((d) => d.label)).toEqual(["down"]);
 
     status.down = 410;
-    expect((await deliver(channelsFor("alice", "Owner").config, "t", "t\n\nx", [btc])).failed[0].channel).toBe("push");
-    expect(readNotifyUsers().alice.push).toBeUndefined();
-    expect(channelNames(channelsFor("alice", "Owner").config)).toEqual(["webhook"]);
+    expect((await deliver(channelsFor("", "Owner").config, "t", "t\n\nx", [btc])).failed[0].channel).toBe("push");
+    expect(readNotifyUsers().owner.push).toBeUndefined();
+    expect(channelNames(channelsFor("", "Owner").config)).toEqual(["webhook"]);
   });
 });
 

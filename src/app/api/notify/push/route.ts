@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { addPushDevice, channelSummary, removePushDevices } from "@/lib/notify";
 import { notifyCaller } from "@/lib/notify-caller";
+import { requirePublicUrl } from "@/lib/public-address";
 import { deviceLabel } from "@/lib/push";
 
 export const dynamic = "force-dynamic";
@@ -18,6 +19,13 @@ export async function PUT(request: NextRequest) {
   const auth = body?.keys?.auth;
   if (typeof endpoint !== "string" || !URL.canParse(endpoint) || new URL(endpoint).protocol !== "https:" || !isKey(p256dh) || !isKey(auth)) {
     return NextResponse.json({ error: "不是有效的推送订阅" }, { status: 400 });
+  }
+  if (caller.vault) {
+    try {
+      await requirePublicUrl(endpoint, "推送地址");
+    } catch (err) {
+      return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
+    }
   }
   addPushDevice(caller.login, { endpoint, keys: { p256dh, auth }, label: deviceLabel(request.headers.get("user-agent") ?? ""), added: Date.now() });
   return NextResponse.json(channelSummary(caller.vault, caller.owner));
