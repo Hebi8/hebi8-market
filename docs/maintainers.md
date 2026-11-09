@@ -8,7 +8,7 @@
 |---|---|
 | [`README.md`](../README.md) | 给第一次来的人：一句话介绍、核心功能各一两句、快速开始、数据源概览、文档索引。不写操作细节 |
 | [`docs/usage.md`](usage.md) | 每项功能的完整操作、快捷键、公式、警报和通知、代码指标、MCP 接入 |
-| [`docs/self-hosting.md`](self-hosting.md) | 生产运行、`deploy.sh`、GitHub Actions 自动部署、环境变量、vault、实例状态、多人共用、网页登录 |
+| [`docs/self-hosting.md`](self-hosting.md) | 生产运行、`deploy.sh`、GitHub Actions 自动部署、环境变量、vault、实例状态、多人共用、放到公网、网页登录 |
 | [`docs/architecture.md`](architecture.md) | 英文：代码地图和各模块要守的约定（vault、viewer、行情和警报、MCP、标的资料、指标）、issue 和分支的流程概要、文档分工、验证命令 |
 | `docs/maintainers.md`（本文） | 文档约定、GitHub App、反馈标签、分支与发版、正式环境、dev 实例、源码结构、验证 |
 | [`docs/design.md`](design.md) | 设计：数据模型、同步、接口、页面行为的规格 |
