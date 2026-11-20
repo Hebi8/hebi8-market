@@ -1,6 +1,6 @@
 /** In-app daily sync at the wall-clock times in `sync.at`, with a catch-up run after downtime. */
 import { refreshProfiles } from "./profiles";
-import { maxSyncedAt } from "./store";
+import { lastFullSync } from "./store";
 import { syncAll, unionSyncKeys } from "./sync";
 import { dayOf, partsIn, zonedToUtc } from "./tz";
 import { ensureVault, loadVaults, readConfigSafe, vaultDir } from "./vault";
@@ -84,10 +84,11 @@ export function startScheduler(): void {
   };
 
   // Like systemd's Persistent=true: if the last slot passed while the app was down, run it now.
+  // Only a full sync covers a slot: one symbol fetched on its own (added, or opened) does not.
   const { at, tz } = settings();
   let last: number | null = null;
   try {
-    last = maxSyncedAt();
+    last = lastFullSync();
   } catch (err) {
     log(`cache unavailable: ${err instanceof Error ? err.message : String(err)}`);
   }

@@ -152,6 +152,19 @@ export function writeStats(vault: string, rows: Record<string, Stats>): void {
   })();
 }
 
+/** A syncAll that went through every vault, by when it started (ms). */
+export function markFullSync(startedAt: number): void {
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare("DELETE FROM full_sync").run();
+    db.prepare("INSERT INTO full_sync (started_at) VALUES (?)").run(startedAt);
+  })();
+}
+
+export function lastFullSync(): number | null {
+  return (getDb().prepare("SELECT max(started_at) AS t FROM full_sync").get() as { t: number | null }).t;
+}
+
 export function maxSyncedAt(): number | null {
   return (getDb().prepare("SELECT max(synced_at) AS t FROM symbols").get() as { t: number | null }).t;
 }

@@ -5,7 +5,7 @@ import { readProfile, refreshProfile } from "./profiles";
 import { adapters } from "./sources";
 import type { FetchResult } from "./sources/types";
 import { overviewStats } from "./quotes";
-import { countBars, ensureSymbol, getSymbol, latestBarTime, markSyncError, markSynced, readDaily, writeBars } from "./store";
+import { countBars, ensureSymbol, getSymbol, latestBarTime, markFullSync, markSyncError, markSynced, readDaily, writeBars } from "./store";
 import { parseKey } from "./symbols";
 import { compareKeys, loadVaults, readConfig, type VaultConfig } from "./vault";
 
@@ -110,7 +110,11 @@ export async function syncOne(key: string, force = false): Promise<SyncOutcome> 
   return outcome;
 }
 
-/** Everything any vault references, 4 at a time, then each vault's overview stats and alerts; concurrent callers share the run. */
+/**
+ * Everything any vault references, 4 at a time, then each vault's overview stats and alerts;
+ * concurrent callers share the run. A run that gets through is recorded with its start, which the
+ * scheduler's catch-up goes by (symbols that failed show their own error).
+ */
 export function syncAll(force = false): Promise<SyncOutcome[]> {
   if (allInFlight) return allInFlight;
   allInFlight = (async () => {
@@ -124,6 +128,7 @@ export function syncAll(force = false): Promise<SyncOutcome[]> {
         (failed.length ? `, failed: ${failed.map((r) => `${r.key} (${r.error})`).join(", ")}` : ""),
     );
     for (const v of vaults) await runAlerts(v, () => readConfig(v.dir));
+    markFullSync(started);
     return results;
   })().finally(() => {
     allInFlight = null;

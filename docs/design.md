@@ -194,6 +194,9 @@ CREATE TABLE quotes (                       -- §2.6：盘中轮询拿到的最�
   session TEXT NOT NULL,                                -- open | closed | pre | post | always
   fetched_at INTEGER NOT NULL
 );
+CREATE TABLE full_sync (                    -- §2.2：最近一次走完的 syncAll 开始的时间（ms），一行；启动补跑看它
+  started_at INTEGER NOT NULL
+);
 CREATE TABLE traffic (                      -- §1.7：按天聚合的请求计数，保留 90 天；行数有上限
   day INTEGER NOT NULL,                     -- 实例时区（sync.tz）的日期，UTC 零点的 unix 秒，同 bars.t
   origin TEXT NOT NULL,                     -- public（隧道）| tailnet
@@ -312,7 +315,7 @@ interface SourceAdapter {
 
 - `src/instrumentation.ts` 导出 `register()`，仅在 `process.env.NEXT_RUNTIME === "nodejs"` 时启动调度；用 `globalThis` 守卫防止 dev 模式重复启动。
 - 按 `sync.at × sync.tz` 算下一个时刻（用 `Intl.DateTimeFormat` 处理时区与夏令时，不引入日期库），`setTimeout` 链式调度。
-- 启动时：若 `max(symbols.synced_at)` 早于最近一个已过去的时刻，延迟 5s 后补跑一次（等价 systemd 的 `Persistent=true`）。
+- 启动时：若最近一次走完的 `syncAll`（`full_sync` 表记着它开始的时间）早于最近一个已过去的时刻，延迟 5s 后补跑一次（等价 systemd 的 `Persistent=true`）。只同步一个标的（加自选、打开不在自选里的标的）不算：它不跑自选的并集，也不判断警报。升级后第一次启动还没有这条记录，会补跑一次。
 - 每次调度的同步跑完（K 线、stats、警报之后），再刷新到期的标的资料（§2.8）。资料自己在后面跑，**不等它**：同步一完就照常排下一次，数据源再慢（TV 的会话一个要等 20 秒超时）也不会把下一个时刻拖过去；它出错只记一行日志。同步本身失败的那一轮不刷资料。手动「刷新」不带这一步。
 - 日志打到 stdout（journalctl 能看）。
 

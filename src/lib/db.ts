@@ -184,6 +184,13 @@ const MIGRATIONS: ((db: Database.Database) => void)[] = [
       -- older bars (a sync that failed, between two quote rounds) changes nothing.
       ALTER TABLE alert_state ADD COLUMN seen_t INTEGER;
     `),
+  (db) =>
+    db.exec(`
+      -- When the last syncAll that went through every vault started (ms), one row: the scheduled
+      -- times at or before it are covered, so a restart catches up from here (src/lib/scheduler.ts).
+      -- A symbol synced on its own does not count.
+      CREATE TABLE full_sync (started_at INTEGER NOT NULL);
+    `),
 ];
 
 const dbFile = () => process.env.HEBI8_DB ?? path.join(process.cwd(), "data", "hebi8.db");
