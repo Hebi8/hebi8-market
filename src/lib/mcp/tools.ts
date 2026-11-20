@@ -10,14 +10,14 @@ import { ALERT_CONDS, type AlertCond, type AlertCondition } from "../alert-conds
 import { alertBadges, alertViews } from "../alert-view";
 import { adoptConditionState, alertKeys, readState, stateId } from "../alerts";
 import { barClosed, loadDaily, synthNoData, tradesWeekends } from "../bars";
-import { allItems, findItem, resolveKey, type Config } from "../config";
+import { aliasOf, allItems, findItem, resolveKey, type Config } from "../config";
 import { fmtDate } from "../format";
 import { nameOf } from "../names";
 import * as ops from "../ops";
 import { CHANGE_PERIODS } from "../periods";
 import { valuation } from "../profile";
 import { profileView } from "../profiles";
-import { liveReader, liveStats, tradedPrice } from "../quotes";
+import { liveReader, overviewStats, tradedPrice } from "../quotes";
 import { readerFor, scan, testFormula } from "../scan";
 import { scheduledNextSync, nextRun } from "../scheduler";
 import { localSearch, mergeResults, normalizeQuery, suggestGroup } from "../search";
@@ -26,7 +26,6 @@ import { searchExternal } from "../search-external";
 import { aggregate } from "../series";
 import { getSymbol, listSymbols, maxSyncedAt } from "../store";
 import { isSynthetic, isValidKey, TIMEFRAMES } from "../symbols";
-import { statsFor } from "../sync";
 import { listJournals, listNotes, readConfig, readJournal, readNote } from "../vault";
 import type { Viewer } from "../viewer";
 import { currentWeekId, isWeekId } from "../week";
@@ -63,7 +62,6 @@ function keyOf(cfg: Config, ref: string): string {
   return key;
 }
 
-const aliasOf = (cfg: Config, key: string) => Object.entries(cfg.aliases).find(([, k]) => k === key)?.[0];
 
 const SAVED_DRAFT =
   "Saved as a DRAFT, not active. An alert on the whole watchlist only takes effect after the user confirms it on the page: 确认 at the top of the overview, or in the 警报 panel of any chart. Until then it is not judged and nothing is pushed. Tell the user it is waiting for their confirmation.";
@@ -79,8 +77,7 @@ export const TOOLS: Tool[] = [
     run: ({ dir, vault }) => {
       const cfg = readConfig(dir);
       const symbols = listSymbols();
-      const stats = statsFor(vault, cfg);
-      const live = liveStats(vault, cfg, symbols);
+      const stats = overviewStats(vault, cfg, symbols);
       const badges = alertBadges(vault, cfg);
       const failed = allItems(cfg).flatMap((i) => (symbols[i.key]?.syncError ? [{ key: i.key, error: symbols[i.key].syncError }] : []));
       return {
@@ -90,17 +87,17 @@ export const TOOLS: Tool[] = [
           name: g.name,
           symbols: g.symbols.map((item) => {
             const row = symbols[item.key];
-            const s = live[item.key]?.stats ?? stats[item.key];
-            const quote = live[item.key]?.status;
+            const s = stats[item.key]?.stats;
+            const quote = stats[item.key]?.status;
             const holding = (badges[item.key] ?? []).filter((b) => b.state === "fresh" || b.state === "on");
             return {
               key: item.key,
-              alias: aliasOf(cfg, item.key),
+              alias: aliasOf(cfg.aliases, item.key),
               name: nameOf(cfg, item.key, row?.name),
               bench: item.bench ?? undefined,
               price: s ? num(s.last) : null,
               date: s ? fmtDate(s.lastTime) : null,
-              currency: row?.currency ?? s?.currency ?? undefined,
+              currency: row?.currency ?? undefined,
               session: quote?.session ?? undefined,
               quoted_at: iso(quote?.quotedAt) ?? undefined,
               change_pct: s ? Object.fromEntries(CHANGE_PERIODS.map((p) => [p.key, pct(s.changes[p.key])])) : null,
@@ -233,7 +230,7 @@ export const TOOLS: Tool[] = [
         turned_true: rows.filter((r) => r.holds && r.held === false).map((r) => r.key),
         failed: rows.filter((r) => r.error).length,
         uncached_references: uncached.length ? uncached : undefined,
-        rows: (args.only_true ? rows.filter((r) => r.holds || r.error) : rows).map((r) => ({ key: r.key, alias: aliasOf(cfg, r.key), name: r.name, value: r.value, prev: r.prev, holds: r.holds ?? undefined, date: r.date, error: r.error })),
+        rows: (args.only_true ? rows.filter((r) => r.holds || r.error) : rows).map((r) => ({ key: r.key, alias: aliasOf(cfg.aliases, r.key), name: r.name, value: r.value, prev: r.prev, holds: r.holds ?? undefined, date: r.date, error: r.error })),
       };
     },
   }),
@@ -454,7 +451,7 @@ export const TOOLS: Tool[] = [
       const cfg = readConfig(viewer.dir);
       const key = keyOf(cfg, args.key);
       if (!findItem(cfg, key)) throw new Error(`${key} 不在自选里`);
-      ops.removeSymbol(viewer, key);
+      ops.editWatchlist(viewer, { type: "removeSymbol", key });
       return { removed: key };
     },
   }),

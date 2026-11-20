@@ -727,15 +727,81 @@ describe("quote polling", () => {
       expect(fired()).toEqual([expect.stringContaining("2 new alert(s)")]);
       const today = readState("").get(stateId("alert:formula", BTC))!.firedBar;
       await quote(99);
-      // the daily sync fails: its pass sees the old bar, where both hold again
+      // the daily sync fails: its pass sees the old bar, where both would hold again, and is not taken
       await runAlerts(vault, () => readConfig(root));
-      expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 1, firedBar: today });
-      expect(readState("").get(stateId("alert:level", BTC))).toMatchObject({ state: 1, firedBar: today });
+      expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 0, firedBar: today, seen: { [BTC]: today } });
+      expect(readState("").get(stateId("alert:level", BTC))).toMatchObject({ state: 0, firedBar: today, seen: { [BTC]: today } });
       await quote(99);
       await quote(101);
       expect(fired()).toHaveLength(1);
       logs.mockRestore();
     });
+
+    it("a failed sync the day after a firing does not turn the alert off, so the next quote does not fire it again", async () => {
+      const { quoteRound } = await import("@/lib/quotes");
+      const { runAlerts, readState, stateId } = await import("@/lib/alerts");
+      const { readConfig } = await import("@/lib/vault");
+      const { writeBars } = await import("@/lib/store");
+      // the last synced bar is today's, at 90; the quotes come on the next two days
+      const d0 = Math.floor(Date.now() / 86400_000) * DAY;
+      writeBars(BTC, [{ ...bar(90), t: d0 }], "replace");
+      // fires when it turns true, at most once per bar
+      const vault = await watching(['{ id: formula, key: BTC, when: "close > 100", trigger: bar }']);
+      const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const fired = () => logs.mock.calls.flat().filter((m) => /new alert\(s\)/.test(String(m)));
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const quote = async (price: number, day: number, minutes = 0) => {
+          const at = (d0 + day * DAY + 12 * 3600) * 1000 + minutes * 60_000;
+          vi.setSystemTime(at);
+          prices.BTCUSDT = price;
+          await quoteRound(at, [vault]);
+        };
+        // a formula's first check only records
+        await quote(95, 1);
+        await quote(110, 1, 5);
+        expect(fired()).toEqual([expect.stringContaining("1 new alert(s)")]);
+        await quote(111, 2);
+        // the daily sync fails: its pass sees the old bar at 90 and must not take the state back
+        await runAlerts(vault, () => readConfig(root));
+        expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 1, seen: { [BTC]: d0 + 2 * DAY } });
+        await quote(112, 2, 5);
+        expect(fired()).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+        logs.mockRestore();
+      }
+    });
+
+    // SPY trades Monday to Friday, BTC every day; T0 is a Monday
+    const synthetic = [
+      // SPY's last synced bar is Thursday's 90 while a quote makes its Friday 110; BTC has bars through Saturday
+      { key: `=${SPY}/BTC`, quoted: SPY, bars: { [SPY]: [bar(120, 2), bar(90, 3)], [BTC]: [2, 3, 4, 5].map((i) => bar(1, i)) }, quote: bar(110, 4), seen: { [SPY]: 4, [BTC]: 4 } },
+      // BTC's Saturday is a quote at 110 over SPY's Thursday (forward-filled); the synced bars end on BTC's Friday at 90
+      { key: `=BTC/${SPY}`, quoted: BTC, bars: { [BTC]: [bar(120, 2), bar(120, 3), bar(90, 4)], [SPY]: [bar(1, 2), bar(1, 3)] }, quote: bar(110, 5), seen: { [BTC]: 5, [SPY]: 3 } },
+    ];
+    it.each(synthetic.flatMap((c) => ["D", "W"].map((tf) => ({ ...c, tf }))))(
+      "$key on $tf: a sync that brings an operand's older bar is no new fall",
+      async ({ key, quoted, bars, quote, seen, tf }) => {
+        const { runAlerts, readState, stateId } = await import("@/lib/alerts");
+        const { readConfig } = await import("@/lib/vault");
+        const { readDaily, writeBars } = await import("@/lib/store");
+        for (const [k, b] of Object.entries(bars)) writeBars(k, b, "replace");
+        const vault = await watching([`{ id: low, key: "${key}", when: "close < 100", tf: ${tf}, check: price }`]);
+        const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        // a quote round (a formula's first check only records)
+        const withQuote = (k: string) => (k === quoted ? [...readDaily(k), quote] : readDaily(k));
+        await runAlerts(vault, () => readConfig(root), "quotes", withQuote);
+        const id = stateId("alert:low", key);
+        const days = Object.fromEntries(Object.entries(seen).map(([k, i]) => [k, T0 + i * DAY]));
+        expect(readState("").get(id)).toMatchObject({ state: 0, seen: days });
+        // the daily sync without the quoted day: an older bar of an operand, not a fall below 100
+        await runAlerts(vault, () => readConfig(root));
+        expect(readState("").get(id)).toMatchObject({ state: 0, seen: days });
+        expect(logs.mock.calls.flat().filter((m) => /new alert\(s\)/.test(String(m)))).toEqual([]);
+        logs.mockRestore();
+      },
+    );
 
     it("a close alert reads the other symbols of its formula up to their own last close", async () => {
       const { runAlerts, readState, stateId } = await import("@/lib/alerts");
@@ -802,8 +868,8 @@ describe("quote polling", () => {
     });
 
     it("the overview takes the price from any quote newer than the sync, the session only while it is current", async () => {
-      const { quoteRound, liveStats } = await import("@/lib/quotes");
-      const { getSymbol, readAllStats, writeBars, writeQuotes } = await import("@/lib/store");
+      const { quoteRound, overviewStats } = await import("@/lib/quotes");
+      const { getSymbol, writeBars, writeQuotes } = await import("@/lib/store");
       const GOLD = "tv:TVC:GOLD";
       writeBars(BTC, closes(100, 101), "replace");
       writeBars(SPY, closes(400, 410), "replace");
@@ -821,21 +887,23 @@ describe("quote polling", () => {
         { key: GOLD, price: 5000, time: day, session: "closed", fetchedAt: getSymbol(GOLD)!.syncedAt! - 1000 },
       ]);
       const cfg = normalizeConfig({ aliases: { BTC, GOLD }, groups: [{ name: "all", symbols: ["BTC", SPY, GOLD, "yahoo:QQQ", "=BTC/GOLD"] }] });
-      const live = liveStats("", cfg);
-      expect(Object.keys(live).sort()).toEqual([BTC, SPY, "=BTC/GOLD"].sort());
-      expect(live[BTC].status.session).toBe("always");
+      const live = overviewStats("", cfg);
+      // every row with bars; QQQ has none
+      expect(Object.keys(live).sort()).toEqual([BTC, SPY, GOLD, "=BTC/GOLD"].sort());
+      expect(live[BTC].status!.session).toBe("always");
       expect(live[BTC].stats.last).toBe(105);
       expect(live[BTC].stats.changes["1W"]).toBeCloseTo(105 / 101 - 1);
       expect(live[SPY].status).toMatchObject({ session: null, quotedAt: twoHoursAgo });
       expect(live[SPY].stats.last).toBe(500);
       // a synthetic row moves with its operands' quotes, as on its chart: as old as the oldest one taken, no session
       expect(live["=BTC/GOLD"].stats.last).toBeCloseTo(105 / 4100);
-      expect(live["=BTC/GOLD"].status).toEqual({ syncedAt: null, syncError: null, session: null, quotedAt: live[BTC].status.quotedAt });
-      expect(readAllStats("")[BTC]?.last).not.toBe(105);
+      expect(live["=BTC/GOLD"].status).toEqual({ syncedAt: null, syncError: null, session: null, quotedAt: live[BTC].status!.quotedAt });
+      // a row whose price is the daily close has no quote status
+      expect(live[GOLD]).toEqual({ stats: expect.objectContaining({ last: 4100 }), status: null });
     });
 
-    it("the overview's live stats are computed once per quote round or sync and vault, not per page view", async () => {
-      const { liveStats } = await import("@/lib/quotes");
+    it("the overview's stats are computed once per quote round or sync and vault, not per page view", async () => {
+      const { overviewStats } = await import("@/lib/quotes");
       const store = await import("@/lib/store");
       const { getDb } = await import("@/lib/db");
       store.writeBars(BTC, closes(100, 101), "replace");
@@ -844,34 +912,51 @@ describe("quote polling", () => {
       const cfg = normalizeConfig({ groups: [{ name: "all", symbols: [BTC] }] });
       const reads = vi.spyOn(getDb(), "prepare");
       const barReads = () => reads.mock.calls.filter(([sql]) => sql.includes("FROM bars")).length;
-      const first = liveStats("", cfg);
+      const first = overviewStats("", cfg);
       expect(barReads()).toBe(1);
       // the same view again, and another person's page with the same list: no bars read for the first, once for the other
-      expect(liveStats("", cfg)[BTC].stats).toBe(first[BTC].stats);
+      expect(overviewStats("", cfg)[BTC].stats).toBe(first[BTC].stats);
       expect(barReads()).toBe(1);
-      expect(liveStats("bob", cfg)[BTC].stats).toEqual(first[BTC].stats);
+      expect(overviewStats("bob", cfg)[BTC].stats).toEqual(first[BTC].stats);
       expect(barReads()).toBe(2);
       // a new quote, another prices mode, another list: computed again
       store.writeQuotes([{ ...quote, price: 110, fetchedAt: quote.fetchedAt + 1 }]);
-      expect(liveStats("", cfg)[BTC].stats.last).toBe(110);
-      expect(liveStats("", { ...cfg, prices: "total" })[BTC].stats).not.toBe(liveStats("", cfg)[BTC].stats);
+      expect(overviewStats("", cfg)[BTC].stats.last).toBe(110);
+      expect(overviewStats("", { ...cfg, prices: "total" })[BTC].stats).not.toBe(overviewStats("", cfg)[BTC].stats);
       // a daily sync after the quote: the synced bar is the price again
-      const before = barReads();
       store.markSynced(BTC, {});
-      expect(liveStats("", cfg)).toEqual({});
-      expect(barReads()).toBe(before);
+      expect(overviewStats("", cfg)[BTC]).toEqual({ stats: expect.objectContaining({ last: 101 }), status: null });
       reads.mockRestore();
     });
 
+    it("the overview follows a sync that lands in the same millisecond as the one before", async () => {
+      const { overviewStats } = await import("@/lib/quotes");
+      const { getDb } = await import("@/lib/db");
+      const store = await import("@/lib/store");
+      getDb().prepare("DELETE FROM quotes").run();
+      const cfg = normalizeConfig({ groups: [{ name: "all", symbols: [BTC] }] });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        store.writeBars(BTC, closes(4, 5), "replace");
+        store.markSynced(BTC, {});
+        expect(overviewStats("", cfg)[BTC].stats.last).toBe(5);
+        store.writeBars(BTC, closes(4, 7), "replace");
+        store.markSynced(BTC, {});
+        expect(overviewStats("", cfg)[BTC].stats.last).toBe(7);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("the overview leaves a quote for a day before the last bar alone: no tag, the daily close", async () => {
-      const { liveReader, liveStats } = await import("@/lib/quotes");
+      const { liveReader, overviewStats } = await import("@/lib/quotes");
       const { writeBars, writeQuotes } = await import("@/lib/store");
       const { getDb } = await import("@/lib/db");
       // the last bar is Tuesday Jan 6; after the sync a fresh quote for Monday comes in
       writeBars(SPY, closes(110, 120), "replace");
       getDb().prepare("UPDATE symbols SET synced_at = ? WHERE key = ?").run(Date.now() - 60_000, SPY);
       writeQuotes([{ key: SPY, price: 115, time: T0 + 15 * 3600, session: "open", fetchedAt: Date.now() }]);
-      expect(liveStats("", normalizeConfig({ groups: [{ name: "all", symbols: [SPY] }] }))).toEqual({});
+      expect(overviewStats("", normalizeConfig({ groups: [{ name: "all", symbols: [SPY] }] }))[SPY]).toEqual({ stats: expect.objectContaining({ last: 120 }), status: null });
       expect(liveReader()(SPY).at(-1)?.c).toBe(120);
     });
 
@@ -889,6 +974,95 @@ describe("quote polling", () => {
       expect(await last("D")).toMatchObject({ close: 410, bench: 101 });
       expect(await last("W")).toMatchObject({ close: 410, bench: 150 });
       expect(await last("M")).toMatchObject({ close: 410, bench: 150 });
+    });
+
+    it("an alert on a synthetic symbol shows its price with the time of the quote it moves with", async () => {
+      const { alertViews } = await import("@/lib/alert-view");
+      const { readConfig } = await import("@/lib/vault");
+      const { listSymbols, writeBars, writeQuotes } = await import("@/lib/store");
+      const GOLD = "tv:TVC:GOLD";
+      writeBars(BTC, closes(100, 101), "replace");
+      writeBars(GOLD, closes(4000, 4100), "replace");
+      const fetchedAt = Date.now();
+      writeQuotes([{ key: BTC, price: 150, time: Math.floor(fetchedAt / 1000), session: "always", fetchedAt }]);
+      const vault = await watching(['{ key: "=BTC/tv:TVC:GOLD", cond: greater, value: 1 }', "{ key: BTC, cond: greater, value: 1 }"]);
+      const [synthetic, btc] = alertViews("", readConfig(vault.dir), listSymbols());
+      expect(btc).toMatchObject({ price: 150, priceAt: fetchedAt });
+      expect(synthetic.price).toBeCloseTo(150 / 4100);
+      expect(synthetic.priceAt).toBe(fetchedAt);
+    });
+
+    it("an alias pointed at another symbol is judged on that one's bars, not held back by the old one's day", async () => {
+      const { runAlerts } = await import("@/lib/alerts");
+      const { readConfig } = await import("@/lib/vault");
+      const { writeBars } = await import("@/lib/store");
+      // SPY's last bar is Friday's 90; NVDA's is Thursday's 110
+      writeBars(SPY, [bar(90, 3), bar(90, 4)], "replace");
+      writeBars("yahoo:NVDA", [bar(110, 2), bar(110, 3)], "replace");
+      const yaml = (target: string) => `aliases:\n  PICK: ${target}\nalerts:\n  - { id: pick, key: "=PICK", when: "close > 100", check: price }\n`;
+      fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml(SPY));
+      const vault = { id: "", dir: root, config: readConfig(root) };
+      const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      await runAlerts(vault, () => readConfig(root));
+      fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml("yahoo:NVDA"));
+      await runAlerts(vault, () => readConfig(root));
+      expect(logs.mock.calls.flat().filter((m) => /new alert\(s\)/.test(String(m)))).toEqual([expect.stringContaining("1 new alert(s)")]);
+      logs.mockRestore();
+    });
+
+    it("a synthetic key whose first operand's alias moves to a symbol with older days starts over", async () => {
+      const { runAlerts } = await import("@/lib/alerts");
+      const { readConfig } = await import("@/lib/vault");
+      const { writeBars } = await import("@/lib/store");
+      const ETH = "binance:ETHUSDT";
+      // BTC's last bar is Saturday's 90, SPY's Friday's 110; ETH is 1 on both days
+      writeBars(BTC, [bar(90, 4), bar(90, 5)], "replace");
+      writeBars(SPY, [bar(110, 3), bar(110, 4)], "replace");
+      writeBars(ETH, [bar(1, 4), bar(1, 5)], "replace");
+      const yaml = (target: string) => `aliases:\n  FIRST: ${target}\nalerts:\n  - { id: first, key: "=FIRST/${ETH}", when: "close > 100", check: price }\n`;
+      fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml(BTC));
+      const vault = { id: "", dir: root, config: readConfig(root) };
+      const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      await runAlerts(vault, () => readConfig(root));
+      fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml(SPY));
+      await runAlerts(vault, () => readConfig(root));
+      expect(logs.mock.calls.flat().filter((m) => /new alert\(s\)/.test(String(m)))).toEqual([expect.stringContaining("1 new alert(s)")]);
+      logs.mockRestore();
+    });
+
+    it("a synthetic symbol's price is not dated by a quote its last bar does not use", async () => {
+      const { alertViews } = await import("@/lib/alert-view");
+      const { readConfig } = await import("@/lib/vault");
+      const { listSymbols, writeBars, writeQuotes } = await import("@/lib/store");
+      // the last bar is Friday's, on SPY's days; BTC's Saturday quote does not reach it
+      writeBars(SPY, closes(100, 100, 100, 100, 100), "replace");
+      writeBars(BTC, closes(1, 1, 1, 1, 1), "replace");
+      const fetchedAt = Date.now();
+      writeQuotes([{ key: BTC, price: 2, time: T0 + 5 * DAY + 12 * 3600, session: "always", fetchedAt }]);
+      const vault = await watching([`{ key: "=${SPY}/BTC", cond: greater, value: 1000 }`]);
+      const symbols = listSymbols();
+      const [view] = alertViews("", readConfig(vault.dir), symbols);
+      expect(view.price).toBe(100);
+      expect(view.priceAt).toBe(Math.min(symbols[SPY].syncedAt!, symbols[BTC].syncedAt!));
+    });
+
+    it("a chart link to a synthetic symbol whose alias is gone has no price, and does not throw", async () => {
+      const { latestPrice } = await import("@/lib/alert-view");
+      const { readConfig } = await import("@/lib/vault");
+      const vault = await watching([]);
+      expect(latestPrice("=MISSING", readConfig(vault.dir))).toEqual({ price: null, at: null });
+    });
+
+    it("/api/bars names a symbol from the dictionary when the yaml does not", async () => {
+      const { writeBars } = await import("@/lib/store");
+      const { getDb } = await import("@/lib/db");
+      const { NextRequest } = await import("next/server");
+      const { GET } = await import("@/app/api/bars/route");
+      writeBars("tv:TVC:GOLD", closes(4000, 4100), "replace");
+      getDb().prepare("UPDATE symbols SET name = 'Gold Spot / U.S. Dollar' WHERE key = 'tv:TVC:GOLD'").run();
+      vaultsWith([]);
+      const res = await GET(new NextRequest(`http://h/api/bars?key=${encodeURIComponent("tv:TVC:GOLD")}&tf=D`));
+      expect((await res.json()).symbol.name).toBe("黄金");
     });
   });
 });

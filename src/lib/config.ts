@@ -5,7 +5,8 @@ import { ALERT_CHECKS, ALERT_CONDS, defaultCheck, describeCondition, parseCondit
 import { CHANGE_PERIODS, DEFAULT_PERIODS, MAX_PERIODS, type ChangePeriod } from "./periods";
 import type { Prices } from "./series";
 import { DATA_ID, TF_LABELS, hash6, isSynthetic, isTimeframe, isValidKey, tickerOf, type Timeframe } from "./symbols";
-import { parseSynth, synthName } from "./synth";
+import { operands, parseSynth, synthName } from "./synth";
+import { groupNames } from "./watchlist";
 
 export type UpDown = "green-up" | "red-up";
 export type ChartStyle = "candle_solid" | "candle_up_stroke" | "ohlc" | "area";
@@ -161,11 +162,15 @@ function checkKey(key: string, aliases: Record<string, string>, where: string): 
   }
 }
 
+/** A group's `name` as the yaml has it, trimmed; null for none. */
+export const writtenGroupName = (name: unknown) => text(name);
+
 function parseGroups(raw: unknown, aliases: Record<string, string>): Group[] {
   const seen = new Map<string, string>();
+  const names = groupNames(list(raw).map((g) => text(obj(g).name)));
   return list(raw).map((g, gi) => {
     const group = obj(g);
-    const name = text(group.name) ?? `组 ${gi + 1}`;
+    const name = names[gi];
     const symbols = list(group.symbols).map((s, si) => {
       const where = `groups[${gi}].symbols[${si}]`;
       const entry = typeof s === "string" ? { key: s } : obj(s);
@@ -354,8 +359,11 @@ export function normalizeUserConfig(raw: unknown, root: Config): Config {
   return { ...normalizeConfig(own), owners: root.owners, owner: root.owner, sync: root.sync, datasets: root.datasets, usage: root.usage, ignored };
 }
 
-/** The short name an alert's generated label uses: the alias, else the ticker. */
-const shortName = (key: string, aliases: Record<string, string>) => Object.entries(aliases).find(([, k]) => k === key)?.[0] ?? (isSynthetic(key) ? synthName(key) : tickerOf(key));
+/** The alias a key is written with, if any. */
+export const aliasOf = (aliases: Record<string, string>, key: string): string | undefined => Object.entries(aliases).find(([, k]) => k === key)?.[0];
+
+/** The short name an alert's generated label uses: the alias, else the ticker; the alert dialog previews the label with it. */
+export const shortName = (key: string, aliases: Record<string, string>) => aliasOf(aliases, key) ?? (isSynthetic(key) ? synthName(key) : tickerOf(key));
 
 /**
  * The id an old condition keeps as an alert: its own, `cond-<id>` when an alert in `alerts` has
@@ -456,12 +464,8 @@ export function syncKeys(cfg: Config, extra: string[] = []): string[] {
   const keys = new Set<string>();
   const add = (key: string) => {
     if (!isValidKey(key)) return;
-    if (!isSynthetic(key)) {
-      keys.add(key);
-      return;
-    }
     try {
-      parseSynth(key.slice(1), cfg.aliases).keys.forEach(add);
+      operands(key, cfg.aliases).forEach((k) => keys.add(k));
     } catch {
       // reported on the page, not here
     }

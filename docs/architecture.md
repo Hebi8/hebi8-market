@@ -6,7 +6,7 @@ A map of the code and the conventions it follows, for anyone changing hebi8/mark
 
 - `vault/` is the user's content (`hebi8.yaml`, notes, journal, chart state; gitignored, `HEBI8_VAULT`); `data/hebi8.db` is a cache that is rebuilt by syncing. Read [design.md](design.md) before changing either layout.
 - On a shared instance (`owner` in the root yaml) each GitHub login has its own vault under `vault/users/<login>/`. Every page, route and Server Action resolves the viewer (`src/lib/viewer.ts`) first and reads and writes only `viewer.dir`; vault functions take the directory explicitly. `stats` and `alert_state` rows are keyed by `vault` ('' = root).
-- `hebi8.yaml` is edited through `src/lib/vault.ts` with the `yaml` package's `parseDocument` so comments and order survive; writes are atomic. `src/lib/config.ts` is the typed, validated view of it.
+- `hebi8.yaml` is edited through `src/lib/vault.ts` with the `yaml` package's `parseDocument` so comments and order survive; writes are atomic. Every edit goes through `updateConfig(dir, (doc, current) => …)`, where `current` is the config of the same read: check against it, not against a config read before an `await`. `src/lib/config.ts` is the typed, validated view of it.
 
 ## Bars, sources and quotes
 
@@ -16,7 +16,8 @@ A map of the code and the conventions it follows, for anyone changing hebi8/mark
 
 ## Pages and sync
 
-- Pages are RSCs that read SQLite/vault directly and must stay `force-dynamic`; reads never touch the network. Syncing happens in `src/lib/sync.ts` (scheduler in `src/lib/scheduler.ts`, started from `src/instrumentation.ts`) and recomputes `stats` afterwards.
+- Pages are RSCs that read SQLite/vault directly and must stay `force-dynamic`; reads never touch the network. Syncing happens in `src/lib/sync.ts` (scheduler in `src/lib/scheduler.ts`, started from `src/instrumentation.ts`).
+- The overview's stats have one source, `overviewStats()` in `quotes.ts`: the overview, the chart's watchlist panel and MCP `overview` read it. It caches per vault on the newest quote and sync, `prices`, the list and the aliases, so no write path has to remember to recompute anything; the `stats` table only keeps the last result.
 - This is Next.js 16, which has breaking changes from earlier versions: read the relevant guide in `node_modules/next/dist/docs/` before relying on habits from older ones. How the app uses it (dynamic rendering, Server Actions, instrumentation) is in [design.md](design.md) §7.
 
 ## Agents (MCP)
@@ -38,6 +39,7 @@ What a symbol is: the chart's 商品详情 (symbol details) panel and MCP `get_p
 ## Indicators and formulas
 
 - Pure math in `src/indicators/calc.ts`, KLineChart templates in `custom.ts`, UI registration in `catalog.ts`; the formula engine in `formula.ts` serves chart indicators, overview conditions and comparisons.
+- A formula on one symbol's bars is evaluated by `runFormula()` in `src/lib/conditions.ts` only: alerts (`evalRule`), MCP `scan` and `test_formula` see the same bars and aligned references.
 
 ## Issues, branches and releases
 

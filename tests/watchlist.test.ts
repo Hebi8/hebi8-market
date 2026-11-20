@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyOp, mergeTarget, stepGroup, stepSymbol, type ListGroup } from "@/lib/watchlist";
+import { applyOp, groupNames, mergeTarget, opError, stepGroup, stepSymbol, type ListGroup } from "@/lib/watchlist";
 
 const list = (): ListGroup<{ key: string }>[] => [
   { name: "美股", items: [{ key: "a" }, { key: "b" }, { key: "c" }] },
@@ -31,6 +31,26 @@ describe("watchlist edits (what the page shows before the yaml is written)", () 
     expect(mergeTarget(list(), "美股")).toBe("宏观");
     expect(mergeTarget(list(), "加密")).toBe("宏观");
     expect(mergeTarget([{ name: "only", items: [] }], "only")).toBeNull();
+  });
+
+  it("refuses what the server refuses, with its message, and changes nothing then", () => {
+    const only = [{ name: "全部", items: [{ key: "a" }] }];
+    expect(opError(only, { type: "deleteGroup", name: "全部" })).toBe("这是唯一的分组，先移除里面的标的");
+    expect(applyOp(only, { type: "deleteGroup", name: "全部" })).toBe(only);
+    expect(opError(list(), { type: "addGroup", name: " 宏观 " })).toBe("已经有「宏观」分组了");
+    expect(opError(list(), { type: "renameGroup", name: "宏观", next: "加密" })).toBe("已经有「加密」分组了");
+    expect(opError(list(), { type: "moveSymbol", key: "nope", group: "宏观", index: 0 })).toBe("nope 不在自选里");
+    expect(opError(list(), { type: "moveGroup", name: "nope", index: 0 })).toBe("没有「nope」这个分组");
+    expect(opError(list(), { type: "removeSymbol", key: "nope" })).toBeNull();
+    // an empty only group can go
+    expect(applyOp([{ name: "空", items: [] }], { type: "deleteGroup", name: "空" })).toEqual([]);
+  });
+
+  it("names every group uniquely: written names first, unnamed ones by position, numbered when taken", () => {
+    expect(groupNames(["美股", null, null])).toEqual(["美股", "组 2", "组 3"]);
+    expect(groupNames(["组 2", null])).toEqual(["组 2", "组 2 (2)"]);
+    expect(groupNames([null, "组 1"])).toEqual(["组 1 (2)", "组 1"]);
+    expect(groupNames(["美股", "美股", "美股 (2)"])).toEqual(["美股", "美股 (3)", "美股 (2)"]);
   });
 
   it("steps with the keyboard across group edges, and stops at either end", () => {

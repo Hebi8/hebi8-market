@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
-import { addSymbol, deleteIndicator, loadSymbol, removeSymbol, saveChartState, saveIndicator, setChartPrefs } from "@/app/actions";
+import { addSymbol, deleteIndicator, editChartState, editWatchlist, loadSymbol, saveIndicator, setChartPrefs, type ChartChange } from "@/app/actions";
 import type { AlertView } from "@/lib/alert-view";
 import { INDICATORS } from "@/indicators/catalog";
 import { compileFormula, formulaIndicatorName, formulaTemplate, isFormulaIndicator } from "@/indicators/formula-indicators";
@@ -21,7 +21,7 @@ import type { ProfileView } from "@/lib/profile";
 import { synthName } from "@/lib/synth";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import { useMediaQuery } from "@/lib/use-media-query";
-import type { ChartState, OverlaySpec } from "@/lib/vault";
+import type { ChartState, CompareEntry, OverlaySpec } from "@/lib/vault";
 import {
   IconArea,
   IconBack,
@@ -62,6 +62,10 @@ import { chartHref, isEditable, useUi } from "./UiProvider";
 import { WatchlistPanel, type WatchlistGroup } from "./WatchlistPanel";
 
 const KChart = dynamic(() => import("./KChart").then((m) => m.KChart), { ssr: false });
+
+/** One change of the drawings and comparisons, as a step from one state to the next. */
+type ChartEdit = (state: ChartState) => ChartState;
+type ChartResult = Awaited<ReturnType<typeof editChartState>>;
 
 const STYLE_ICONS: Record<ChartStyle, (p: { size?: number }) => ReactNode> = {
   candle_solid: IconCandles,
@@ -141,7 +145,7 @@ export function ChartView({
   names,
   watchlist,
   changeLabel,
-  chartState,
+  chartState: savedState,
   note,
   noteHtml,
   noteSavedAt,
@@ -224,10 +228,20 @@ export function ChartView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbolKey]);
 
-  const stateRef = useRef(chartState);
+  // The drawings and comparisons as this page has them: what the server is known to have, with the
+  // changes on the way on top, in the order sent. Each change is sent as that change
+  // (`editChartState`), which the server applies to what it has; one it takes joins the known state,
+  // one it does not take just leaves the list. What the page reads again from the server (back in
+  // view, another tab's import) is taken while none of its own is on the way.
+  const [chartState, setChartState] = useState(savedState);
+  const confirmed = useRef(savedState);
+  const pending = useRef<ChartEdit[]>([]);
+  const show = () => setChartState(pending.current.reduce((state, edit) => edit(state), confirmed.current));
   useEffect(() => {
-    stateRef.current = chartState;
-  }, [chartState]);
+    if (pending.current.length > 0) return;
+    confirmed.current = savedState;
+    setChartState(savedState);
+  }, [savedState]);
 
   // Back in view (another tab may have imported drawings or changed the comparisons): read the
   // page again, then let the chart take over drawings that differ, before anything here saves.
@@ -434,17 +448,45 @@ export function ChartView({
     return result.ok ? null : result.error;
   };
 
-  const saveState = async (next: Partial<ChartState>) => {
+  /**
+   * Send one change, shown while it is on the way as `local` does it. Once the server answers, the
+   * change joins the known state as `saved` says (`local` by default), or leaves the list when it
+   * was not taken (refused, or the request itself failed). After a change that was not taken, once
+   * nothing more is on the way, the chart takes over the drawings as shown, and the page reads the
+   * saved state again.
+   */
+  const failed = useRef(false);
+  const sendChange = async (change: ChartChange, local: ChartEdit = (state) => state, saved: (result: ChartResult) => ChartEdit = () => local) => {
     if (readOnly) {
       setMessage("登录后才能保存画线和比较商品");
-      return false;
+      return null;
     }
-    const result = await saveChartState(symbolKey, { ...stateRef.current, ...next });
+    pending.current = [...pending.current, local];
+    show();
+    const result: ChartResult = await editChartState(symbolKey, change).catch((err: Error) => ({ ok: false as const, error: err.message }));
+    pending.current = pending.current.filter((edit) => edit !== local);
+    if (result.ok) confirmed.current = saved(result)(confirmed.current);
+    else failed.current = true;
+    show();
     report(result);
-    return result.ok;
+    if (failed.current && pending.current.length === 0) {
+      failed.current = false;
+      setReloadSeq((n) => n + 1);
+      reloadedRef.current = true;
+      startReload(() => router.refresh());
+    }
+    return result;
   };
-  const onOverlaysChange = (overlays: OverlaySpec[]) => void saveState({ overlays });
-  const removeCompare = (key: string) => void saveState({ compare: compare.filter((c) => c.key !== key) });
+  const onOverlaysChange = (overlays: OverlaySpec[]) => void sendChange({ overlays }, (s) => ({ ...s, overlays }));
+  const removeCompare = (key: string) => void sendChange({ removeCompare: key }, (s) => ({ ...s, compare: s.compare.filter((c) => c.key !== key) }));
+  /** Shown once it is saved, as saved: the symbol's bars have to be fetched first, and the chart asks for them as soon as it shows. */
+  const addCompare = async (entry: CompareEntry) => {
+    const result = await sendChange({ addCompare: entry }, undefined, (saved) => (s) => {
+      const added = saved.ok ? saved.added : undefined;
+      return !added || s.compare.some((c) => c.key === added.key) ? s : { ...s, compare: [...s.compare, added] };
+    });
+    return result?.ok ?? false;
+  };
 
   // legend row actions: eye, gear (or double click), ×, and ⋯ → 移动到
   const onIndicator = (name: string, action: "toggle" | "settings" | "remove" | "move") => {
@@ -701,7 +743,7 @@ export function ChartView({
     const result = await addSymbol({ key: symbolKey, group });
     if (!result.ok) return setMessage(result.error);
     setMessage(null);
-    toast(`已把 ${name} 加入「${group}」`, { action: { label: "撤销", onClick: () => void removeSymbol(symbolKey).then(report) } });
+    toast(`已把 ${name} 加入「${group}」`, { action: { label: "撤销", onClick: () => void editWatchlist({ type: "removeSymbol", key: symbolKey }).then(report) } });
   };
   const paramDef = dialog?.kind === "params" ? INDICATORS.find((d) => d.name === dialog.name) : undefined;
 
@@ -1191,7 +1233,7 @@ export function ChartView({
           onAdd={async (key, mode) => {
             const used = new Set(compare.map((c) => c.color));
             const color = COMPARE_COLORS.find((c) => !used.has(c)) ?? COMPARE_COLORS[compare.length % COMPARE_COLORS.length];
-            return saveState({ compare: [...compare, { key, mode, color }] });
+            return addCompare({ key, mode, color });
           }}
           onRemove={removeCompare}
           onClose={() => setDialog(null)}

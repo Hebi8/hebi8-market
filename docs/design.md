@@ -114,7 +114,7 @@ chart:                         # 全局图表偏好（UI 改动会写回这里�
 - 标的引用（groups、bench、公式里的 `close(X)`、合成表达式、对比列表）一律先查 `aliases`，查不到就当完整 key `source:ticker`。
 - `key` 格式：`yahoo:AAPL`、`yahoo:0700.HK`、`yahoo:^GSPC`、`binance:BTCUSDT`、`tv:TVC:US10Y`、`tv:FX_IDC:USDCNH`、`data:gpu/4090-xianyu`，或 `=表达式`。`data:` 的 key 区分大小写，在合成表达式和 `close(...)` 里要用别名或带引号（§3.3）。
 - 一个标的只出现在一个组里；`groups` 只有一份，就是唯一的自选列表，组是列表里的分区（TV 的 section）。显示名：`name` > 内置字典（`src/lib/wellknown.ts`）的中文名 > 数据源返回的名字。
-- yaml 由 UI 写回时必须保留注释和顺序：用 `yaml` 包的 `parseDocument` 修改后 `toString()`，原子写入（写临时文件再 rename）。
+- yaml 由 UI 写回时必须保留注释和顺序：用 `yaml` 包的 `parseDocument` 修改后 `toString()`，原子写入（写临时文件再 rename）。所有改动都经 `updateConfig(dir, (doc, current) => …)`：回调拿到的 `current` 和 `doc` 来自同一次读取，「是不是已经在自选里」「别名指向谁」这类检查都按它做。加自选、改基准、TV 导入这些要先等拉数据的写，等完再在回调里按当时的 yaml 检查，所以同时加同一个标的只会加一次（另一次报「已经在 X 组里」），等待期间别人写进的别名也不会被盖掉；一次保存只写一次盘。
 - yaml 解析失败时页面显示错误（含行号），服务不崩。
 - **旧的 `conditions`**（`{ id, label, formula, tf, notify }`，以前的示例配置给每个人都预置了一组）照样能读，读成对全部自选的警报：`formula` 当 `when`，`tf` 缺省 W，`label` 缺省是 id，没标 `notify: true` 的读成 `notify: false`。id 沿用原来的；`alerts` 里已经有同名 id 时改成 `cond-<id>`（现有警报的 id 不变）；不是字母数字下划线横线的 id 去掉，改用哈希。
   - **状态跟着走**：旧状态行是 `cond:<id>`，`Config.conditionRules` 记着它们各自变成哪条警报。每次判断（含盘中轮询）、总览读徽标、界面改警报之前，先把这个 vault 的 `cond:<id>` 行改名过去（`adoptConditionState`，`state`、`fired_bar`、`fired_at` 原样保留，改过一次就是空操作），所以本周已触发的仍显示「本周新触发」，升级前为假、升级后为真照样推送。
@@ -184,6 +184,7 @@ CREATE TABLE alert_state (                  -- §2.5；删库后第一次同步�
   state INTEGER,                            -- 上次同步看到的结果 0/1
   fired_bar INTEGER,                        -- 上次推送时那根 K 线的 t，同一根只推一次
   fired_at INTEGER,
+  seen      TEXT,                            -- 写下这一行的那次判断看到的最后一根日线由哪几天的 K 线算出（JSON 对象，`lastInputs`）：真实标的是 {key: t}，合成标的是每个操作数被用到的那根的 t；操作数还是同一组标的、其中一个的日期变旧的判断不采纳（别名改指别的标的就从头来）
   PRIMARY KEY (vault, rule, key)
 ) WITHOUT ROWID;
 CREATE TABLE quotes (                       -- §2.6：盘中轮询拿到的最新价，所有人共用；不是 K 线
@@ -192,6 +193,9 @@ CREATE TABLE quotes (                       -- §2.6：盘中轮询拿到的最�
   day_open REAL, day_high REAL, day_low REAL, day_volume REAL,  -- 数据源报的当天开、高、低、量，有就记
   session TEXT NOT NULL,                                -- open | closed | pre | post | always
   fetched_at INTEGER NOT NULL
+);
+CREATE TABLE full_sync (                    -- §2.2：最近一次走完的 syncAll 开始的时间（ms），一行；启动补跑看它
+  started_at INTEGER NOT NULL
 );
 CREATE TABLE traffic (                      -- §1.7：按天聚合的请求计数，保留 90 天；行数有上限
   day INTEGER NOT NULL,                     -- 实例时区（sync.tz）的日期，UTC 零点的 unix 秒，同 bars.t
@@ -227,7 +231,7 @@ CREATE TABLE translations (                 -- §2.8：简介的简体中文译�
 );
 ```
 
-`symbols`、`bars`、`profiles` 和 `translations` 里只有缓存和元数据，**没有任何用户字段**（名字、分组、基准、排序都在 yaml），所有人共用；`stats` 和 `alert_state` 按 vault 分开。两表加 `vault` 列的迁移直接删表重建，下次同步重算。
+`symbols`、`bars`、`profiles` 和 `translations` 里只有缓存和元数据，**没有任何用户字段**（名字、分组、基准、排序都在 yaml），所有人共用；`stats` 和 `alert_state` 按 vault 分开。两表加 `vault` 列的迁移直接删表重建，`stats` 下次计算时重写。
 
 ### 1.5 用户配置目录（`HEBI8_SECRETS`，默认 `~/.config/hebi8/market`，目录 700、文件 600）
 
@@ -255,7 +259,7 @@ CREATE TABLE translations (                 -- §2.8：简介的简体中文译�
 - **第一次登录**的非 owner：复制根 vault 的 `hebi8.yaml` 作为起点，去掉 `owner`、`sync`、`datasets`、`usage`、`alerts` 和旧的 `conditions`（不替任何人预置警报），分组按「美股、宏观、加密」在前、其余按 owner 原来的顺序排（`vault.example` 也是这个顺序）；notes / journal / charts 为空。之后两边互不影响。
 - **所有写操作**（Server Actions、写文件的 Route Handler）都先取 viewer，`canWrite` 为假就返回「请先登录」；写入路径只来自 viewer 的 vault 目录，不接受客户端传来的目录或 login。读操作同样只读 viewer 的 vault。
 - **agent 的身份是个人令牌**，不是 cookie。令牌在设置页生成（§5.5），`mcp-tokens.json` 里以令牌的 SHA-256 为键记一条 `{ name, login, write, created_at, used_at }`，明文只在生成时显示一次。`/mcp` 的每个请求带 `Authorization: Bearer <令牌>`，由 `tokenViewer()`（`src/lib/viewer.ts`，令牌变成 viewer 的唯一一处；以后别的途径发的令牌也接到这里）解析成**和这个人登录后一样的 viewer**：owner 的令牌是根 vault，其他人的是 `vault/users/<login>/`，单用户模式下是根 vault；只读令牌的 `canWrite` 为假。令牌不存在、已吊销，或者是实例改成共用之前生成的（`login` 为空，不属于任何人），都解析不出 viewer。`used_at` 和会话的 `seen_at` 一样一天最多写一次。令牌不过期，不用了就吊销；每人最多 20 个。
-- **同步**：要同步的 key 是所有 vault 的并集（各自的 groups、bench、公式引用、告警、charts 对比列表）。同步后对每个 vault 算一遍 stats 和告警。
+- **同步**：要同步的 key 是所有 vault 的并集（各自的 groups、bench、公式引用、告警、charts 对比列表）。同步后对每个 vault 算一遍总览 stats（§3.4）和告警。
 - **页头**：右侧显示当前身份。未登录是「登录」按钮：当前入口提供网页登录时整页跳到 GitHub、授权后回到原来的页面，否则打开登录抽屉开始 device flow（§5.8）；登录后是头像 + login，菜单里有「通知设置」（同一个抽屉，§2.5）、「在其他设备上登录」（同一个抽屉，打开就生成链接，§5.8）、owner 才有的「使用情况」（§1.7）和「退出」。owner 模式下未登录时，总览标题是「示例列表」（内容就是 owner 的列表）。
 - **怎么用**：第一次打开总览时弹出一个三步引导面板（扫描 / 深看 / 记录），每步一张循环小动画，←/→ 翻页；关掉后记在浏览器 localStorage，不再自动出现，帮助抽屉「使用」页签里的「打开三步引导」可以再打开。访客的最后一步是「用 GitHub 登录」和「先看看示例」。
 - 登录会话和反馈共用（§5.8）；退出只删会话，不动 vault。
@@ -269,7 +273,7 @@ CREATE TABLE translations (                 -- §2.8：简介的简体中文译�
 
 - **记录挂在 proxy**（`src/proxy.ts`）。这版 Next 的 proxy 默认跑 Node.js runtime，在同一个进程里 `require`，路由之前执行，所以页面、Server Action（对页面的 POST，带 `Next-Action` 头）和 API 路由都经过它；matcher 排除 `_next/static`、`_next/image`、favicon、`icon.svg`、`apple-icon`、`manifest.webmanifest`、`opengraph-image` 和带静态扩展名的文件（`robots.txt`、`sitemap.xml` 也在其中）。proxy 只往 `globalThis` 上的内存表里加计数（`src/lib/traffic.ts`），不碰数据库；带会话 cookie 的请求还在这里滑动续期（§1.6）。
 - **来源**按 Host 判断：公网域名是隧道（`public`）；IP、单标签名、`localhost`、`*.ts.net` 是 Tailscale（`tailnet`）。**类型**：`/api/*` 和 `/mcp` 是 api，带 `Next-Action` 是 action，带 `Next-Router-Prefetch` 是 prefetch（路由预取，不算浏览，热门路径里不列），其余是 page。
-- **路径归一**（行数不能被扫描器撑大）：proxy 把路径换成本应用真实存在的路由（`traffic.ts` 的 `ROUTES`，测试对照 `src/app` 下的文件保持同步）；`/chart/<key>` 统一成一种编码，落库时只有 `symbols` 或 `stats` 表里有的 key（也就是有人在看、在同步的品种，含合成标的）才保留，其他归到 `/chart/[key]`；匹配不到任何路由的一律是 `(其他)`。所以 `traffic` 每天的行数 ≤ 2 个 origin × 4 种类型 ×（路由数 + 已有品种数 + 2）。
+- **路径归一**（行数不能被扫描器撑大）：proxy 把路径换成本应用真实存在的路由（`traffic.ts` 的 `ROUTES`，测试对照 `src/app` 下的文件保持同步）；`/chart/<key>` 统一成一种编码，落库时只有 `symbols` 或 `stats` 表里有的 key（也就是有人在看、在同步的品种，含合成标的），和某个 vault 写着的基准（只作基准的合成标的没有自己的行）才保留，其他归到 `/chart/[key]`；匹配不到任何路由的一律是 `(其他)`。所以 `traffic` 每天的行数 ≤ 2 个 origin × 4 种类型 ×（路由数 + 已有品种数 + 2）。
 - **访客**：公网取 `CF-Connecting-IP`，Tailscale 取 Next 填进 `X-Forwarded-For` 的 socket 地址；存 `HMAC-SHA256(盐, IP)` 的前 16 位，盐在配置目录的 `traffic-salt.json`。访客单独一张表（`visitors`），不和路径交叉：每天每个 origin 最多 `MAX_VISITORS = 2000` 个不同访客，已存的照常累加，新来的超出上限就合进 `(其他)` 这一行，页面上那天的访客数显示成「2000+」。代价是热门路径不再有「每个路径多少访客」。**登录名**：proxy 只记会话 cookie，落库时整批只读一次 `sessions.json`，在内存里查；伪造的 cookie 查不到就是未登录。
 - **落库**（`src/lib/usage.ts`，从 `instrumentation` 启动，`globalThis` 防重复）：每 30 秒一次，或内存里攒到 5000 个不同的键时提前；同一天、同一组维度的行累加。写库失败（锁超时、磁盘满）时这一批合并回内存缓冲，下次再写。进程退出丢最后几十秒的计数，可以接受。每小时删一次 90 天以前的行。监控数据只在 `data/hebi8.db`，不进 vault。
 - **上游压力**：`src/lib/sources/index.ts` 把 yahoo、binance、tv 三个适配器的 `fetchDaily` / `search` / `quotes` / `profile` 包一层，每次调用记一次请求（Binance 的 `search` 除外：它读缓存一天的交易对列表，由 `usdtBases()` 在真正去取列表时自己记，失败时照样回退到旧列表）；抛错记失败，错误里有 HTTP 429 / 403 / 418、Too Many Requests、rate limit 的另记「疑似限流」。`data` 源平时读本地文件，只在真正 `git fetch` / `clone` 远端数据集时记一次。按调用计数：Binance 全量拉取的分页算一次。
@@ -311,7 +315,7 @@ interface SourceAdapter {
 
 - `src/instrumentation.ts` 导出 `register()`，仅在 `process.env.NEXT_RUNTIME === "nodejs"` 时启动调度；用 `globalThis` 守卫防止 dev 模式重复启动。
 - 按 `sync.at × sync.tz` 算下一个时刻（用 `Intl.DateTimeFormat` 处理时区与夏令时，不引入日期库），`setTimeout` 链式调度。
-- 启动时：若 `max(symbols.synced_at)` 早于最近一个已过去的时刻，延迟 5s 后补跑一次（等价 systemd 的 `Persistent=true`）。
+- 启动时：若最近一次走完的 `syncAll`（`full_sync` 表记着它开始的时间）早于最近一个已过去的时刻，延迟 5s 后补跑一次（等价 systemd 的 `Persistent=true`）。只同步一个标的（加自选、打开不在自选里的标的）不算：它不跑自选的并集，也不判断警报。升级后第一次启动还没有这条记录，会补跑一次。
 - 每次调度的同步跑完（K 线、stats、警报之后），再刷新到期的标的资料（§2.8）。资料自己在后面跑，**不等它**：同步一完就照常排下一次，数据源再慢（TV 的会话一个要等 20 秒超时）也不会把下一个时刻拖过去；它出错只记一行日志。同步本身失败的那一轮不刷资料。手动「刷新」不带这一步。
 - 日志打到 stdout（journalctl 能看）。
 
@@ -320,12 +324,12 @@ interface SourceAdapter {
 - 要同步的 key 集合 = groups 里的 + 所有 `bench` + 公式/警报/合成表达式/各 `charts/*.json` 对比列表引用到的；共用实例时取所有 vault 的并集（§1.6）。别名本身不触发同步。
 - 并发 4，同 key 去重，单个失败不影响其他；失败写 `sync_error`，页面上显示。
 - TV 全量写入前与缓存比较：首日变晚、返回空历史，或少的根数超过 `max(20, 原根数 × 1%)` 就重试一次；仍截断时检查第一根与缓存同日的 bar：收盘价相对误差 ≤ `1e-6` 才 merge，否则 replace，避免拼接不同拆股复权口径，并记录处理日志。重试后为空或没有重叠日则报错，保留缓存及原同步时间。首日不变的小幅差异照常 replace；Yahoo 的滚动历史窗口及自定义 CSV 不受此限制。
-- 同步完成后立刻对**每个标的（含合成）**计算 `stats` 并写表（§3.4）。
+- 同步完成后立刻对每个 vault 的自选（含合成）预先算好总览 stats（`overviewStats()`，§3.4），打开页面不用等。
 - 读取路径（页面、API）**只读库**。首次运行库为空时，总览显示「首次拉取中…」并每 3s 刷新一次，同时后台触发 `syncAll`。
 - 「刷新」按钮是 Server Action：`await syncAll(true)` 后 `revalidatePath`，按钮期间显示 pending（手动动作，阻塞 3–30s 可以接受）。
 - 新增标的时立即 `syncOne(key, true)`，失败则不写入 yaml 并报错（首次拉取兼做校验）。
 - **打开不在自选里的标的**（搜索选中、直接输网址）：页面照样只读库；图表页挂载后调 Server Action `loadSymbol(key)`，对它（合成标的是各操作数）`syncOne`，一小时内拉过就跳过，只进缓存、不写 yaml，完成后重新取 `/api/bars`。它不在任何 vault 的引用里，所以定时同步不会更新它，下次打开时再补。访客不能触发（和添加一样要登录），只能看到已经缓存的。
-- `syncOne` 只在真的拉到新数据时重算各 vault 的 stats。它成功后顺带看一眼这个标的的资料（§2.8）：还没有，或者到期了，就发起一次，**不等它回来**：日线到了就返回，加自选和打开图表不多等一次资料请求。资料晚一两秒落库，面板自己再读（§5.2）；取资料失败不算同步失败。
+- `syncOne` 不碰 stats：同步时间变了，下一次读总览 stats 时自己重算（§3.4）。它成功后顺带看一眼这个标的的资料（§2.8）：还没有，或者到期了，就发起一次，**不等它回来**：日线到了就返回，加自选和打开图表不多等一次资料请求。资料晚一两秒落库，面板自己再读（§5.2）；取资料失败不算同步失败。
 - `syncAll` 算完 stats 后跑一次通知（§2.5）；`syncOne` 不通知。
 
 ### 2.4 自定义数据集（`data` 源）
@@ -467,6 +471,7 @@ date,open,high,low,close,volume
 - **状态**类只要条件成立就触发；新建的警报如果当时已经成立，第一次检查就会触发，和 TradingView 一样。
 - **`when` 公式**沿用 §2.5 的「新成立才推送」，所以 `close > X` 的效果接近上穿；要明确的上穿下穿可以写 `cross(close, X)` / `cross(X, close)`。
 - **触发方式**：`once` 触发后把这条警报写成 `enabled: false`（写回对应的人的 yaml，注释保留），列表里显示「已触发」；`bar` 同一根日线最多触发一次（`alert_state.fired_bar`）。「同一根」按时间比：只有比 `fired_bar` 更新的 K 线才能再触发；在更旧的 K 线上判断（两轮报价之间来了一次失败的、或没带回当天那根的日线同步）既不触发，也不把 `fired_bar` 改回去，`when` 公式的「同一根只推一次」同理。
+- **旧行情不采纳**：每一行记着写下它的那次判断看到的最后一根日线是用哪几天的 K 线算出的（`alert_state.seen`，盘中报价拼的今日 K 线也算）。真实标的就是这一根自己；合成标的的 K 线按第一个操作数的日子出，其余操作数取当天或之前最近的一根（前向填充），所以记的是最新一根合成 K 线实际用到的每个操作数的日期（`lastInputs()`），周线由日线聚合，看的也是这一组。一次判断里任何一个操作数用到的日线比记下的同一个操作数的旧，就整个不算（操作数还是同一组标的时才比：别名改指了别的标的，就是另一条序列，从头来）：不触发，也不改 `state`。否则盘中已经触发、条件一直成立的警报，会被一次失败的日线同步按昨天的收盘写回「不成立」，下一轮报价再「新成立」一次。同一天里的判断照常采纳，盘中的反复照样跟着变。
   已触发的 `once` 手改 yaml 的 `enabled: true` 不会重新启用；重新启用请用界面上的恢复。
 - 状态记在 `alert_state`（§1.4），事件类的上一次结果也在这里。
 
@@ -505,7 +510,7 @@ interface SourceAdapter {
 - **价格**只有一条规则（`withQuote()`，判断在 `quoteDayIn()`）：报价比该标的最后一次日线同步新、交易日不早于最后一根日线，就用它拼今日 K 线，直到下一次同步拿到真日线。图表、总览、警报判断、警报列表的当前价都是这一个数。
 - **当前**（`symbolStatus()`）只决定标不标时段：开盘和加密是三轮（15 分钟）内取到的，其余时段一小时加两轮内取到的。过了窗口不标时段，但新鲜度仍写报价多久前（不退回同步时间）。
 - **图表**：`/api/bars` 用 `liveReader()` 读日线（主标的、合成标的的操作数、对比和基准都一样），所以最后一根 K 线就是报价拼出的今日 K 线。未闭合的 3 日 / 周 / 月 / 季 K 线收盘就是该标的的最新价，对比和基准各自取本周期内自己的最新值（股票对比特币的周线，周六时比特币这一周收在周六的价，和 TradingView 一样）；日线按主标的的日期对齐，主标的没有的日子本来就对不上。图表不为此重新拉 bars（会重置缩放），换标的、换周期时自然读到最新的。
-- **总览**：价格来自报价的行（同上面的价格规则），各涨跌幅、距高点、52 周位置、两年走势用今日 K 线重算（`liveStats()`，不写回 `stats`），价格旁边标时段和多久前（§5.1）。自选全部有报价以后，每次打开页面都现读全部日线太贵（51 个标的、40 万根日线约 250 ms），所以结果按 vault 缓存在内存里：缓存的戳是「最新的报价时间、最新的同步时间、`prices`、自选列表、别名」，任何一个变了才重算；每轮报价收尾时先算好，页面只读缓存（约 0.5 ms，不读 `bars`）。时段标签每次读的时候按当前时间判断，不进缓存。
+- **总览**：价格来自报价的行（同上面的价格规则），各涨跌幅、距高点、52 周位置、两年走势用今日 K 线算（`overviewStats()`，§3.4），价格旁边标时段和多久前（§5.1）。时段标签每次读的时候按当前时间判断，不进缓存。
 - **合成标的**（`=BTC/GOLD`）没有自己的报价和同步：操作数里只要有一个的报价被采用，它就用操作数的今日 K 线现算，总览和图表一致；新鲜度取被采用的操作数报价里最旧的那个时间，不标时段（操作数可能一个盘中一个休市），也没有倒计时。图表的状态条同理：「按需合成 · 最新 10/9 · 3 分钟前报价」，并和普通标的一样每轮读 `/api/status` 更新最后一根。
 
 ### 2.7 安装与网页推送（PWA）
@@ -644,6 +649,8 @@ D 原样；**3D** 见下；W 周一起算；M 月初；**Q 季初**（`Date.UTC(
 ```
 
 - `changes`/`ddAth`/`pos52` 的定义与 v1 `src/lib/stats.ts` 相同，按 yaml 的 `prices` 模式计算。
+- **只有一个来源**：`overviewStats(vault, cfg)`（`src/lib/quotes.ts`），总览、图表页的自选列表、MCP `overview` 都读它。按每个 vault 的全部自选行（含合成）在图表和警报看到的同一组日线上算：价格来自报价的行（自己的报价，合成标的是操作数的，`withQuote` 采纳的才算）最后一根是今日 K 线。自选全部有报价以后，每次打开页面都现读全部日线太贵（51 个标的、40 万根日线约 250 ms），所以结果按 vault 缓存在内存里，缓存的戳是「行情版本（`marketVersion()`：每次写日线、报价或同步状态都加一，这些写入都在应用进程里；不用时间戳，两次写入落在同一毫秒也不会漏）、`prices`、自选列表、别名」，任何一个变了下一次读就重算，手改 yaml 也立即生效，不用哪个写入口记得去重算；每轮报价和每次 `syncAll` 收尾时先算好，页面只读缓存（约 0.5 ms，不读 `bars`）。
+- 算好时整份写进 `stats` 表（按 vault 替换），表只是最近一次的结果：页面不读它，流量统计用它认出有人在看的合成标的（§1.7）。
 - stats 里不再有条件结果：警报的状态在 `alert_state`（§1.4），总览徽标从那里读。
 
 ---
@@ -667,15 +674,17 @@ D 原样；**3D** 见下；W 周一起算；M 月初；**Q 季初**（`Date.UTC(
 
 ## 5. 页面
 
-### 5.1 总览 `/`（RSC 直读 yaml + stats 表，价格来自报价的行现算）
+### 5.1 总览 `/`（RSC 直读 yaml + 总览 stats，§3.4）
 
 - 顶部：`自选 · 上次同步`；右侧「上次复盘 N 天前」链到 `/review`、「周期 · 1周 1月 1年」（点开选择显示的涨跌周期）、涨跌色分段开关「绿涨 | 红涨」、「刷新」、「+ 添加」（打开全局搜索的添加模式，Enter = 加入自选，见 §5.4）。
 - **待确认的警报**：viewer 有草稿警报（agent 经 MCP 建的对全部自选的警报，§2.5）时，标题行上方多一块卡片，每条一行：名字、范围和定义、「确认」「丢弃」。没有草稿时不出现。
 - **一张表格**，`table-layout: fixed` + `<colgroup>`，分组做 subheader 行，所以「价格」列在每个分组里的 x 坐标一致。名称列吃剩余宽度并 truncate（title 显全名）；其余列固定：价格 112、每个涨跌周期 72、距高点 96、警报 220、两年 200、菜单 28。
 - **距高点**一列合并了原来的「距高点」和「52 周」两列：上面是距历史最高收盘的跌幅（`ddAth`，按它排序），下面是 52 周区间位置的短条（`pos52`，最左 52 周低点、最右高点）。
 - **表头悬浮说明**：名称、价格、各涨跌周期（相对哪天的收盘）、距高点（两部分各是什么）、两年都有 `title`，有说明的表头文字带虚下划线；可排序的在说明后面接排序提示。
-- **分组（分区）**：标题行是「拖动手柄 · 折叠箭头 + 组名 + 数量 · ⋯」。折叠状态是界面偏好，存 localStorage（`hebi8:watchlist:collapsed`，组名列表，和图表页的自选面板共用）。「⋯」：重命名 / 删除分组（照 TV 删除分区：组里的标的并入上面那组，第一组并入下面那组；唯一的组里还有标的时不能删）。列表末尾「+ 新建分组」内联输入。yaml 里没写 `name` 的组显示为「组 N」（按位置），移动、重命名、删除分组之前先把这些显示名写进 yaml（和别的组重名时加「 (2)」），免得位置一变名字跟着变，页面指错组。
-- **拖动排序**：标的行和分组标题都能拖（鼠标按住行任意处拖动，移动超过 4px 才算拖，松开后的 click 被吞掉；手指从行首的手柄拖），标的可以拖进别的组，拖到折叠或空的组上就放到那组末尾；落点画一条 accent 色的线，被拖的行变淡，靠近滚动区上下边缘时自动滚动，Esc 取消。键盘：聚焦手柄（Tab 可达，hover / focus 时显示，触屏一直显示）后 ↑ / ↓ 移动一格，跨组边界就进相邻组，焦点跟着走，结果用 `aria-live` 读出。界面先乐观更新（`useOptimistic`），Server Action `moveSymbol(key, group, index)` / `moveGroup(name, index)` 写回 yaml 顺序，失败 toast 并恢复。按列排序时不能拖（手柄隐藏，给一行提示）。访客没有手柄和组菜单，只能折叠。
+- **分组（分区）**：标题行是「拖动手柄 · 折叠箭头 + 组名 + 数量 · ⋯」。折叠状态是界面偏好，存 localStorage（`hebi8:watchlist:collapsed`，组名列表，和图表页的自选面板共用）。「⋯」：重命名 / 删除分组（照 TV 删除分区：组里的标的并入上面那组，第一组并入下面那组；唯一的组里还有标的时不能删）。列表末尾「+ 新建分组」内联输入。每个组的显示名都不重复，它也是编辑时认组的身份（`watchlist.ts` 的 `groupNames`，读 yaml 和改 yaml 用同一个）：写了 `name` 的用它，没写的按位置叫「组 N」，被前面的组或任何一个写出来的名字占了就加「 (2)」「 (3)」（yaml 里两个组写了同一个名字也这样分开）。一次编辑之后，哪个组按新位置再读会换名字（没写名字的组挪了位置、改名腾出了别人的名字），就先把它原来的显示名写进 yaml，免得名字跟着位置变，页面指错组。
+- **拖动排序**：标的行和分组标题都能拖（鼠标按住行任意处拖动，移动超过 4px 才算拖，松开后的 click 被吞掉；手指从行首的手柄拖），标的可以拖进别的组，拖到折叠或空的组上就放到那组末尾；落点画一条 accent 色的线，被拖的行变淡，靠近滚动区上下边缘时自动滚动，Esc 取消。键盘：聚焦手柄（Tab 可达，hover / focus 时显示，触屏一直显示）后 ↑ / ↓ 移动一格，跨组边界就进相邻组，焦点跟着走，结果用 `aria-live` 读出。界面先乐观更新（`useOptimistic`），Server Action `editWatchlist` 写回 yaml 顺序，失败 toast 并恢复。
+- **一份规则**：自选的六种编辑（移动 / 移除标的，新建 / 移动 / 重命名 / 删除分组）都是一个操作描述 `WatchlistOp`，`watchlist.ts` 的 `applyOp` 算结果、`opError` 说为什么不行。页面拿它乐观更新，服务端（`vault.ts` 的 `editGroups`）对 yaml 里的组和条目节点跑同一个 `applyOp`，再按结果的顺序写回，注释、别名和字段跟着节点走；所以写进 yaml 的就是页面上看到的。
+- **yaml 别名**：一次编辑只改它目标分组（名字或标的会变的组；加标的时是被加的那个组）里真正要变的节点：分组这个映射、名字要变时它的 `name`、标的要变时它的 `symbols`，以及装着它们的 `groups` 列表（只改名的组，`symbols: *watch` 和注释原样留着）。动手前先把这几个节点变成它自己的：写成别名的，在原位置换成一份副本（别名上的注释留给副本）；带着被别处引用的锚点的，先把那些引用换成副本。所以被共享的锚点节点永远不改（两组共用 `&empty []`，往一组加标的，另一组仍是空的）。字段原地替换，没有才加（`name: *label` 的组改名不会写出第二个 `name`）。副本按原节点所在位置读到的值做（`toJS`：值和键上的别名都在那里解析，引用自身的节点照样复制），后面同名的锚点不会改变它。编辑完，若有别名的锚点被挪到了它后面，或随删掉的组没了，就把它写成编辑前读到的值的副本：每个别名读到的值都和编辑前一样。
 - 表头整格可点排序：第一次降序、第二次升序、第三次恢复 yaml 顺序；箭头指示方向（`aria-sort`）；**同一列的排序同时作用于所有分组**。
 - 整行是链接（`onClick` 路由 + 名称单元格是真正的 `<a>`，中键在新标签打开）。行尾「⋯」菜单始终可聚焦，视觉上 hover / focus / 打开时才显示；右键整行也打开：打开 / 移到分组 ▸（现有分组或新建）/ 改名 / 设基准 / 添加警报… / 移除（行立即消失，toast「已移除 X · 撤销」，失败时恢复并 toast；不用原生 confirm）。
 - **「警报」列**：这个标的上用户自己建的警报，徽标上是警报的名字（`label`，没写就是自动生成的「BTC 上穿 130,000」）。对全部自选的警报只在**成立中或本周触发过**的标的上出现，像一个自己起名的筛选标记。没有系统预置的；访客看不到（警报和笔记一样是各人的）。
@@ -697,7 +706,7 @@ D 原样；**3D** 见下；W 周一起算；M 月初；**Q 季初**（`Date.UTC(
 - **顶部工具栏**（一行，38px，按钮 30px 热区，组间 1px 竖分隔线）：`‹ 总览` · **商品按钮**（放大镜 + 代码 + 名称，点开全局搜索换标的）· `+` **比较商品** · 周期快捷按钮 `日 3日 周 月 季` · **图表类型**（图标 + 下拉：实心 K 线 / 空心阳线 / 美国线 / 面积）· `fx 指标` · ……右端 **刷新**（tooltip 显示同步时间，加载时图标转动）· **拍快照**（相机，见下文）· **全屏**（`document.documentElement.requestFullscreen()`，全屏时隐藏站点页头，弹窗和搜索浮层照常可用）。
 - **左侧画线工具栏**（42px 竖条，图标按钮，tooltip「名称 · 快捷键」）：十字光标（= 退出画线）· 六个**工具组**，和 TV 一样每组一个按钮：趋势线工具 · 江恩和斐波那契工具 · 形态 · 预测和测量工具 · 几何形状 · 标注工具（组和工具见 `chart-types.ts` 的 `DRAW_GROUPS`）。按钮画这一组当前的工具，悬停时右缘出现小箭头，点开在旁边弹出这一组的菜单（分小节：图标 · 名称 · 快捷键）；选过的工具留在按钮上，记在 localStorage（`hebi8:chart:tools`）｜ **测量**（尺子，tooltip「测量 · Shift + 点击」，见下文「测量」）｜ 磁铁模式（overlay `mode: weak_magnet`）· 锁定所有绘图 · 隐藏所有绘图 / 显示所有绘图 · 删除所有绘图（确认）。当前工具高亮；画完一条自动回到十字光标（TV 默认）；开始画线时若「隐藏所有绘图」开着会先显示出来。磁铁 / 锁定 / 隐藏是纯界面偏好，存 localStorage（`hebi8:chart:drawing`），作用于所有画线和之后新画的；有单条隐藏的绘图时眼睛按钮显示为「显示所有绘图」，点一下全部显示（含单条隐藏的）。
 - **图内图例（左上角，TV 样式，React 覆盖层 `ChartLegend`）**：第一行 `名称 周期 · 源 · 币种 · 基准` + `开 高 低 收` + 涨跌（相对上一根收盘，十字线处或最后一根）；然后每个百分比对比一行、每个主图指标一行（名称 + 参数 + 各条线的值，颜色同线）；副图指标 / 新窗格对比的行放在各自窗格左上角（`chart.getSize(paneId).top`）。行上悬停（鼠标指针事件，不用 CSS `:hover`，触屏上点一下）出现 **眼睛**（隐藏 / 显示，会话内）· **设置**（内置指标 = 参数弹窗，按当前周期保存；公式指标 = 公式编辑器）· **×**（移除）；双击行 = 设置；指标行还有 **⋯**（TV 的「更多」），里面「移动到」：副图指标 →「主图窗格」，主图指标 →「下方新窗格」，写回 yaml `chart.panes`（回到默认窗格时删掉那一项）。移到主图的副图指标用自己的刻度：成交量和 TV 一样不显示刻度、柱子占主图底部四分之一（值域放大到 4 倍），其它的在左侧单独一条刻度（KLineChart 10 的 `createYAxis` + 指标 `yAxisId`；价格轴的 `overrideYAxis` 因此按 id 只改价格轴），图例随左刻度右移。主图图例最后一行下面是 TV 的折叠箭头：收起后只剩商品行，箭头旁显示收起的行数，状态存 localStorage（`hebi8:chart:legend-collapsed`）。数值跟十字线走：KLineChart 10 的 `onCrosshairChange` 只给指针坐标（`{ x, y, paneId }`，不带 `dataIndex`），所以按 x 用 `convertFromPixel` 求 K 线下标；鼠标离开图表时它不回调，由容器的 `mouseleave` 回到最后一根。KLineChart 自己的蜡烛与指标 tooltip 关闭（`showRule: "none"`），数值由 `indicator.result` 和图形样式按 KLineChart 同样的规则取（线色按 `lines[i]`，柱按 `figure.styles` 动态色）。
-- **右侧边栏**：最右 42px 图标条（自选列表 · 商品详情 · 笔记 · 警报），面板 280px，同一时间只开一个，上次打开的记在 localStorage（`hebi8:chart:panel`；没记过时有笔记就默认开笔记）。**自选列表**按 yaml 分组，每行名称 · 最新价 · 总览第一个周期的涨跌（`stats`），当前标的高亮，点击客户端切换（偏好不变）；分组和总览一样能折叠、重命名、删除、新建，标的和分组都能拖动排序（§5.1）；标题栏「+」打开搜索的添加模式。行尾「×」（照 TV，hover / focus 时显示，触屏一直显示；访客没有）把这一行从自选移除，和总览行菜单的「移除」是同一个操作（`useWatchlist` 的 `removeSymbol`）：行立即消失，toast「已移除 X · 撤销」，撤销按 yaml 原来的 `name` / `bench` 加回原分组末尾。× 在数字后面自己的一列里（表头同样留出），不盖最新价和涨跌，触屏上这一列加宽到 36px；在 × 上按下不会起拖。移除的是当前打开的标的时留在这张图上，顶栏出现「加入自选」。**商品详情**见下文。**笔记**即原来的笔记面板。
+- **右侧边栏**：最右 42px 图标条（自选列表 · 商品详情 · 笔记 · 警报），面板 280px，同一时间只开一个，上次打开的记在 localStorage（`hebi8:chart:panel`；没记过时有笔记就默认开笔记）。**自选列表**按 yaml 分组，每行名称 · 最新价 · 总览第一个周期的涨跌（和总览同一份 stats，§3.4），当前标的高亮，点击客户端切换（偏好不变）；分组和总览一样能折叠、重命名、删除、新建，标的和分组都能拖动排序（§5.1）；标题栏「+」打开搜索的添加模式。行尾「×」（照 TV，hover / focus 时显示，触屏一直显示；访客没有）把这一行从自选移除，和总览行菜单的「移除」是同一个操作（`useWatchlist` 的 `removeSymbol`）：行立即消失，toast「已移除 X · 撤销」，撤销按 yaml 原来的 `name` / `bench` 加回原分组末尾。× 在数字后面自己的一列里（表头同样留出），不盖最新价和涨跌，触屏上这一列加宽到 36px；在 × 上按下不会起拖。移除的是当前打开的标的时留在这张图上，顶栏出现「加入自选」。**商品详情**见下文。**笔记**即原来的笔记面板。
 - **加入自选**：当前标的不在自选里时，顶栏商品按钮后面出现「加入自选」下拉（现有分组 + 新分组名输入），选了就 `addSymbol`，toast 可撤销；在自选里就不显示。不在自选里的标的打开时先按需拉日线（§2.3），图上显示「正在拉取 X 的日线…」。
 - **底部栏**（32px）：左边日期范围 `1年 3年 5年 10年 全部`——按当前周期算出这段有多少根，`setBarSpace(可用宽度 / 根数)` 后 `scrollToRealTime()`；若每根不足 1px（例如日线 10 年），像 TV 一样自动升到下一个周期（日 → 周 → 月）再适配。右边 `ADJ`（含分红，总回报）· `%`（百分比坐标，localStorage）· `log` · `自动`（TV 的开关：亮 = 价格轴自动缩放；点一下熄灭，价格范围固定，在图上上下拖就是纵向平移；拖动价格轴、在价格轴上滚轮缩放也会让它熄灭，双击价格轴或再点一下恢复；换周期 / 换标的时恢复）。对数坐标下 KLineChart 自己按价格做纵向平移和缩放（结果像缩放，甚至出现负刻度），所以对数轴的 `setRange` 被包了一层：库算出的新范围按比例换算到对数空间再生效（拖动以按下时的范围为基准，滚轮以当前范围为基准）。价格里有 0 或负数（`data:` 序列、合成标的可能有）时 `log` 按钮禁用，tooltip 说明原因，yaml 里的 `log` 偏好不动、只是在这个标的上不生效。`%` 与 `log` 互斥；有百分比对比时 `%` 显示为按下且锁定，tooltip「比较模式下使用百分比坐标」，`log` 禁用。
 - **窄屏（≤768px，TV 移动版）**：顶部工具栏一行横向滚动；左侧画线栏隐藏，改为顶栏里的「画线」下拉（十字光标、测量，然后按组列出全部工具 + 磁铁 / 锁定 / 隐藏 / 删除，200px 宽、可滚动）；右侧图标条隐藏，自选 / 商品详情 / 笔记 / 警报按钮进顶栏，面板变成底部抽屉（60vh，默认关闭）；底部栏仍是一行。390px 宽无横向溢出。下拉菜单用 `position: fixed` 按按钮位置弹出，不被滚动的工具栏裁掉；菜单右缘超出视口时整体左移。
@@ -734,6 +743,7 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 **对比（和 TradingView 一致的显示）**
 
 - 顶栏 `+` 打开「比较商品」弹窗：可输别名、完整 key，或搜索（§5.4 的搜索接口）；高亮行上两个按钮「同百分比坐标」（Enter，默认）/「新窗格」，和 TV 一样；下方列出已添加的对比，可移除。添加后写入 `charts/<fileKey>.json`。
+- **图表状态的保存**（画线和对比，`ChartView` → Server Action `editChartState(key, change)`）：页面自己持有这份状态，改了立刻生效（左栏的「删除所有绘图」、对比图例、隐藏状态都不等服务器），发出去的是**这一次改动**：整份画线（`{ overlays }`，取自图上）、加一个对比（`{ addCompare }`）或去掉一个（`{ removeCompare }`）。服务端把它应用在文件当时的内容上，Server Action 按发出的顺序执行，所以连着发的几次改动各自建立在前一次之上，不会因为页面发第二次时还没收到第一次的回包，就把第一次的改动冲掉（以前连点两个对比的「移除」，第一个会回来）。移除按文件里保存的那个 key 匹配（别名之后改指别处也不会删错）。加对比要先拉它的日线，所以等服务端成功了才显示，显示的是服务端存下的那一条，这一次会重渲染页面带回它的名字；画线和移除不重渲染整个 layout。只读访客的改动不进页面状态，直接提示要登录。页面显示的是「已知服务端有的状态」再叠上还在路上的改动（按发出的顺序）：服务端收下的改动并入已知状态，没收下的（拒绝，或请求本身失败）只是从路上拿掉，同批收下的照样保留；有改动没被收下时，等在路上的都回来后，图表按显示的状态重新接管画线，页面再读一次已保存的状态。页面重新读到的服务端状态（回到前台）只在自己没有改动在路上时采用。
 - `percent` 模式（默认）：主图叠加。主图 y 轴切到 KLineChart 的 `percentage`（`overrideYAxis({ paneId: "candle_pane", name: "percentage" })`；百分比轴与对数轴互斥，开对比时对数自动关闭，关掉所有对比后恢复）。每个对比标的是叠在 `candle_pane` 上的一个 indicator（`createIndicator({...}, true)`，`series: "price"`，一条线），值 = `mainClose[base] × cmpClose[i] / cmpClose[base]`，`base` 是**可见区间左边缘**那根（`getVisibleRange().realFrom`，若该处对比标的无数据则向右找第一根有数据的）。订阅 `subscribeAction("onVisibleRangeChange")`，去抖 ~80ms 后用 `overrideIndicator` 更新 base 重算——这样滚动、缩放时所有线都从左边缘重新归零，和 TV 的「同百分比坐标」行为一致。
 - `pane` 模式：对比标的放独立副图（`series: "normal"`，画原始收盘价，自己的坐标轴），用于美债收益率这类单位不同的叠加。
 - 图例：每个对比标的一行（名称用线的颜色）· 十字线处的收盘价 · 相对 base 的 %；悬停出现眼睛（隐藏 / 显示）和 ×（移除）。百分比对比在主图图例里，新窗格对比在自己窗格的左上角。
@@ -759,7 +769,7 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 - **入口**：顶栏闹钟按钮「警报」和 `Alt+A`，价格默认填最新价；在主图上右键出现「在 12,345.00 添加警报」（十字线所在价格）；选中水平线 / 水平射线后，浮动工具条多一个闹钟按钮，价格取这条线的价格（只是复制价格，之后挪线不会改警报）。
 - **对话框**（「新建警报」/「编辑警报」，图表和总览共用）：第一行「商品」分段「当前标的 | 全部自选」，选全部自选时价格和通道类条件不可选；「条件」下拉是 §2.6 表里的九种叫法加「自定义公式」；值的输入随条件变化（一个价格 / 通道的上下沿 / 百分比和 K 线数 / 公式编辑器），公式多一行「周期」日 / 3日 / 周 / 月 / 季线；「判断时机」分段「盘中价格 | 日线收盘」（默认随商品：当前标的是盘中价格，全部自选是日线收盘；没动过它时切换商品跟着变）；「触发」分段「仅一次 | 每根 K 线一次」（全部自选时固定为每根 K 线最多一次）；「名称」占位是自动生成的名字；「通知」勾选框「推到我的通知通道」，不勾就只在总览显示。底部「取消」「创建」，从总览编辑时左边多一个「删除」。数值输入框聚焦全选，回车提交。
 - **图上的警报线**：当前标的每条启用的价格类警报画一条虚线（通道画两条），右端价格轴上有闹钟标签；点标签打开编辑。已停止的不画。
-- **警报列表**：右侧边栏在「自选」「笔记」旁边多一个「警报」页签，列出当前 vault 的全部警报，当前图表标的的排在最前，其余（含对全部自选的）在一行小字「其他商品」下面（当前标的没有警报时没有这一行），各自保持 yaml 里的顺序（只是显示顺序，不改 yaml）。每行是标的名（对全部自选的写「全部自选」，没有当前价）、条件、触发方式、是否推送、状态（活动 / 已触发 / 已停止，草稿是「待确认」）、当前价和取价时间，agent 建的或改的在名字旁标「Agent」（§2.5）；每行有「编辑」「暂停 / 恢复」「删除」（草稿是「编辑」「确认」「丢弃」），点行打开那个标的的图表。
+- **警报列表**：右侧边栏在「自选」「笔记」旁边多一个「警报」页签，列出当前 vault 的全部警报，当前图表标的的排在最前，其余（含对全部自选的）在一行小字「其他商品」下面（当前标的没有警报时没有这一行），各自保持 yaml 里的顺序（只是显示顺序，不改 yaml）。每行是标的名（对全部自选的写「全部自选」，没有当前价）、条件、触发方式、是否推送、状态（活动 / 已触发 / 已停止，草稿是「待确认」）、当前价和取价时间（`priceTime()`，按最后一根 K 线实际用到的输入算，`lastInputs()`：用到的报价里最旧的那次的时间——合成标的里，某个操作数的报价没进最后一根，比如周六的 BTC 报价之于停在周五的 `=SPY/BTC`，就不算；一个报价都没用到时，是这些输入里最早的那次日线同步；整个列表共用一次读到的报价和标的元数据），agent 建的或改的在名字旁标「Agent」（§2.5）；每行有「编辑」「暂停 / 恢复」「删除」（草稿是「编辑」「确认」「丢弃」），点行打开那个标的的图表。
 - **写回**：Server Actions `saveAlert(def)`、`deleteAlert(id)`、`setAlertEnabled(id, enabled)`，和别的写操作一样先过 viewer 写权限，写当前 viewer 的 yaml，注释保留。只读访客看到入口，点开是登录提示。
 
 **拍快照**（TV 顶栏的相机按钮，在刷新和全屏之间）：菜单是「下载图片 · 复制图片 · 复制链接 · 在 X 上分享」，系统支持带文件分享时（手机）多一项「分享…」（`navigator.share` 带 PNG）。快捷键照 TV 文档里有的两个：`Ctrl/Cmd+Alt+S` 保存图片，`Alt+S` 复制链接（TV 的 Alt+S 是拍快照并把快照链接放进剪贴板；这里没有托管快照，复制的是图表页的公开地址）。复制图片只在菜单里，没有快捷键。
@@ -828,7 +838,7 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 
 **打开和加入是两个动作（照 TV）**。`navigate` 模式（页头搜索框、`/`、图表页敲字母、商品按钮）：Enter / 点击 = 打开图表，**不改自选**（不在自选的标的由图表页按需拉数据，§2.3）；加入自选是行尾的「+」按钮或 Shift+Enter。`add` 模式（总览「+ 添加」、图表页自选面板的「+」，对应 TV 自选列表的「添加商品」）：Enter / 点击 = 加入自选，已在自选的行只标「已在自选」。两种模式加入后搜索框都不关，可以接着加，行尾随即变成「已在自选 · 分组」（按当前 yaml 判断，不看搜索时的结果）。访客选不在列表里的行无效，底部提示登录。
 
-**加入**（行不在自选时）：行尾显示推断的分组芯片——`binance` / 加密类 → 加密；`.HK/.SS/.SZ` 或 `tv:SSE/SZSE/HKEX` → 港 A；`tv:TVC/FX_IDC/OANDA` 或 kind ∈ index/bond/commodity/forex/cfd/currency/economic → 宏观；`=` → 比价；其余 → 美股。按组名（含同义词）匹配 yaml 里现有的组，没有就落到第一个组；高亮行展开全部芯片 + 「新建分组…」（内联输入）+「+」，其他行只有淡色「+」；Tab 换组。加入 = `addSymbol` 到该组；名称写 yaml 时取字典中文名；若输入的是中文搜索词且添加成功，把「搜索词 → key」写进 `aliases`；成功 toast「已把 X 加入「港 A」· 撤销」（撤销 = `removeSymbol`）。
+**加入**（行不在自选时）：行尾显示推断的分组芯片——`binance` / 加密类 → 加密；`.HK/.SS/.SZ` 或 `tv:SSE/SZSE/HKEX` → 港 A；`tv:TVC/FX_IDC/OANDA` 或 kind ∈ index/bond/commodity/forex/cfd/currency/economic → 宏观；`=` → 比价；其余 → 美股。按组名（含同义词）匹配 yaml 里现有的组，没有就落到第一个组；高亮行展开全部芯片 + 「新建分组…」（内联输入）+「+」，其他行只有淡色「+」；Tab 换组。加入 = `addSymbol` 到该组；名称写 yaml 时取字典中文名；若输入的是中文搜索词且添加成功，把「搜索词 → key」写进 `aliases`；成功 toast「已把 X 加入「港 A」· 撤销」（撤销 = `editWatchlist` 的 `removeSymbol`）。
 
 **`pick` 模式**（比较商品弹窗）：主动作由 `pickActions` 给出（「同百分比坐标」/「新窗格」，高亮行上显示为按钮，Enter = 第一个），自选段也是；排除当前标的与已对比的 key。
 
@@ -892,7 +902,7 @@ KLineChart 自带的 `Shift+←/→` 滚动和 `Shift+= / -` 缩放保留。
 
 **预览**（`previewTvDrawings`）按 `drawing.symbol` 分组，用上面的 identity 对到自选里的标的；每个标的列出可导入几条、以前导入过几条、跳过几条及原因（按原因计数，没有对应工具的按 TradingView 类型名计数）。对不上的标的可以选「加入「某组」」（写成 `tv:EXCH:SYM`，组可以是现有的或新建「TradingView」）或跳过；同一批里等价的几个代码（`NASDAQ:NVDA` 和 `BATS:NVDA`）只有第一个能选，后面的标「同 NASDAQ:NVDA」，跟着它走，加入时也只加一次、画线都进第一个的 key。**确认**（`importTvDrawings`）：要加入的标的先 `syncOne(key, true)`（顺便校验，失败的列出来、不写），写进 yaml，再逐个标的转换，**追加**到 `charts/<fileKey>.json` 的 `overlays` 末尾，`compare` 和已有画线不动，每条带上 `tvId`（§1.3）。
 
-**图表页回到前台**（`visibilitychange` 变成可见或窗口 `focus`）时 `router.refresh()` 重读页面，刷新完成后 `KChart` 比较服务端的画线和图上的：不一样就按服务端的重建（正在画的那条、正在输入的文字不动），对比列表本来就跟着页面数据走。典型场景是在另一个标签页的设置页导入完切回来。没有用保存时带版本号、过期就拒绝的办法：图表的保存是每次改动就发，拒绝后用户刚做的改动也要丢，而 `tvId` 跟着画线走以后，被冲掉的导入画线再导入一次就能回来。
+**图表页回到前台**（`visibilitychange` 变成可见或窗口 `focus`）时 `router.refresh()` 重读页面，刷新完成后 `KChart` 比较服务端的画线和图上的：不一样就按服务端的重建（正在画的那条、正在输入的文字不动），对比列表也换成服务端的（页面自己没有改动在路上时）。典型场景是在另一个标签页的设置页导入完切回来。没有用保存时带版本号、过期就拒绝的办法：图表的保存是每次改动就发，拒绝后用户刚做的改动也要丢，而 `tvId` 跟着画线走以后，被冲掉的导入画线再导入一次就能回来。
 
 **类型映射**（`TV_TOOLS` + 几个特殊处理，对应 `DRAW_GROUPS`）：
 
@@ -1117,13 +1127,13 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 - `/api/github/login`（GET，跳到 GitHub 的授权页）、`/api/github/callback`（GET，GitHub 跳回来，建会话）、`/api/github/device`（POST 开始 device flow / DELETE 取消）、`/api/github/device/poll`（POST）、`/api/github/logout`（POST）、`/api/github/issues`（GET 最近反馈 / POST 提交）：§5.8，唯一会碰 GitHub 网络的接口（`login` 自己不联网，只是重定向），都是打开反馈页签或用户动作触发。
 - `/api/github/claim`（POST 生成「在其他设备上登录」的一次性链接和二维码 / DELETE 作废）、`/api/github/claim/redeem`（POST，确认页的表单，建会话）：§5.8，不联网。
 
-**Server Actions（写）**：`refresh()`、`addSymbol({ key, group, name?, bench?, alias? })`、`loadSymbol(key)`（只拉缓存，§2.3）、`removeSymbol(key)`、`moveSymbol(key, group, index?)`（index 不算被移动的那个，省略 = 末尾）、`moveGroup(name, index)`、`addGroup(name)`、`renameGroup(name, next)`、`deleteGroup(name)`（标的并入相邻组）、`renameSymbol(key, name)`、`setBench(key, bench | null)`、`saveNote(key, body)`、`saveJournal(week, body)`、`saveIndicator(def)` / `deleteIndicator(id)`、`saveAlert({ id?, key | null, cond, value? | when + tf?, trigger, label?, notify? })` / `deleteAlert(id)` / `setAlertEnabled(id, enabled)`、`saveChartState(key, state)`、`setChartPrefs(partial)`、`setPeriods(list)`、`setUpdown(mode)`、`setUsageLimits({ visitors, limited })`（owner，§1.7）、`translateProfile(key)`（把简介翻成中文并存进缓存，返回原文和译文 `{ source, text }`，§2.8）；`src/app/tv-actions.ts` 里的 `importTvList({ text, fallback, mode })`、`listTvLayouts({ sessionid, sign })`、`previewTvDrawings(来源)`、`importTvDrawings({ drawings, add })`（§5.5，`listTvLayouts` 和 `previewTvDrawings` 是仅有的带用户 TradingView cookie 访问外网的地方：`/my-charts/`；`/markets/`、`/chart-token`、charts-storage）。Server Action 在客户端是**串行派发**的，自动保存靠去抖合并，不并行发。
+**Server Actions（写）**：`refresh()`、`addSymbol({ key, group, name?, bench?, alias? })`、`loadSymbol(key)`（只拉缓存，§2.3）、`editWatchlist(op)`（`op` 是 `removeSymbol { key }`、`moveSymbol { key, group, index }`（index 不算被移动的那个，超出范围取边界）、`moveGroup { name, index }`、`addGroup { name }`、`renameGroup { name, next }`、`deleteGroup { name }`（标的并入相邻组）之一，规则见 §5.1）、`renameSymbol(key, name)`、`setBench(key, bench | null)`、`saveNote(key, body)`、`saveJournal(week, body)`、`saveIndicator(def)` / `deleteIndicator(id)`、`saveAlert({ id?, key | null, cond, value? | when + tf?, trigger, label?, notify? })` / `deleteAlert(id)` / `setAlertEnabled(id, enabled)`、`editChartState(key, change)`（画线和对比，一次一个改动，§5.2）、`setChartPrefs(partial)`、`setPeriods(list)`、`setUpdown(mode)`、`setUsageLimits({ visitors, limited })`（owner，§1.7）、`translateProfile(key)`（把简介翻成中文并存进缓存，返回原文和译文 `{ source, text }`，§2.8）；`src/app/tv-actions.ts` 里的 `importTvList({ text, fallback, mode })`、`listTvLayouts({ sessionid, sign })`、`previewTvDrawings(来源)`、`importTvDrawings({ drawings, add })`（§5.5，`listTvLayouts` 和 `previewTvDrawings` 是仅有的带用户 TradingView cookie 访问外网的地方：`/my-charts/`；`/markets/`、`/chart-token`、charts-storage）。Server Action 在客户端是**串行派发**的，自动保存靠去抖合并，不并行发。
 
 `saveAlert` 的入参还有 `check?`、`enabled?`，以及撤销删除时把草稿和来源放回去用的 `draft?`、`by?`；`confirmAlert(id)` 确认一条草稿（§2.5）。设置页的令牌在 `src/app/token-actions.ts`：`createAgentToken({ name, write })`（返回值里带一次明文）、`revokeAgentToken(id)`（§5.5）。
 
 所有写入校验输入；文件路径只能落在 vault 内（fileKey 已保证无 `/`、`..`）；写入原子。
 
-**操作层**（`src/lib/ops.ts`）：页面和 agent 都能做的写操作只有一份实现，入参是 viewer：`addSymbol`、`removeSymbol`、`saveAlert`、`deleteAlert`、`setAlertEnabled`、`confirmAlert`、`saveIndicator`、`deleteIndicator`，以及只给 agent 的 `appendNote`、`appendJournal`。对应的 Server Action 是薄壳（取 viewer、`requireWriter`、`revalidatePath`、包成 `ActionResult`），MCP 工具是另一层薄壳；校验和报错（中文，抛出）都在操作层，两边看到的一样。`saveAlert` 和 `setAlertEnabled` 多一个参数说明是谁在改（`page` / `agent`），§2.5 的草稿规则就在这里。只有页面用的操作（分组、排序、图表偏好、画线、整篇保存笔记和日志、TV 导入）留在 action 里。
+**操作层**（`src/lib/ops.ts`）：页面和 agent 都能做的写操作只有一份实现，入参是 viewer：`addSymbol`、`editWatchlist`（MCP 的 `remove_symbol` 用它的 `removeSymbol`）、`saveAlert`、`deleteAlert`、`setAlertEnabled`、`confirmAlert`、`saveIndicator`、`deleteIndicator`，以及只给 agent 的 `appendNote`、`appendJournal`。对应的 Server Action 是薄壳（取 viewer、`requireWriter`、`revalidatePath`、包成 `ActionResult`），MCP 工具是另一层薄壳；校验和报错（中文，抛出）都在操作层，两边看到的一样。`saveAlert` 和 `setAlertEnabled` 多一个参数说明是谁在改（`page` / `agent`），§2.5 的草稿规则就在这里。只有页面用的操作（标的改名和基准、图表偏好、画线、整篇保存笔记和日志、TV 导入）留在 action 里。
 
 **MCP 入口 `/mcp`**（`src/app/mcp/route.ts` → `src/lib/mcp/server.ts`，工具在 `src/lib/mcp/tools.ts`）：给 agent 用的唯一入口，也是唯一的非浏览器写入口。
 
@@ -1142,7 +1152,7 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 | `overview` | 读 | 分组和每个标的：key、别名、名字、基准、最新价（有报价用报价，带时段）、1W…5Y 涨跌、距高点、52 周位置、在它上面成立或本周触发的警报、同步错误；上次和下次同步时间；待确认的草稿数 |
 | `get_bars` | 读 | 一个标的某周期（D / 3D / W / M / Q）的 OHLCV，最新的 `limit` 根（默认 200，最多 1000），带今天未收盘的那根（`last_daily_bar.closed` 说明这根的交易日结束没有，和「日线收盘」警报同一个判断：`bars.ts` 的 `dayClosed`，合成标的看各操作数用到的那根） |
 | `get_profile` | 读 | 一个标的是什么（§2.8）：缓存里的元数据（类型、交易所、币种、时区、时段）、存下的事实（简介、板块、行业、国家、员工、网站、股本、EPS、每股分红、下次财报日；基金的发行商、类别、费率、规模、前十大持仓、行业分布）、用实际成交的最新价现算的市值 / 市盈率 / 股息率（带 `price`；`prices: total` 下它和 `get_bars` 的收盘可以不一样）、已有的中文译文（`description_zh`）、相关链接（`links`：`{ name, url }`，现算的，不保证此刻还打得开）和资料的取得时间；合成标的返回它的操作数。只读缓存，没取过资料的返回缓存里有的 |
-| `scan` | 读 | 一条公式（布尔或数值）× 一批标的（默认全部自选，可给 `group` 或 `keys`）：每个标的最后一根和上一根的值、是否成立（`holds`）、出错原因；`only_true` 只留成立的和出错的。成立与否和警报用同一个函数（`conditions.ts` 的 `holds`）：没有值（NaN）不算，其余非 0 为真，无穷大（除以 0）也是值、为真，返回里写成字符串 `"Infinity"` / `"-Infinity"`（JSON 放不了），没有值是 `null`。`check` 选带今日 K 线（`price`，默认）还是只看已收盘日线（`close`），和警报的判断时机对应 |
+| `scan` | 读 | 一条公式（布尔或数值）× 一批标的（默认全部自选，可给 `group` 或 `keys`）：每个标的最后一根和上一根的值、是否成立（`holds`）、出错原因；`only_true` 只留成立的和出错的。求值和警报是同一个函数（`conditions.ts` 的 `runFormula`：同样的日线、同样对齐的引用），成立与否也和警报同一个（`holds`）：没有值（NaN）不算，其余非 0 为真，无穷大（除以 0）也是值、为真，返回里写成字符串 `"Infinity"` / `"-Infinity"`（JSON 放不了），没有值是 `null`。`check` 选带今日 K 线（`price`，默认）还是只看已收盘日线（`close`），和警报的判断时机对应 |
 | `test_formula` | 读 | 一条公式在一个标的最近 N 根（默认 250，最多 3000）里：成立的根数、成立的区间、由假变真的次数和日期（规则同 §2.5 的判定：上一个已知值为假、这根为真；没有值的根不改状态，第一次见到只记录）。建警报前核对用 |
 | `formula_reference` | 读 | 公式语法、变量和函数（从 `SERIES_VARS`、`FUNCTIONS` 生成，不手抄）、警报的字段和 `cond` 种类（从 `ALERT_CONDS` 生成）、agent 能做什么 |
 | `search_symbols` | 读（联网） | 页面搜索的本地层 + 外部层合并后的结果：key、名字、交易所、是否已在自选、建议分组 |

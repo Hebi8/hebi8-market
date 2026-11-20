@@ -9,12 +9,11 @@ import { renderMarkdown } from "@/lib/markdown";
 import { benchLabel, nameOf } from "@/lib/names";
 import { CHANGE_PERIODS } from "@/lib/periods";
 import { profileView } from "@/lib/profiles";
-import { tradedPrice } from "@/lib/quotes";
+import { overviewStats, tradedPrice } from "@/lib/quotes";
 import { listSymbols } from "@/lib/store";
 import { chartTitle, decodeChartKey, isSynthetic, isValidKey, tickerOf } from "@/lib/symbols";
 import { synthName } from "@/lib/synth";
 import { noteMtime, readChartState, readConfigSafe, readNote } from "@/lib/vault";
-import { statsFor } from "@/lib/sync";
 import { getViewer } from "@/lib/viewer";
 
 export const dynamic = "force-dynamic";
@@ -56,7 +55,7 @@ export default async function ChartPage({ params }: { params: Promise<{ key: str
     names[k] = nameOf(config, k, symbols[k]?.name);
   }
   // the watchlist in yaml order and groups, for the side panel and Space / Shift+Space
-  const stats = statsFor(viewer.vault, config);
+  const stats = overviewStats(viewer.vault, config, symbols);
   const period = config.periods[0] ?? "1W";
   const watchlist = config.groups.map((g) => ({
     name: g.name,
@@ -66,8 +65,8 @@ export default async function ChartPage({ params }: { params: Promise<{ key: str
       // what the yaml says, so a removed symbol comes back as it was
       yamlName: i.name,
       bench: i.bench,
-      last: stats[i.key]?.last ?? null,
-      change: stats[i.key]?.changes[period] ?? null,
+      last: stats[i.key]?.stats.last ?? null,
+      change: stats[i.key]?.stats.changes[period] ?? null,
     })),
   }));
 

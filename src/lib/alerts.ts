@@ -8,7 +8,7 @@
  */
 import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { crossed, observe, ALERT_CONDS, type AlertCondition, type AlertTrigger } from "./alert-conds";
-import { closedReader, loadDaily, type DailyReader } from "./bars";
+import { closedReader, lastInputs, loadDaily, type DailyReader } from "./bars";
 import { evalRule, type SeriesCache } from "./conditions";
 import { allItems, conditionId, isLive, parseAlert, type AlertDef, type Config } from "./config";
 import { getDb } from "./db";
@@ -17,7 +17,7 @@ import { channelNames, channelsFor, deliver, formatDigest, type AlertEvent } fro
 import type { ConditionResult } from "./stats";
 import { listSymbols, readDaily } from "./store";
 import { isTimeframe, type Timeframe } from "./symbols";
-import { readConfig, updateConfig, type VaultRef } from "./vault";
+import { updateConfig, type VaultRef } from "./vault";
 
 export interface StateRow {
   /** 0/1 for formulas and states; an event's position (-1, 0, 1, see `observe`) */
@@ -25,6 +25,8 @@ export interface StateRow {
   firedBar: number | null;
   /** When it last fired (ms), as committed */
   firedAt?: number | null;
+  /** The day of each input of the last daily bar the check that wrote this row saw, by key (`lastInputs`); a check where one of them is older is not taken */
+  seen?: Record<string, number> | null;
 }
 
 type Decision = { fire: boolean; next: StateRow | null };
@@ -73,6 +75,8 @@ interface Check {
   notify: boolean;
   /** The bars it was judged on, for the price in the message */
   read: DailyReader;
+  /** How far those bars go: the day of each input of the last one, by key (`lastInputs`) */
+  seen: Record<string, number>;
   decide: (row: StateRow | undefined) => Decision;
 }
 
@@ -95,6 +99,12 @@ function checks(cfg: Config, pass: AlertPass, live: DailyReader, who: string): C
   const closed = closedReader();
   // formulas on the same symbol, bars and timeframe share the loaded series
   const caches = new Map<string, SeriesCache>();
+  const seen = new Map<string, Record<string, number>>();
+  const seenOf = (key: string, check: string, read: DailyReader) => {
+    const id = `${check}\u0000${key}`;
+    if (!seen.has(id)) seen.set(id, Object.fromEntries(lastInputs(key, loadDaily(key, cfg.prices, cfg, read), cfg.aliases, read).map((input) => [input.key, input.t])));
+    return seen.get(id)!;
+  };
   for (const alert of cfg.alerts) {
     if (!isLive(alert) || (pass === "watchlist" && alert.key) || (pass === "quotes" && alert.check !== "price")) continue;
     const read = alert.check === "close" ? closed : live;
@@ -102,7 +112,7 @@ function checks(cfg: Config, pass: AlertPass, live: DailyReader, who: string): C
     const failed: { key: string; error: string }[] = [];
     const fail = (key: string, error: string) => (alert.key ? log(`alert ${alert.id} on ${key}${who}: ${error}`) : failed.push({ key, error }));
     for (const key of alertKeys(alert, cfg)) {
-      const base = { rule: alert.id, key, text: alert.text, tf: alert.tf, once: alert.trigger === "once", notify: alert.notify, read };
+      const base = { rule: alert.id, key, text: alert.text, tf: alert.tf, once: alert.trigger === "once", notify: alert.notify, read, seen: seenOf(key, alert.check, read) };
       if (alert.when) {
         const cacheId = `${alert.check}\u0000${key}`;
         const cache = caches.get(cacheId) ?? new Map();
@@ -133,28 +143,29 @@ export const stateId = (rule: string, key: string) => `${rule}\u0000${key}`;
 
 /** Every (alert, symbol) row of a vault, by `stateId`. */
 export function readState(vault: string): Map<string, StateRow> {
-  const rows = getDb().prepare("SELECT rule, key, state, fired_bar, fired_at FROM alert_state WHERE vault = ?").all(vault) as {
+  const rows = getDb().prepare("SELECT rule, key, state, fired_bar, fired_at, seen FROM alert_state WHERE vault = ?").all(vault) as {
     rule: string;
     key: string;
     state: number | null;
     fired_bar: number | null;
     fired_at: number | null;
+    seen: string | null;
   }[];
-  return new Map(rows.map((r) => [stateId(r.rule, r.key), { state: r.state ?? 0, firedBar: r.fired_bar, firedAt: r.fired_at }]));
+  return new Map(rows.map((r) => [stateId(r.rule, r.key), { state: r.state ?? 0, firedBar: r.fired_bar, firedAt: r.fired_at, seen: r.seen === null ? null : (JSON.parse(r.seen) as Record<string, number>) }]));
 }
 
 /** Rows of an alert that left the yaml, or of a symbol it no longer covers, start over (old `cond:` rows included). */
 function writeState(vault: string, updates: { rule: string; key: string; row: StateRow; fired: boolean }[], keep: Set<string>): void {
   const db = getDb();
   const upsert = db.prepare(
-    `INSERT INTO alert_state (vault, rule, key, state, fired_bar, fired_at) VALUES (@vault, @rule, @key, @state, @firedBar, @firedAt)
-     ON CONFLICT (vault, rule, key) DO UPDATE SET state = @state, fired_bar = @firedBar, fired_at = coalesce(@firedAt, fired_at)`,
+    `INSERT INTO alert_state (vault, rule, key, state, fired_bar, fired_at, seen) VALUES (@vault, @rule, @key, @state, @firedBar, @firedAt, @seen)
+     ON CONFLICT (vault, rule, key) DO UPDATE SET state = @state, fired_bar = @firedBar, fired_at = coalesce(@firedAt, fired_at), seen = @seen`,
   );
   const all = db.prepare("SELECT rule, key FROM alert_state WHERE vault = ?").all(vault) as { rule: string; key: string }[];
   const remove = db.prepare("DELETE FROM alert_state WHERE vault = ? AND rule = ? AND key = ?");
   db.transaction(() => {
     for (const u of updates) {
-      upsert.run({ vault, rule: u.rule, key: u.key, state: u.row.state, firedBar: u.row.firedBar, firedAt: u.fired ? Date.now() : null });
+      upsert.run({ vault, rule: u.rule, key: u.key, state: u.row.state, firedBar: u.row.firedBar, firedAt: u.fired ? Date.now() : null, seen: u.row.seen && Object.keys(u.row.seen).length > 0 ? JSON.stringify(u.row.seen) : null });
     }
     for (const r of all) if (!keep.has(stateId(r.rule, r.key))) remove.run(vault, r.rule, r.key);
   })();
@@ -225,9 +236,8 @@ export function adoptConditionState(vault: string, cfg: Config): void {
 }
 
 /** Every UI edit of the alerts goes through here, so the old conditions become editable alerts first. */
-export function editAlerts(dir: string, mutate: (doc: Document, alerts: YAMLSeq) => void): Config {
-  const cfg = readConfig(dir);
-  return updateConfig(dir, (doc) => {
+export function editAlerts(dir: string, mutate: (doc: Document, alerts: YAMLSeq, current: Config) => void): Config {
+  return updateConfig(dir, (doc, current) => {
     let alerts = doc.get("alerts");
     if (!isSeq(alerts)) {
       alerts = doc.createNode([]);
@@ -236,17 +246,16 @@ export function editAlerts(dir: string, mutate: (doc: Document, alerts: YAMLSeq)
     const seq = alerts as YAMLSeq;
     // `alerts: []` from the example becomes a block list once it has entries
     seq.flow = false;
-    if (doc.has("conditions")) adoptConditions(doc, seq, cfg);
-    mutate(doc, seq);
+    if (doc.has("conditions")) adoptConditions(doc, seq, current);
+    mutate(doc, seq, current);
   });
 }
 
 /** Switch alerts on or off in a vault's yaml, keeping comments. */
 export function setAlertsEnabled(dir: string, ids: string[], enabled: boolean): void {
-  const aliases = readConfig(dir).aliases;
-  editAlerts(dir, (doc) => {
+  editAlerts(dir, (doc, _, current) => {
     for (const alertId of ids) {
-      const i = alertIndex(doc, alertId, aliases);
+      const i = alertIndex(doc, alertId, current.aliases);
       if (i < 0) continue;
       // `enabled: true` is the default, so switching back on just drops the key
       if (enabled) doc.deleteIn(["alerts", i, "enabled"]);
@@ -294,8 +303,15 @@ async function judge(vault: VaultRef, loadConfig: () => Config, pass: AlertPass,
         retryOff.push(c.rule);
         continue;
       }
+      // bars older than the ones the row was last judged on (a sync that failed or did not bring
+      // today's bar, between two quote rounds; for a synthetic key, any operand's) are not news:
+      // they neither fire nor turn it off. Only for the same symbols: a synthetic key whose alias
+      // now points at another symbol is another series, and starts over.
+      const was = row?.seen;
+      const same = was && Object.keys(was).join("\n") === Object.keys(c.seen).join("\n");
+      if (same && Object.entries(c.seen).some(([key, t]) => t < was[key])) continue;
       const { fire, next } = c.decide(row);
-      if (next) updates.push({ rule: c.rule, key: c.key, row: next, fired: fire, notify: c.notify });
+      if (next) updates.push({ rule: c.rule, key: c.key, row: { ...next, seen: c.seen }, fired: fire, notify: c.notify });
       if (!fire) continue;
       if (c.once) switchOff.push({ rule: c.rule, notify: c.notify });
       if (!c.notify) continue;

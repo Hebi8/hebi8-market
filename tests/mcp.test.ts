@@ -203,6 +203,21 @@ describe("scan and test_formula read cached bars only", () => {
     expect(overview.groups[1].symbols[0]).toMatchObject({ key: "yahoo:SPY", bench: BTC, price: null });
   });
 
+  it("overview follows a hand-edited yaml at once: a symbol just added, another prices mode", async () => {
+    const { ensureSymbol, writeBars } = await import("@/lib/store");
+    const XRP = "binance:XRPUSDT";
+    ensureSymbol(XRP);
+    // a dividend before the second day: 50 on the first day in total-return prices
+    writeBars(XRP, [{ t: T0, o: 100, h: 100, l: 100, c: 100, v: 1, adj: 0.5 }, { t: T0 + 8 * DAY, o: 110, h: 110, l: 110, c: 110, v: 1, adj: 1 }], "replace");
+    const viewer = await agent("dreaife", false);
+    const xrp = async () => (await call(viewer, "overview")).data.groups[0].symbols.find((s: { key: string }) => s.key === XRP);
+    expect(await xrp()).toBeUndefined();
+    fs.writeFileSync(yamlFile, SHARED.replace("binance:ETHUSDT]", `binance:ETHUSDT, ${XRP}]`));
+    expect(await xrp()).toMatchObject({ price: 110, change_pct: { "1W": 10 } });
+    fs.writeFileSync(yamlFile, `prices: total\n${SHARED.replace("binance:ETHUSDT]", `binance:ETHUSDT, ${XRP}]`)}`);
+    expect(await xrp()).toMatchObject({ price: 110, change_pct: { "1W": 120 } });
+  });
+
   it("true is what an alert takes for true: an infinite value holds, and is told from no value", async () => {
     const { decide } = await import("@/lib/alerts");
     const { evalRule } = await import("@/lib/conditions");

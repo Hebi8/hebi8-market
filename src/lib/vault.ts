@@ -9,9 +9,10 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { isMap, isScalar, isSeq, parse, parseDocument, type Document, type YAMLMap, type YAMLSeq } from "yaml";
-import { ConfigError, INSTANCE_KEYS, isLogin, normalizeConfig, normalizeUserConfig, resolveKey, type Config } from "./config";
+import { isAlias, isMap, isNode, isScalar, isSeq, parse, parseDocument, visit, type Alias, type Document, type Node, type YAMLMap, type YAMLSeq } from "yaml";
+import { ConfigError, INSTANCE_KEYS, isLogin, normalizeConfig, normalizeUserConfig, resolveKey, writtenGroupName, type Config } from "./config";
 import { fileKey, hash6, isValidKey } from "./symbols";
+import { applyOp, groupNames, opError, type WatchlistOp } from "./watchlist";
 import { isWeekId } from "./week";
 
 /** The root vault: the single user's, or the owner's on a shared instance. */
@@ -96,6 +97,21 @@ export function listVaults(owners: string[]): VaultRef[] {
   return out;
 }
 
+export interface VaultConfig extends VaultRef {
+  config: Config;
+}
+
+/** Every vault that syncs, with its config. A broken root yaml throws; a person's broken yaml only leaves them out. */
+export function loadVaults(): VaultConfig[] {
+  const root = readConfig(vaultDir());
+  return listVaults(root.owners).flatMap((v) => {
+    if (v.id === "") return [{ ...v, config: root }];
+    const { config, error } = readConfigSafe(v.dir);
+    if (!config) console.warn(`[hebi8m] vault ${v.id} skipped: ${error}`);
+    return config ? [{ ...v, config }] : [];
+  });
+}
+
 function atomicWrite(file: string, text: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -147,12 +163,17 @@ export function readConfigSafe(dir: string): { config: Config | null; error: str
   }
 }
 
-/** Edit the yaml in place; the result is validated before it is written. */
-export function updateConfig(dir: string, mutate: (doc: Document) => void): Config {
+/**
+ * Edit the yaml in place; the result is validated before it is written. `mutate` gets the document
+ * and the config it reads as, from the same read, so what an edit checks (is the symbol there
+ * already, what an alias stands for) is what it changes, however long the caller waited before.
+ */
+export function updateConfig(dir: string, mutate: (doc: Document, current: Config) => void): Config {
   const file = yamlPath(dir);
   const doc = parseYaml(fs.readFileSync(file, "utf8"));
-  mutate(doc);
-  const config = normalizeIn(doc.toJS(), isRoot(dir) ? null : readConfig(vaultDir()));
+  const root = isRoot(dir) ? null : readConfig(vaultDir());
+  mutate(doc, normalizeIn(doc.toJS(), root));
+  const config = normalizeIn(doc.toJS(), root);
   // Comments and order survive; the library re-spaces inline comments, which is as close as it gets.
   atomicWrite(file, doc.toString({ lineWidth: 0 }));
   cache.delete(file);
@@ -176,6 +197,9 @@ export function setList(doc: Document, keyPath: (string | number)[], values: unk
 export function flowNode(doc: Document, value: unknown) {
   return doc.createNode(value, { flow: true });
 }
+
+/** A node as it reads: an alias (`*watch`) is the node its anchor marks. */
+const resolved = (doc: Document, node: unknown) => (isAlias(node) ? node.resolve(doc) : node);
 
 /** The list under `name` in a map, created empty when missing. */
 export function seqOf(parent: YAMLMap, name: string, doc: Document): YAMLSeq {
@@ -206,18 +230,175 @@ export function locateEntry(doc: Document, key: string, aliases: Record<string, 
   return null;
 }
 
-/** A group's name as the page shows it: an unnamed one is「组 N」, like the config reader says. */
-export const groupName = (group: unknown, index: number) => (isMap(group) && String(group.get("name") ?? "").trim()) || `组 ${index + 1}`;
+// Watchlist edits and yaml aliases. An edit changes only the nodes of its target groups (the ones
+// whose name or symbols change, or the one a symbol is added to): the group map, its `name` and its
+// `symbols`, and the `groups` list holding them. Before any changes, each of these is made its own:
+// written as an alias, it becomes a copy in its place; carrying an anchor that aliases elsewhere
+// read, those aliases become copies. So no node another place reads is changed. A field is
+// replaced where it is, added only when missing. A copy is made from what the node reads where it
+// stands (`toJS`: aliases in keys and values resolved there, a node that contains itself included),
+// so no anchor of the same name elsewhere changes it. After the edit, an alias whose anchor now
+// comes after it, or went with a deleted group, is written out as a copy of what it read before:
+// every alias reads what it read before.
 
-/** The group shown as `name`, added at the end when there is none. */
-export function groupNode(doc: Document, name: string): YAMLMap {
-  const groups = seqOf(doc.contents as YAMLMap, "groups", doc);
-  let node = groups.items.find((g, i) => isMap(g) && groupName(g, i) === name) as YAMLMap | undefined;
-  if (!node) {
-    node = doc.createNode({ name, symbols: [] }) as YAMLMap;
-    groups.add(node);
-  }
+/** A node holding `value`, written the way `like` is (flow or block), with no anchors another place can read. */
+const copyOf = (doc: Document, value: unknown, like: unknown) => doc.createNode(value, { flow: (isMap(like) || isSeq(like)) && like.flow }) as Node;
+
+/** The copy that stands where `alias` stood, with the comments written on the alias. */
+function instead(doc: Document, alias: Alias, value: unknown, like: unknown): Node {
+  const copy = copyOf(doc, value, like);
+  copy.commentBefore = alias.commentBefore;
+  copy.comment = alias.comment;
+  return copy;
+}
+
+/** Aliases anywhere that read `node` become copies of what it reads now, so it can change alone. */
+function unshare(doc: Document, node: Node): void {
+  if (isAlias(node) || node.anchor === undefined) return;
+  const value = node.toJS(doc);
+  visit(doc, {
+    Alias: (_, alias) => (alias.resolve(doc) === node ? instead(doc, alias, value, node) : undefined),
+  });
+}
+
+/** The node at `key` of `parent` made its own (see above), so it can change in place. */
+function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number): unknown {
+  let node: unknown = parent.get(key, true);
+  if (isAlias(node)) {
+    const source = node.resolve(doc)!;
+    node = instead(doc, node, source.toJS(doc), source);
+    parent.set(key, node);
+  } else if (isNode(node)) unshare(doc, node);
   return node;
+}
+
+/** The `groups` list as its own node (the groups in it are not touched), created empty when missing. */
+function ownGroups(doc: Document): YAMLSeq {
+  const root = doc.contents as YAMLMap;
+  const groups = own(doc, root, "groups");
+  return isSeq(groups) ? groups : seqOf(root, "groups", doc);
+}
+
+/** Group `i` as its own node, with its `name` and `symbols` too when they are to change; null when it is not a map. */
+function ownGroup(doc: Document, groups: YAMLSeq, i: number, change: { name: boolean; symbols: boolean }): YAMLMap | null {
+  const group = own(doc, groups, i);
+  if (!isMap(group)) return null;
+  if (change.name) own(doc, group, "name");
+  if (change.symbols) own(doc, group, "symbols");
+  return group;
+}
+
+/** Each group's `name` as written (aliases resolved, as the config reader has them). */
+const writtenNames = (doc: Document, groups: YAMLSeq) =>
+  groups.items.map((g) => {
+    const map = resolved(doc, g);
+    return writtenGroupName(isMap(map) ? (map.toJS(doc) as { name?: unknown }).name : null);
+  });
+
+/** Replace a map's `name`, keeping the comment on its line; added first when there is none. */
+function setName(doc: Document, map: YAMLMap, name: string | null): void {
+  const node = map.get("name", true);
+  if (isScalar(node)) node.value = name;
+  else if (map.has("name")) map.set("name", name);
+  else map.items.unshift(doc.createPair("name", name));
+}
+
+/** The group shown as `name`, as its own node with its own `symbols`; added at the end when there is none. */
+export function groupNode(doc: Document, name: string): YAMLMap {
+  const groups = ownGroups(doc);
+  const i = groupNames(writtenNames(doc, groups)).indexOf(name);
+  const group = i >= 0 ? ownGroup(doc, groups, i, { name: false, symbols: true }) : null;
+  if (group) return group;
+  const node = doc.createNode({ name, symbols: [] }) as YAMLMap;
+  if (i >= 0) groups.items[i] = node;
+  else groups.add(node);
+  return node;
+}
+
+/** The groups as the page has them, each with its node and its entries' nodes. */
+function readGroups(doc: Document, groups: YAMLSeq, aliases: Record<string, string>) {
+  const written = writtenNames(doc, groups);
+  const names = groupNames(written);
+  return groups.items.map((node, i) => {
+    const map = resolved(doc, node);
+    const symbols = isMap(map) ? resolved(doc, map.get("symbols", true)) : null;
+    const entries = isSeq(symbols) ? symbols.items : [];
+    const keyOf = (entry: unknown) => {
+      const value = resolved(doc, entry);
+      const ref = isMap(value) ? (value.toJS(doc) as { key?: unknown }).key : isScalar(value) ? value.value : null;
+      return typeof ref === "string" ? resolveKey(ref, aliases) : "";
+    };
+    return { name: names[i], node: node as unknown, written: written[i], entries, items: entries.map((entry) => ({ key: keyOf(entry), entry })) };
+  });
+}
+
+/**
+ * Apply a watchlist edit to the yaml with the page's own rules (`applyOp`), changing only its target
+ * groups (see above): entries move as the nodes they are, so comments and fields go with them. A
+ * group whose shown name would change when read again (an unnamed one that moved, one renamed)
+ * gets the name it is shown with written down, so the next edit finds the same group. Throws what
+ * `opError` says.
+ */
+export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<string, string>): void {
+  const plan = () => {
+    const seq = ownGroups(doc);
+    const groups = readGroups(doc, seq, aliases);
+    const error = opError(groups, op);
+    if (error) throw new Error(error);
+    const next = applyOp(groups, op);
+    const old = next.map((g) => groups.findIndex((o) => o.node === g.node && g.node !== undefined));
+    // a group added by the edit has no node yet; write the name of any whose shown name would change
+    const writing = next.map((g, i) => (old[i] >= 0 ? g.written : g.name));
+    for (let shown = groupNames(writing); shown.some((name, i) => name !== next[i].name); shown = groupNames(writing)) {
+      shown.forEach((name, i) => {
+        if (name !== next[i].name) writing[i] = next[i].name;
+      });
+    }
+    const keys = (items: { key: string }[]) => items.map((item) => item.key).join("\n");
+    const renamed = next.map((g, i) => old[i] < 0 || writing[i] !== g.written);
+    const refilled = next.map((g, i) => old[i] < 0 || keys(g.items) !== keys(groups[old[i]].items));
+    return { seq, next, old, writing, renamed, refilled };
+  };
+  // make what changes their own first (a deleted group only goes, which the last step takes care
+  // of), then plan again on the nodes as they are now
+  const first = plan();
+  first.next.forEach((_, i) => {
+    if (first.old[i] >= 0 && (first.renamed[i] || first.refilled[i])) ownGroup(doc, first.seq, first.old[i], { name: first.renamed[i], symbols: first.refilled[i] });
+  });
+  // what each alias reads before anything moves
+  const sources = new Map<Alias, { node: Node | undefined; value: unknown }>();
+  visit(doc, {
+    Alias: (_, alias) => {
+      const node = alias.resolve(doc);
+      sources.set(alias, { node, value: node?.toJS(doc) });
+    },
+  });
+  const { seq, next, writing, renamed, refilled } = plan();
+  seq.items = next.map((g, i) => {
+    if (!renamed[i] && !refilled[i]) return g.node;
+    const map = isMap(g.node) ? g.node : (doc.createNode({}) as YAMLMap);
+    if (renamed[i]) setName(doc, map, writing[i]);
+    if (!refilled[i]) return map;
+    const after = g.items.map((item) => item.entry);
+    const symbols = map.get("symbols", true);
+    if (isSeq(symbols)) {
+      const kept = symbols.items.filter((entry) => after.includes(entry));
+      // `[GOLD]` becomes a block list once it takes an entry or changes order, so an entry with a comment stays on one line
+      if (after.length !== kept.length || after.some((entry, j) => entry !== kept[j])) symbols.flow = false;
+      symbols.items = after;
+    } else {
+      const list = doc.createNode([]) as YAMLSeq;
+      list.items = after;
+      map.set("symbols", list);
+    }
+    return map;
+  });
+  visit(doc, {
+    Alias: (_, alias) => {
+      const source = sources.get(alias);
+      if (source?.node && alias.resolve(doc) !== source.node) return instead(doc, alias, source.value, source.node);
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------- per-key files

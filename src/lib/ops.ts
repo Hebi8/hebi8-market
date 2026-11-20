@@ -9,14 +9,15 @@ import { compile } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
 import { defaultCheck, type AlertCheck, type AlertCond, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { adoptConditionState, alertIndex, editAlerts, forgetAlerts, runAlerts, serializeAlerts, setAlertsEnabled } from "./alerts";
-import { findItem, parseAlert, resolveKey, type FormulaDef } from "./config";
+import { aliasOf, findItem, parseAlert, resolveKey, type FormulaDef } from "./config";
 import { liveReader } from "./quotes";
 import { isCJK } from "./search";
-import { isSynthetic, isTimeframe, isValidKey, type Timeframe } from "./symbols";
-import { recomputeStats, syncOne } from "./sync";
-import { parseSynth } from "./synth";
-import { JOURNAL_TEMPLATE, flowNode, groupNode, locateEntry, readConfig, readJournal, readNote, seqOf, setList, updateConfig, writeJournal, writeNote } from "./vault";
+import { isTimeframe, isValidKey, type Timeframe } from "./symbols";
+import { syncOne } from "./sync";
+import { operands } from "./synth";
+import { JOURNAL_TEMPLATE, editGroups, flowNode, groupNode, readConfig, readJournal, readNote, seqOf, setList, updateConfig, writeJournal, writeNote } from "./vault";
 import type { Viewer } from "./viewer";
+import type { WatchlistOp } from "./watchlist";
 import { isWeekId } from "./week";
 import { wellKnownName } from "./wellknown";
 
@@ -33,8 +34,14 @@ export interface AddSymbolInput {
   alias?: string;
 }
 
+/** An alias that now points elsewhere than the key fetched for it: the write would watch something unfetched. */
+export function changedWhileFetching(ref: string, fetched: string, aliases: Record<string, string>): void {
+  const now = resolveKey(ref, aliases);
+  if (now !== fetched) throw new Error(`「${ref}」在拉取期间改成了 ${now}，请重试`);
+}
+
 /** Add a symbol to a group (created when new). The first fetch doubles as validation; nothing is written unless it succeeds. */
-export async function addSymbol({ dir, vault }: Viewer, input: AddSymbolInput): Promise<void> {
+export async function addSymbol({ dir }: Viewer, input: AddSymbolInput): Promise<void> {
   const cfg = readConfig(dir);
   const ref = str(input.key);
   const key = resolveKey(ref, cfg.aliases);
@@ -47,22 +54,22 @@ export async function addSymbol({ dir, vault }: Viewer, input: AddSymbolInput): 
   const bench = benchRef ? resolveKey(benchRef, cfg.aliases) : null;
   if (bench && !isValidKey(bench)) throw new Error(`无效的基准「${bench}」`);
 
-  if (isSynthetic(key)) {
-    for (const k of parseSynth(key.slice(1), cfg.aliases).keys) {
-      const outcome = await syncOne(k);
-      if (!outcome.ok) throw new Error(`拉取 ${k} 失败：${outcome.error}`);
-    }
-  } else {
-    const outcome = await syncOne(key);
-    if (!outcome.ok) throw new Error(`拉取 ${key} 失败：${outcome.error}`);
+  for (const k of operands(key, cfg.aliases)) {
+    const outcome = await syncOne(k);
+    if (!outcome.ok) throw new Error(`拉取 ${k} 失败：${outcome.error}`);
   }
   if (bench) await syncOne(bench);
 
   const name = str(input.name) || wellKnownName(key) || "";
-  // a Chinese search term that found this key is worth keeping as an alias
   const alias = str(input.alias);
-  const keepAlias = alias && isCJK(alias) && !alias.includes(":") && !cfg.aliases[alias] && alias !== name;
-  updateConfig(dir, (doc) => {
+  // the yaml as it is now: another add may have finished while this one fetched
+  updateConfig(dir, (doc, current) => {
+    const added = findItem(current, key);
+    if (added) throw new Error(`${key} 已经在「${added.group}」组里`);
+    changedWhileFetching(ref, key, current.aliases);
+    if (benchRef) changedWhileFetching(benchRef, bench!, current.aliases);
+    // a Chinese search term that found this key is worth keeping as an alias
+    const keepAlias = alias && isCJK(alias) && !alias.includes(":") && !current.aliases[alias] && alias !== name;
     const symbols = seqOf(groupNode(doc, group), "symbols", doc);
     const entry: Record<string, string> = { key: ref };
     if (name) entry.name = name;
@@ -74,15 +81,15 @@ export async function addSymbol({ dir, vault }: Viewer, input: AddSymbolInput): 
       else doc.set("aliases", doc.createNode({ [alias]: key }));
     }
   });
-  recomputeStats(vault, readConfig(dir));
 }
 
-/** Take a key (aliases resolved by the caller) out of the watchlist; one that is not there is left alone. */
-export function removeSymbol({ dir }: Viewer, key: string): void {
-  updateConfig(dir, (doc) => {
-    const found = locateEntry(doc, key, readConfig(dir).aliases);
-    if (found) found.symbols.delete(found.index);
-  });
+/**
+ * One edit of the watchlist's groups (move or remove a symbol; add, move, rename or delete a
+ * group), by the rules the page shows it with at once (`applyOp`), so the yaml ends up as shown.
+ * Keys are resolved by the caller; removing one that is not there leaves the list alone.
+ */
+export function editWatchlist({ dir }: Viewer, op: WatchlistOp): void {
+  updateConfig(dir, (doc, current) => editGroups(doc, op, current.aliases));
 }
 
 // ---------------------------------------------------------------------------- notes and journal
@@ -129,20 +136,15 @@ function checkFormula(dir: string, def: { id: unknown; label: unknown; formula: 
 export function saveIndicator({ dir }: Viewer, def: FormulaDef): void {
   const { id, label, formula } = checkFormula(dir, def);
   const pane = def.pane === "main" ? "main" : "sub";
-  const isNew = !readConfig(dir).indicators.some((d) => d.id === id);
-  updateConfig(dir, (doc) => {
+  updateConfig(dir, (doc, current) => {
     const seq = seqOf(doc.contents as YAMLMap, "indicators", doc);
     const index = seq.items.findIndex((item) => isMap(item) && item.get("id") === id);
     const node = flowNode(doc, { id, label, pane, formula });
     if (index >= 0) seq.items[index] = node;
     else seq.add(node);
+    const enabled = current.chart.indicators;
+    if (!current.indicators.some((d) => d.id === id) && !enabled.includes(id)) setList(doc, ["chart", "indicators"], [...enabled, id]);
   });
-  if (isNew) {
-    updateConfig(dir, (doc) => {
-      const enabled = readConfig(dir).chart.indicators;
-      if (!enabled.includes(id)) setList(doc, ["chart", "indicators"], [...enabled, id]);
-    });
-  }
 }
 
 export function deleteIndicator({ dir }: Viewer, id: string): void {
@@ -225,7 +227,7 @@ export async function saveAlert({ dir, vault }: Viewer, input: AlertInput, origi
     if (key !== null && !isValidKey(key)) throw new Error("无效的 key");
     if (origin === "agent" && cfg.alerts.some((a) => a.id === input.id && !a.key && !a.draft)) throw new Error(AGENT_EDITS_WATCHLIST);
     // written the way a person would: the alias when there is one
-    const entry: Record<string, unknown> = key ? { key: Object.entries(cfg.aliases).find(([, k]) => k === key)?.[0] ?? key } : {};
+    const entry: Record<string, unknown> = key ? { key: aliasOf(cfg.aliases, key) ?? key } : {};
     if (input.cond === "formula") {
       const when = str(input.when);
       if (!when) throw new Error("公式为空");

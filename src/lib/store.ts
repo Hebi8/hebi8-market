@@ -103,8 +103,19 @@ export function lastClose(key: string): number | null {
   return row?.c ?? null;
 }
 
+// Every write of bars, quotes or a symbol's sync goes through this process (the scheduler and the
+// quote polling run in it), so a counter here tells a reader whether any changed since it looked.
+const globalForVersion = globalThis as unknown as { hebi8MarketVersion?: number };
+const changed = () => {
+  globalForVersion.hebi8MarketVersion = (globalForVersion.hebi8MarketVersion ?? 0) + 1;
+};
+
+/** Goes up with every write of bars, quotes or a symbol's sync state; caches computed from them compare it. */
+export const marketVersion = () => globalForVersion.hebi8MarketVersion ?? 0;
+
 export function writeBars(key: string, bars: Bar[], mode: "replace" | "merge"): void {
   const db = getDb();
+  changed();
   const insert = db.prepare("INSERT OR REPLACE INTO bars (key, t, o, h, l, c, v, adj) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   db.transaction(() => {
     if (mode === "replace") db.prepare("DELETE FROM bars WHERE key = ?").run(key);
@@ -116,6 +127,7 @@ export function writeBars(key: string, bars: Bar[], mode: "replace" | "merge"): 
 }
 
 export function markSynced(key: string, meta: SourceMeta): void {
+  changed();
   getDb()
     .prepare(
       `UPDATE symbols SET synced_at = @now, sync_error = NULL,
@@ -139,19 +151,31 @@ export function markSynced(key: string, meta: SourceMeta): void {
 }
 
 export function markSyncError(key: string, message: string): void {
+  changed();
   getDb().prepare("UPDATE symbols SET sync_error = ? WHERE key = ?").run(message, key);
 }
 
-/** Stats are per vault ('' = root): the watchlist and the prices mode are each person's own. */
-export function writeStats(vault: string, key: string, stats: Stats | null): void {
+/** A vault's overview stats as last computed ('' = root): the watchlist and the prices mode are each person's own. */
+export function writeStats(vault: string, rows: Record<string, Stats>): void {
   const db = getDb();
-  if (!stats) db.prepare("DELETE FROM stats WHERE vault = ? AND key = ?").run(vault, key);
-  else db.prepare("INSERT OR REPLACE INTO stats (vault, key, computed_at, json) VALUES (?, ?, ?, ?)").run(vault, key, Date.now(), JSON.stringify(stats));
+  const insert = db.prepare("INSERT INTO stats (vault, key, computed_at, json) VALUES (?, ?, ?, ?)");
+  db.transaction(() => {
+    db.prepare("DELETE FROM stats WHERE vault = ?").run(vault);
+    for (const [key, stats] of Object.entries(rows)) insert.run(vault, key, Date.now(), JSON.stringify(stats));
+  })();
 }
 
-export function readAllStats(vault: string): Record<string, Stats> {
-  const rows = getDb().prepare("SELECT key, json FROM stats WHERE vault = ?").all(vault) as { key: string; json: string }[];
-  return Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.json) as Stats]));
+/** A syncAll that went through every vault, by when it started (ms). */
+export function markFullSync(startedAt: number): void {
+  const db = getDb();
+  db.transaction(() => {
+    db.prepare("DELETE FROM full_sync").run();
+    db.prepare("INSERT INTO full_sync (started_at) VALUES (?)").run(startedAt);
+  })();
+}
+
+export function lastFullSync(): number | null {
+  return (getDb().prepare("SELECT max(started_at) AS t FROM full_sync").get() as { t: number | null }).t;
 }
 
 export function maxSyncedAt(): number | null {
@@ -170,6 +194,7 @@ export interface QuoteRow extends Quote {
 
 export function writeQuotes(rows: QuoteRow[]): void {
   const db = getDb();
+  changed();
   const upsert = db.prepare(
     `INSERT OR REPLACE INTO quotes (key, price, time, day_open, day_high, day_low, day_volume, session, fetched_at)
      VALUES (@key, @price, @time, @dayOpen, @dayHigh, @dayLow, @dayVolume, @session, @fetchedAt)`,

@@ -242,6 +242,9 @@ function run(node: Node, env: Record<string, Bar>, field: "o" | "h" | "l" | "c")
   }
 }
 
+/** The real keys a key's bars come from: a synthetic key's operands, else the key itself. */
+export const operands = (key: string, aliases: Record<string, string>): string[] => (isSynthetic(key) ? parseSynth(key.slice(1), aliases).keys : [key]);
+
 /** Field-by-field evaluation; days before every operand has data are dropped. */
 export function evalSynth(synth: Synth, series: Record<string, Bar[]>): Bar[] {
   const base = series[synth.keys[0]] ?? [];
