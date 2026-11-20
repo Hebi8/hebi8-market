@@ -67,6 +67,14 @@ describe("writes that wait for a fetch", () => {
     expect(read().match(/yahoo:AAPL/g)).toHaveLength(1);
   });
 
+  it("adds into a group whose list is a yaml alias", async () => {
+    const { addSymbol } = await import("@/app/actions");
+    const { readConfig } = await import("@/lib/vault");
+    fs.writeFileSync(yamlFile, `watch: &watch [yahoo:SPY]\ngroups:\n  - { name: 美股, symbols: *watch }\n`);
+    expect(await addSymbol({ key: "yahoo:AAPL", group: "美股" })).toEqual({ ok: true });
+    expect(readConfig(root).groups.map((g) => g.symbols.map((s) => s.key))).toEqual([["yahoo:SPY", "yahoo:AAPL"]]);
+  });
+
   it("an alias written while a fetch was out stays", async () => {
     const { addSymbol } = await import("@/app/actions");
     const { readConfig } = await import("@/lib/vault");

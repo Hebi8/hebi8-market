@@ -9,7 +9,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { isMap, isScalar, isSeq, parse, parseDocument, type Document, type YAMLMap, type YAMLSeq } from "yaml";
+import { isAlias, isMap, isScalar, isSeq, parse, parseDocument, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { ConfigError, INSTANCE_KEYS, isLogin, normalizeConfig, normalizeUserConfig, resolveKey, writtenGroupName, type Config } from "./config";
 import { fileKey, hash6, isValidKey } from "./symbols";
 import { applyOp, groupNames, opError, type WatchlistOp } from "./watchlist";
@@ -219,9 +219,12 @@ export function flowNode(doc: Document, value: unknown) {
   return doc.createNode(value, { flow: true });
 }
 
-/** The list under `name` in a map, created empty when missing. */
+/** A node as it reads: an alias (`*watch`) is the node its anchor marks. */
+const resolved = (doc: Document, node: unknown) => (isAlias(node) ? node.resolve(doc) : node);
+
+/** The list under `name` in a map (the one an alias points to included), created empty when missing. */
 export function seqOf(parent: YAMLMap, name: string, doc: Document): YAMLSeq {
-  const existing = parent.get(name);
+  const existing = resolved(doc, parent.get(name, true));
   if (isSeq(existing)) return existing;
   const seq = doc.createNode([]) as YAMLSeq;
   parent.set(name, seq);
@@ -248,13 +251,23 @@ export function locateEntry(doc: Document, key: string, aliases: Record<string, 
   return null;
 }
 
-/** The `groups` list's names as the page shows them (`groupNames`, the same as the config reader). */
-const shownNames = (groups: YAMLSeq) => groupNames(groups.items.map((g) => writtenGroupName(isMap(g) ? g.get("name") : null)));
+/** The `groups` list, the one an alias points to included; created empty when missing. */
+function groupsSeq(doc: Document): YAMLSeq {
+  const groups = resolved(doc, doc.get("groups", true));
+  return isSeq(groups) ? groups : seqOf(doc.contents as YAMLMap, "groups", doc);
+}
+
+/** Each group's `name` as written (aliases resolved, as the config reader has them). */
+const writtenNames = (doc: Document, groups: YAMLSeq) =>
+  groups.items.map((g) => {
+    const map = resolved(doc, g);
+    return writtenGroupName(isMap(map) ? (map.toJS(doc) as { name?: unknown }).name : null);
+  });
 
 /** The group shown as `name`, added at the end when there is none. */
 export function groupNode(doc: Document, name: string): YAMLMap {
-  const groups = seqOf(doc.contents as YAMLMap, "groups", doc);
-  let node = groups.items[shownNames(groups).indexOf(name)] as YAMLMap | undefined;
+  const groups = groupsSeq(doc);
+  let node = resolved(doc, groups.items[groupNames(writtenNames(doc, groups)).indexOf(name)]) as YAMLMap | undefined;
   if (!isMap(node)) {
     node = doc.createNode({ name, symbols: [] }) as YAMLMap;
     groups.add(node);
@@ -265,39 +278,59 @@ export function groupNode(doc: Document, name: string): YAMLMap {
 /**
  * Apply a watchlist edit to the yaml with the page's own rules (`applyOp`): the groups and their
  * entries are taken as the nodes they are, so comments, aliases and fields go wherever the edit
- * puts them, and the result is written back in that order. A group whose shown name would change
- * when read again (an unnamed one that moved, one renamed) gets the name it is shown with written
- * down, so the next edit finds the same group. Throws what `opError` says.
+ * puts them, and the result is written back in that order. A group the edit does not change
+ * stays the node it was (one written as a yaml alias included). A group whose shown name would
+ * change when read again (an unnamed one that moved, one renamed) gets the name it is shown with
+ * written down, so the next edit finds the same group. Throws what `opError` says.
  */
 export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<string, string>): void {
-  const seq = seqOf(doc.contents as YAMLMap, "groups", doc);
-  const names = shownNames(seq);
+  const seq = groupsSeq(doc);
+  const written = writtenNames(doc, seq);
+  const names = groupNames(written);
   const groups = seq.items.map((node, i) => {
-    const symbols = isMap(node) ? node.get("symbols") : null;
+    const map = resolved(doc, node);
+    const symbols = isMap(map) ? resolved(doc, map.get("symbols", true)) : null;
     const entries = isSeq(symbols) ? symbols.items : [];
-    return { name: names[i], node, items: entries.map((entry) => ({ key: entryKey(entry, aliases)!, entry })) };
+    return { name: names[i], node, written: written[i], entries, items: entries.map((entry) => ({ key: entryKey(resolved(doc, entry), aliases)!, entry })) };
   });
   const error = opError(groups, op);
   if (error) throw new Error(error);
   const next = applyOp(groups, op);
-  seq.items = next.map((g) => {
-    const node = isMap(g.node) ? g.node : (doc.createNode({ name: g.name, symbols: [] }) as YAMLMap);
-    const symbols = seqOf(node, "symbols", doc);
-    const after = g.items.map((i) => i.entry);
-    const kept = symbols.items.filter((entry) => after.includes(entry));
-    // `[GOLD]` becomes a block list once it takes an entry or changes order, so an entry with a comment stays on one line
-    if (after.length !== kept.length || after.some((entry, i) => entry !== kept[i])) symbols.flow = false;
-    symbols.items = after;
-    return node;
-  });
-  for (let shown = shownNames(seq); shown.some((name, i) => name !== next[i].name); shown = shownNames(seq)) {
-    seq.items.forEach((node, i) => {
-      if (shown[i] === next[i].name) return;
-      const own = (node as YAMLMap).get("name", true);
-      if (isScalar(own)) own.value = next[i].name;
-      else (node as YAMLMap).items.unshift(doc.createPair("name", next[i].name));
+  // a group added by the edit has no node yet; write the name of any whose shown name would change
+  const isOld = (g: (typeof next)[number]) => g.node !== undefined;
+  const writing = next.map((g) => (isOld(g) ? g.written : g.name));
+  for (let shown = groupNames(writing); shown.some((name, i) => name !== next[i].name); shown = groupNames(writing)) {
+    shown.forEach((name, i) => {
+      if (name !== next[i].name) writing[i] = next[i].name;
     });
   }
+  seq.items = next.map((g, i) => {
+    const after = g.items.map((item) => item.entry);
+    const sameName = isOld(g) && writing[i] === g.written;
+    const sameItems = isOld(g) && after.length === g.entries.length && after.every((entry, j) => entry === g.entries[j]);
+    if (sameName && sameItems) return g.node;
+    const original = resolved(doc, g.node);
+    // a group written as an alias stands for a map other places share: it gets a copy of its own
+    const map = !isMap(original) ? (doc.createNode({}) as YAMLMap) : isAlias(g.node) ? original.clone() : original;
+    if (!sameName) {
+      const own = map.get("name", true);
+      if (isScalar(own)) own.value = writing[i];
+      else map.items.unshift(doc.createPair("name", writing[i]));
+    }
+    const symbols = isAlias(g.node) ? null : map.get("symbols", true);
+    if (isSeq(symbols)) {
+      const kept = symbols.items.filter((entry) => after.includes(entry));
+      // `[GOLD]` becomes a block list once it takes an entry or changes order, so an entry with a comment stays on one line
+      if (after.length !== kept.length || after.some((entry, j) => entry !== kept[j])) symbols.flow = false;
+      symbols.items = after;
+    } else if (!sameItems || !isMap(original) || isAlias(g.node)) {
+      // none yet, or an alias of a list other groups may share (`symbols: *watch`): a list of its own
+      const own = doc.createNode([]) as YAMLSeq;
+      own.items = after;
+      map.set("symbols", own);
+    }
+    return map;
+  });
 }
 
 // ---------------------------------------------------------------------------- per-key files

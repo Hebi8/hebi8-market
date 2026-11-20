@@ -117,7 +117,30 @@ describe("watchlist Server Actions", () => {
     // the unnamed one keeps the name it was shown with, now that「组 2」is free
     expect(await order()).toEqual(["观察:QQQ", "组 2 (2):SPY"]);
   });
+
+  it("leaves groups and lists written as yaml aliases alone unless the edit changes them", async () => {
+    fs.writeFileSync(yamlFile, ALIASED);
+    expect(await order()).toEqual(["美股:QQQ,NVDA", "观察:SPY,IWM", "组 3:AAPL"]);
+    expect(await moveGroup("组 3", 0)).toEqual({ ok: true });
+    expect(await order()).toEqual(["组 3:AAPL", "美股:QQQ,NVDA", "观察:SPY,IWM"]);
+    expect(read()).toContain("symbols: *watch");
+    expect(read()).toContain("- *us");
+    // an edit inside them gives the group a list of its own; the anchored one stays as written
+    expect(await moveSymbol("yahoo:IWM", "美股", 0)).toEqual({ ok: true });
+    expect(await moveSymbol("yahoo:NVDA", "观察")).toEqual({ ok: true });
+    expect(await order()).toEqual(["组 3:AAPL", "美股:IWM,QQQ", "观察:SPY,NVDA"]);
+    expect(read()).toContain("watch: &watch [ yahoo:SPY, yahoo:IWM ]");
+    expect(read()).toContain("us: &us { name: 美股, symbols: [ yahoo:QQQ, yahoo:NVDA ] }");
+  });
 });
+
+const ALIASED = `us: &us { name: 美股, symbols: [yahoo:QQQ, yahoo:NVDA] }
+watch: &watch [yahoo:SPY, yahoo:IWM]
+groups:
+  - *us
+  - { name: 观察, symbols: *watch }
+  - symbols: [yahoo:AAPL]
+`;
 
 /** The watchlist as the page holds it, from the yaml as read. */
 const shown = async () => {
@@ -132,6 +155,8 @@ describe("the yaml ends up as the page shows an edit", () => {
     `groups:\n  - symbols: [yahoo:SPY]\n  - { name: 组 1, symbols: [yahoo:QQQ] }\n  - symbols: [yahoo:NVDA, yahoo:AAPL]\n  - { name: 组 3 }\n  - { name: 美股, symbols: [yahoo:MSFT] }\n  - { name: 美股, symbols: [yahoo:TSLA] }\n`,
     // one group
     `groups:\n  - { name: 全部, symbols: [yahoo:SPY, yahoo:QQQ] }\n`,
+    // groups and lists written as yaml aliases
+    ALIASED,
   ];
 
   it.each(LISTS.map((yaml, i) => [i, yaml]))("list %i: every edit, valid or not, on both sides", async (_, yaml) => {
