@@ -727,14 +727,50 @@ describe("quote polling", () => {
       expect(fired()).toEqual([expect.stringContaining("2 new alert(s)")]);
       const today = readState("").get(stateId("alert:formula", BTC))!.firedBar;
       await quote(99);
-      // the daily sync fails: its pass sees the old bar, where both hold again
+      // the daily sync fails: its pass sees the old bar, where both would hold again, and is not taken
       await runAlerts(vault, () => readConfig(root));
-      expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 1, firedBar: today });
-      expect(readState("").get(stateId("alert:level", BTC))).toMatchObject({ state: 1, firedBar: today });
+      expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 0, firedBar: today, seenT: today });
+      expect(readState("").get(stateId("alert:level", BTC))).toMatchObject({ state: 0, firedBar: today, seenT: today });
       await quote(99);
       await quote(101);
       expect(fired()).toHaveLength(1);
       logs.mockRestore();
+    });
+
+    it("a failed sync the day after a firing does not turn the alert off, so the next quote does not fire it again", async () => {
+      const { quoteRound } = await import("@/lib/quotes");
+      const { runAlerts, readState, stateId } = await import("@/lib/alerts");
+      const { readConfig } = await import("@/lib/vault");
+      const { writeBars } = await import("@/lib/store");
+      // the last synced bar is today's, at 90; the quotes come on the next two days
+      const d0 = Math.floor(Date.now() / 86400_000) * DAY;
+      writeBars(BTC, [{ ...bar(90), t: d0 }], "replace");
+      // fires when it turns true, at most once per bar
+      const vault = await watching(['{ id: formula, key: BTC, when: "close > 100", trigger: bar }']);
+      const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const fired = () => logs.mock.calls.flat().filter((m) => /new alert\(s\)/.test(String(m)));
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const quote = async (price: number, day: number, minutes = 0) => {
+          const at = (d0 + day * DAY + 12 * 3600) * 1000 + minutes * 60_000;
+          vi.setSystemTime(at);
+          prices.BTCUSDT = price;
+          await quoteRound(at, [vault]);
+        };
+        // a formula's first check only records
+        await quote(95, 1);
+        await quote(110, 1, 5);
+        expect(fired()).toEqual([expect.stringContaining("1 new alert(s)")]);
+        await quote(111, 2);
+        // the daily sync fails: its pass sees the old bar at 90 and must not take the state back
+        await runAlerts(vault, () => readConfig(root));
+        expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 1, seenT: d0 + 2 * DAY });
+        await quote(112, 2, 5);
+        expect(fired()).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+        logs.mockRestore();
+      }
     });
 
     it("a close alert reads the other symbols of its formula up to their own last close", async () => {

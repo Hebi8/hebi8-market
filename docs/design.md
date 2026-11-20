@@ -184,6 +184,7 @@ CREATE TABLE alert_state (                  -- §2.5；删库后第一次同步�
   state INTEGER,                            -- 上次同步看到的结果 0/1
   fired_bar INTEGER,                        -- 上次推送时那根 K 线的 t，同一根只推一次
   fired_at INTEGER,
+  seen_t INTEGER,                           -- 写下这一行的那次判断看到的最后一根日线的 t（合成标的取各操作数里最新的）；更旧的判断不采纳
   PRIMARY KEY (vault, rule, key)
 ) WITHOUT ROWID;
 CREATE TABLE quotes (                       -- §2.6：盘中轮询拿到的最新价，所有人共用；不是 K 线
@@ -467,6 +468,7 @@ date,open,high,low,close,volume
 - **状态**类只要条件成立就触发；新建的警报如果当时已经成立，第一次检查就会触发，和 TradingView 一样。
 - **`when` 公式**沿用 §2.5 的「新成立才推送」，所以 `close > X` 的效果接近上穿；要明确的上穿下穿可以写 `cross(close, X)` / `cross(X, close)`。
 - **触发方式**：`once` 触发后把这条警报写成 `enabled: false`（写回对应的人的 yaml，注释保留），列表里显示「已触发」；`bar` 同一根日线最多触发一次（`alert_state.fired_bar`）。「同一根」按时间比：只有比 `fired_bar` 更新的 K 线才能再触发；在更旧的 K 线上判断（两轮报价之间来了一次失败的、或没带回当天那根的日线同步）既不触发，也不把 `fired_bar` 改回去，`when` 公式的「同一根只推一次」同理。
+- **旧行情不采纳**：每一行记着写下它的那次判断看到的最后一根日线（`alert_state.seen_t`，盘中报价拼的今日 K 线也算）。一次判断看到的日线比它更旧，就整个不算：不触发，也不改 `state`。否则盘中已经触发、条件一直成立的警报，会被一次失败的日线同步按昨天的收盘写回「不成立」，下一轮报价再「新成立」一次。同一天里的判断照常采纳，盘中的反复照样跟着变。
   已触发的 `once` 手改 yaml 的 `enabled: true` 不会重新启用；重新启用请用界面上的恢复。
 - 状态记在 `alert_state`（§1.4），事件类的上一次结果也在这里。
 

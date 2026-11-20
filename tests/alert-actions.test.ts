@@ -268,7 +268,7 @@ alerts:
     expect(after.conditionRules).toEqual({});
 
     // the condition's state went with it; the price alert's row is its own
-    expect(readState("").get(stateId("alert:cond-trend", BTC))).toEqual({ state: 1, firedBar: 7, firedAt });
+    expect(readState("").get(stateId("alert:cond-trend", BTC))).toEqual({ state: 1, firedBar: 7, firedAt, seenT: null });
     expect(readState("").get(stateId("alert:trend", BTC))).toMatchObject({ state: 0 });
     expect(alertBadges("", after)[BTC].find((b) => b.id === "alert:cond-trend")).toMatchObject({ label: "trend", state: "fresh" });
   });

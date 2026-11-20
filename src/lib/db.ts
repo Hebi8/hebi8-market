@@ -178,6 +178,12 @@ const MIGRATIONS: ((db: Database.Database) => void)[] = [
         at    INTEGER NOT NULL
       );
     `),
+  (db) =>
+    db.exec(`
+      -- The last daily bar the accepted check of an alert row saw (src/lib/alerts.ts): a check on
+      -- older bars (a sync that failed, between two quote rounds) changes nothing.
+      ALTER TABLE alert_state ADD COLUMN seen_t INTEGER;
+    `),
 ];
 
 const dbFile = () => process.env.HEBI8_DB ?? path.join(process.cwd(), "data", "hebi8.db");
