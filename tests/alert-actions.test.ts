@@ -268,6 +268,29 @@ alerts:
     expect(alertBadges("", after)[BTC].find((b) => b.id === "alert:cond-trend")).toMatchObject({ label: "trend", state: "fresh" });
   });
 
+  it("an old condition written with yaml aliases moves as it reads", async () => {
+    const { migrateConditions, readState, stateId } = await import("@/lib/alerts");
+    const { readConfig } = await import("@/lib/vault");
+    const { getDb } = await import("@/lib/db");
+    const BTC = "binance:BTCUSDT";
+    const shared = `defaults: { id: &id trend, tf: &tf D, notify: &on true }
+groups:
+  - { name: 加密, symbols: [${BTC}] }
+`;
+    const db = getDb();
+    db.prepare("DELETE FROM alert_state WHERE vault = ''").run();
+    db.prepare("INSERT INTO alert_state (vault, rule, key, state, fired_bar) VALUES ('', 'cond:trend', ?, 1, 7)").run(BTC);
+    fs.writeFileSync(yamlFile, `${shared}conditions:\n  - { id: *id, formula: "close > 1", tf: *tf, notify: *on }\n`);
+    expect(migrateConditions({ id: "", dir: root })).toBe(true);
+    expect(readConfig(root).alerts.map((a) => [a.id, a.when, a.tf, a.notify])).toEqual([["alert:trend", "close > 1", "D", true]]);
+    expect(readState("").get(stateId("alert:trend", BTC))).toMatchObject({ state: 1, firedBar: 7 });
+    // the whole list as an alias: its entries move as copies, the list it points at stays
+    fs.writeFileSync(yamlFile, `${shared}old: &old\n  - { id: up, formula: "close > 2" }\nconditions: *old\n`);
+    expect(migrateConditions({ id: "", dir: root })).toBe(true);
+    expect(readConfig(root).alerts.map((a) => [a.id, a.when, a.tf, a.notify])).toEqual([["alert:up", "close > 2", "W", false]]);
+    expect(read()).toContain("old: &old");
+  });
+
   it("moves every vault's old conditions when the app starts, the root's first", async () => {
     const { migrateAllConditions } = await import("@/lib/alerts");
     const { readConfig, userVaultDir } = await import("@/lib/vault");

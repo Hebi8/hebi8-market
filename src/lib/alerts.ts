@@ -6,7 +6,7 @@
  * vault, so a restart does not repeat a message, event conditions compare with the previous
  * check, and the overview can tell which alerts fired when.
  */
-import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
+import { isAlias, isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { crossed, observe, ALERT_CONDS, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { closedReader, loadDaily, type DailyReader } from "./bars";
 import { evalRule, type SeriesCache } from "./conditions";
@@ -231,41 +231,42 @@ function conditionId(raw: unknown, taken: Set<string>): string | undefined {
 
 /**
  * The old `conditions` list of one vault (before v0.2.0) becomes alerts on the whole watchlist,
- * once, when the app starts. Each entry moves, as the node it is (comments and aliases stay), to
- * the end of `alerts`: `formula` is renamed `when`, the id is the one `conditionId` gives, and the
- * old defaults are written out (label = id, tf W, not pushed unless `notify: true`); then
- * `conditions` goes. Before the yaml moves, the conditions' state rows (`cond:<id>`) are renamed
- * to their alerts', so one that fired this week still shows it and the next turn still pushes.
- * False when the vault has no such list.
+ * once, when the app starts. Each entry moves, as the node it is (comments stay), to the end of
+ * `alerts`: `formula` is renamed `when`, the id is the one `conditionId` gives, and the old defaults
+ * are written out (label = id, tf W, not pushed unless `notify: true`); then `conditions` goes.
+ * Everything is decided on the entries as they read, yaml aliases resolved (`id: *x`, `tf: *w`,
+ * `conditions: *list`). Before the yaml moves, the conditions' state rows (`cond:<id>`) are renamed
+ * to the ids the moved alerts read with, so one that fired this week still shows it and the next
+ * turn still pushes. False when the vault has no such list.
  */
 export function migrateConditions(vault: VaultRef): boolean {
   return moveConditions(vault.dir, (doc, current) => {
     const taken = new Set(current.alerts.map((a) => a.id));
-    const conditions = doc.get("conditions");
-    const nodes = (isSeq(conditions) ? conditions.items : []) as YAMLMap[];
+    const own = doc.get("conditions", true);
+    const conditions = isAlias(own) ? own.resolve(doc) : own;
+    const items = isSeq(conditions) ? conditions.items : [];
+    const raws = items.length ? (doc.toJS() as { conditions: Record<string, unknown>[] }).conditions : [];
     const rename = getDb().prepare("UPDATE OR IGNORE alert_state SET rule = ? WHERE vault = ? AND rule = ?");
-    // as the document reads, yaml aliases (`formula: *up`) resolved
-    const raws: Record<string, unknown>[] = nodes.length ? (doc.toJS() as { conditions: Record<string, unknown>[] }).conditions : [];
-    raws.forEach((d, i) => {
-      const alert = { id: conditionId(d.id, taken), label: d.label ?? d.id, when: d.formula, tf: isTimeframe(d.tf) ? d.tf : "W", notify: d.notify === true };
-      rename.run(parseAlert(alert, i, current.aliases, "conditions").id, vault.id, `cond:${trimmed(d.id)}`);
-    });
     const alerts = alertsSeq(doc);
+    // an entry (or the list) written as an alias stands for a node other places share: a copy moves
+    const nodes = items.map((item, i) => (isMap(item) && !isAlias(own) ? item : doc.createNode(raws[i])) as YAMLMap);
     // the comments on the `conditions:` line and above its first entry belong to the list; they go with that entry
-    if (nodes[0] && isSeq(conditions) && conditions.commentBefore) nodes[0].commentBefore = [conditions.commentBefore, nodes[0].commentBefore].filter(Boolean).join("\n");
-    for (const node of nodes) {
-      const own = node.get("id");
-      const id = conditionId(own, taken);
+    if (nodes[0] && isSeq(own) && own.commentBefore) nodes[0].commentBefore = [own.commentBefore, nodes[0].commentBefore].filter(Boolean).join("\n");
+    nodes.forEach((node, i) => {
+      const raw = raws[i];
+      const id = conditionId(raw.id, taken);
       const idNode = node.get("id", true);
       if (!id) node.delete("id");
       else if (isScalar(idNode)) idNode.value = id;
+      else node.set("id", id);
       const formula = node.items.find((pair) => isScalar(pair.key) && pair.key.value === "formula");
       if (formula && isScalar(formula.key)) formula.key.value = "when";
-      if (!node.has("label")) node.set("label", own);
-      if (!isTimeframe(node.get("tf"))) node.set("tf", "W");
-      if (node.get("notify") !== true) node.set("notify", false);
+      if (!node.has("label")) node.set("label", raw.id);
+      if (!isTimeframe(raw.tf)) node.set("tf", "W");
+      if (raw.notify !== true) node.set("notify", false);
       alerts.items.push(node);
-    }
+      rename.run(parseAlert(node.toJS(doc), i, current.aliases, "conditions").id, vault.id, `cond:${trimmed(raw.id)}`);
+    });
     doc.delete("conditions");
   });
 }
