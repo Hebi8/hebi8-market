@@ -167,6 +167,15 @@ describe("request counting", () => {
     expect(topPaths(usageDay())).toEqual([{ path: `/chart/${encodeURIComponent(bench)}`, kind: "page", requests: 1 }]);
   });
 
+  it("writes the counts with a root yaml that does not read", async () => {
+    const { proxy } = await import("@/proxy");
+    const { flushUsage, dailyTraffic, usageDay } = await import("@/lib/usage");
+    fs.writeFileSync(yamlFile, `${ROOT_YAML}prices: invalid\n`);
+    proxy(tunnel("/", "203.0.113.9"));
+    flushUsage();
+    expect(dailyTraffic(usageDay(), 1)[0].requests).toBe(1);
+  });
+
   it("reads the sessions file once per flush, however many made-up cookies come in", async () => {
     const { proxy } = await import("@/proxy");
     const { flushUsage, topVisitors, usageDay } = await import("@/lib/usage");

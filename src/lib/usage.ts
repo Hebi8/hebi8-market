@@ -14,7 +14,7 @@ import { liveSessions } from "./secrets";
 import type { Source } from "./symbols";
 import { DAY, localDay } from "./time";
 import { ANY_CHART, OTHER, drainCounters, onBufferFull, restoreCounters, type Hit, type Kind, type Origin, type UpstreamHit } from "./traffic";
-import { loadVaults, readConfigSafe, vaultDir } from "./vault";
+import { listVaults, readConfigSafe, vaultDir } from "./vault";
 
 export const FLUSH_MS = 30_000;
 export const KEEP_DAYS = 90;
@@ -136,9 +136,11 @@ export function flushUsage(): void {
     const loginOf = (session: string) => (session && Object.hasOwn(sessions, session) ? sessions[session].login.toLowerCase() : "");
     const db = getDb();
     // a chart path keeps its key when the instance knows it: a symbol it has, a watched row with
-    // stats, or a benchmark some vault refers to (a synthetic one has no row of its own)
+    // stats, or a benchmark some vault that reads refers to (a synthetic one has no row of its own)
     const known = new Set((db.prepare("SELECT key FROM symbols UNION SELECT key FROM stats").all() as { key: string }[]).map((r) => r.key));
-    for (const v of loadVaults()) for (const item of allItems(v.config)) if (item.bench) known.add(item.bench);
+    const root = instanceConfig();
+    const configs = root ? [root, ...listVaults(root.owners).flatMap((v) => (v.id ? (readConfigSafe(v.dir).config ?? []) : []))] : [];
+    for (const cfg of configs) for (const item of allItems(cfg)) if (item.bench) known.add(item.bench);
     const isStored = db.prepare("SELECT 1 FROM visitors WHERE day = ? AND origin = ? AND visitor = ? LIMIT 1").pluck();
     const countStored = db.prepare("SELECT COUNT(DISTINCT visitor) FROM visitors WHERE day = ? AND origin = ? AND visitor != ?").pluck();
     const addPath = db.prepare(
