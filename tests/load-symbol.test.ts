@@ -6,11 +6,13 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => undefined }) }));
 vi.mock("next/cache", () => ({ revalidatePath: () => undefined }));
 // no network here: opening a symbol only has to ask sync for its bars
-const synced = vi.hoisted(() => ({ keys: [] as string[], fail: null as string | null }));
+const synced = vi.hoisted(() => ({ keys: [] as string[], fail: null as string | null, during: null as (() => void) | null }));
 vi.mock("@/lib/sync", async (original) => ({
   ...(await original<typeof import("@/lib/sync")>()),
   syncOne: async (key: string) => {
     synced.keys.push(key);
+    synced.during?.();
+    synced.during = null;
     return key === synced.fail ? { key, ok: false, error: "not found" } : { key, ok: true, bars: 1 };
   },
 }));
@@ -65,6 +67,19 @@ describe("writes that wait for a fetch", () => {
     const [a, b] = await Promise.all([addSymbol({ key: "yahoo:AAPL", group: "美股" }), addSymbol({ key: "yahoo:AAPL", group: "美股" })]);
     expect([a, b]).toEqual([{ ok: true }, { ok: false, error: "yahoo:AAPL 已经在「美股」组里" }]);
     expect(read().match(/yahoo:AAPL/g)).toHaveLength(1);
+  });
+
+  it("an alias pointed elsewhere while a fetch was out is not written", async () => {
+    const { addSymbol, setBench } = await import("@/app/actions");
+    fs.writeFileSync(yamlFile, YAML.replace("aliases:", "aliases:\n  PICK: yahoo:AAA"));
+    synced.during = () => fs.writeFileSync(yamlFile, read().replace("PICK: yahoo:AAA", "PICK: yahoo:SPY"));
+    expect(await addSymbol({ key: "PICK", group: "美股" })).toEqual({ ok: false, error: "「PICK」在拉取期间改成了 yahoo:SPY，请重试" });
+    expect(read()).not.toMatch(/- PICK|PICK]/);
+    // a bench the same way: here it would make SPY its own bench
+    fs.writeFileSync(yamlFile, YAML.replace("aliases:", "aliases:\n  PICK: yahoo:AAA"));
+    synced.during = () => fs.writeFileSync(yamlFile, read().replace("PICK: yahoo:AAA", "PICK: yahoo:SPY"));
+    expect(await setBench("yahoo:SPY", "PICK")).toEqual({ ok: false, error: "「PICK」在拉取期间改成了 yahoo:SPY，请重试" });
+    expect(read()).not.toContain("bench");
   });
 
   it("adds into a group whose list is a yaml alias", async () => {

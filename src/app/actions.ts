@@ -138,6 +138,7 @@ export async function setBench(key: string, bench: string | null): Promise<Actio
     updateConfig(dir, (doc, current) => {
       const found = locateEntry(doc, key, current.aliases);
       if (!found) throw new Error(`${key} 不在自选里`);
+      if (target) ops.changedWhileFetching(benchRef, target, current.aliases);
       const entry = entryAsMap(doc, found.symbols, found.index);
       if (benchRef) entry.set("bench", benchRef);
       else entry.delete("bench");

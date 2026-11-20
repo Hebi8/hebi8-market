@@ -34,6 +34,12 @@ export interface AddSymbolInput {
   alias?: string;
 }
 
+/** An alias that now points elsewhere than the key fetched for it: the write would watch something unfetched. */
+export function changedWhileFetching(ref: string, fetched: string, aliases: Record<string, string>): void {
+  const now = resolveKey(ref, aliases);
+  if (now !== fetched) throw new Error(`「${ref}」在拉取期间改成了 ${now}，请重试`);
+}
+
 /** Add a symbol to a group (created when new). The first fetch doubles as validation; nothing is written unless it succeeds. */
 export async function addSymbol({ dir }: Viewer, input: AddSymbolInput): Promise<void> {
   const cfg = readConfig(dir);
@@ -60,6 +66,8 @@ export async function addSymbol({ dir }: Viewer, input: AddSymbolInput): Promise
   updateConfig(dir, (doc, current) => {
     const added = findItem(current, key);
     if (added) throw new Error(`${key} 已经在「${added.group}」组里`);
+    changedWhileFetching(ref, key, current.aliases);
+    if (benchRef) changedWhileFetching(benchRef, bench!, current.aliases);
     // a Chinese search term that found this key is worth keeping as an alias
     const keepAlias = alias && isCJK(alias) && !alias.includes(":") && !current.aliases[alias] && alias !== name;
     const symbols = seqOf(groupNode(doc, group), "symbols", doc);
