@@ -63,6 +63,10 @@ import { WatchlistPanel, type WatchlistGroup } from "./WatchlistPanel";
 
 const KChart = dynamic(() => import("./KChart").then((m) => m.KChart), { ssr: false });
 
+/** One change of the drawings and comparisons, as a step from one state to the next. */
+type ChartEdit = (state: ChartState) => ChartState;
+type ChartResult = Awaited<ReturnType<typeof editChartState>>;
+
 const STYLE_ICONS: Record<ChartStyle, (p: { size?: number }) => ReactNode> = {
   candle_solid: IconCandles,
   candle_up_stroke: IconHollowCandles,
@@ -224,15 +228,18 @@ export function ChartView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbolKey]);
 
-  // The drawings and comparisons as this page has them: a change shows at once and is sent as that
-  // change (`editChartState`), which the server applies to what it has. What the page reads again
-  // from the server (back in view, another tab's import) is taken while none of its own is on the way.
+  // The drawings and comparisons as this page has them: what the server is known to have, with the
+  // changes on the way on top, in the order sent. Each change is sent as that change
+  // (`editChartState`), which the server applies to what it has; one it takes joins the known state,
+  // one it does not take just leaves the list. What the page reads again from the server (back in
+  // view, another tab's import) is taken while none of its own is on the way.
   const [chartState, setChartState] = useState(savedState);
-  const stateRef = useRef(savedState);
-  const sending = useRef(0);
+  const confirmed = useRef(savedState);
+  const pending = useRef<ChartEdit[]>([]);
+  const show = () => setChartState(pending.current.reduce((state, edit) => edit(state), confirmed.current));
   useEffect(() => {
-    if (sending.current > 0) return;
-    stateRef.current = savedState;
+    if (pending.current.length > 0) return;
+    confirmed.current = savedState;
     setChartState(savedState);
   }, [savedState]);
 
@@ -441,29 +448,30 @@ export function ChartView({
     return result.ok ? null : result.error;
   };
 
-  const applyState = (change: (state: ChartState) => ChartState) => {
-    stateRef.current = change(stateRef.current);
-    setChartState(stateRef.current);
-  };
   /**
-   * Send one change, shown first by `local` when there is one. A change the server did not take
-   * (refused, or the request itself failed) is not undone on its own: once nothing more is on the
-   * way, the page reads the saved state again and shows that.
+   * Send one change, shown while it is on the way as `local` does it. Once the server answers, the
+   * change joins the known state as `saved` says (`local` by default), or leaves the list when it
+   * was not taken (refused, or the request itself failed). After a change that was not taken, once
+   * nothing more is on the way, the chart takes over the drawings as shown, and the page reads the
+   * saved state again.
    */
   const failed = useRef(false);
-  const sendChange = async (change: ChartChange, local?: (state: ChartState) => ChartState) => {
+  const sendChange = async (change: ChartChange, local: ChartEdit = (state) => state, saved: (result: ChartResult) => ChartEdit = () => local) => {
     if (readOnly) {
       setMessage("登录后才能保存画线和比较商品");
       return null;
     }
-    if (local) applyState(local);
-    sending.current++;
-    const result = await editChartState(symbolKey, change).catch((err: Error) => ({ ok: false as const, error: err.message }));
-    sending.current--;
+    pending.current = [...pending.current, local];
+    show();
+    const result: ChartResult = await editChartState(symbolKey, change).catch((err: Error) => ({ ok: false as const, error: err.message }));
+    pending.current = pending.current.filter((edit) => edit !== local);
+    if (result.ok) confirmed.current = saved(result)(confirmed.current);
+    else failed.current = true;
+    show();
     report(result);
-    if (!result.ok) failed.current = true;
-    if (failed.current && sending.current === 0) {
+    if (failed.current && pending.current.length === 0) {
       failed.current = false;
+      setReloadSeq((n) => n + 1);
       reloadedRef.current = true;
       startReload(() => router.refresh());
     }
@@ -473,9 +481,10 @@ export function ChartView({
   const removeCompare = (key: string) => void sendChange({ removeCompare: key }, (s) => ({ ...s, compare: s.compare.filter((c) => c.key !== key) }));
   /** Shown once it is saved, as saved: the symbol's bars have to be fetched first, and the chart asks for them as soon as it shows. */
   const addCompare = async (entry: CompareEntry) => {
-    const result = await sendChange({ addCompare: entry });
-    const added = result?.ok ? result.added : undefined;
-    if (added && !stateRef.current.compare.some((c) => c.key === added.key)) applyState((s) => ({ ...s, compare: [...s.compare, added] }));
+    const result = await sendChange({ addCompare: entry }, undefined, (saved) => (s) => {
+      const added = saved.ok ? saved.added : undefined;
+      return !added || s.compare.some((c) => c.key === added.key) ? s : { ...s, compare: [...s.compare, added] };
+    });
     return result?.ok ?? false;
   };
 
