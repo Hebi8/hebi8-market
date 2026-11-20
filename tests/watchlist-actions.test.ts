@@ -134,6 +134,58 @@ describe("watchlist Server Actions", () => {
   });
 });
 
+describe("an edit changes only its own groups, whatever yaml aliases they share", () => {
+  const load = async () => {
+    const { parse } = await import("yaml");
+    return parse(read()) as Record<string, unknown>;
+  };
+
+  it("renames a group named through an alias without touching the anchor or writing a second name", async () => {
+    fs.writeFileSync(yamlFile, `label: &label US\ngroups:\n  - { name: *label, symbols: [yahoo:SPY] }\n`);
+    expect(await renameGroup("US", "美股")).toEqual({ ok: true });
+    expect(await order()).toEqual(["美股:SPY"]);
+    expect((await load()).label).toBe("US");
+    expect(read().match(/name:/g)).toHaveLength(1);
+  });
+
+  it("moves into one of two groups sharing an empty list, leaving the other empty", async () => {
+    fs.writeFileSync(yamlFile, `empty: &empty []\ngroups:\n  - { name: 美股, symbols: [yahoo:SPY] }\n  - { name: A, symbols: *empty }\n  - { name: B, symbols: *empty }\n`);
+    expect(await moveSymbol("yahoo:SPY", "A")).toEqual({ ok: true });
+    expect(await order()).toEqual(["美股:", "A:SPY", "B:"]);
+    expect((await load()).empty).toEqual([]);
+  });
+
+  it("keeps what the rest of the file reads when the anchor is on the group, its list or its name", async () => {
+    fs.writeFileSync(
+      yamlFile,
+      `groups:
+  - &us { name: &n 美股, symbols: &w [yahoo:SPY, yahoo:QQQ] }
+  - { name: 观察, symbols: [yahoo:IWM] }
+saved: { group: *us, list: *w, title: *n }
+`,
+    );
+    const before = (await load()).saved;
+    expect(await renameGroup("美股", "US")).toEqual({ ok: true });
+    expect(await moveSymbol("yahoo:QQQ", "观察", 0)).toEqual({ ok: true });
+    expect(await order()).toEqual(["US:SPY", "观察:QQQ,IWM"]);
+    expect((await load()).saved).toEqual(before);
+    // a deleted group's anchors too
+    expect(await deleteGroup("US")).toEqual({ ok: true });
+    expect(await order()).toEqual(["观察:SPY,QQQ,IWM"]);
+    expect((await load()).saved).toEqual(before);
+  });
+
+  it("writes out an alias that a move would put before its anchor", async () => {
+    fs.writeFileSync(
+      yamlFile,
+      `groups:\n  - { name: A, symbols: [{ key: yahoo:SPY, name: &nm 标普 }] }\n  - { name: B, symbols: [{ key: yahoo:QQQ, name: *nm }] }\n`,
+    );
+    expect(await moveGroup("B", 0)).toEqual({ ok: true });
+    const { readConfig } = await import("@/lib/vault");
+    expect(readConfig(root).groups.map((g) => g.symbols.map((x) => [x.key, x.name]))).toEqual([[["yahoo:QQQ", "标普"]], [["yahoo:SPY", "标普"]]]);
+  });
+});
+
 const ALIASED = `us: &us { name: 美股, symbols: [yahoo:QQQ, yahoo:NVDA] }
 watch: &watch [yahoo:SPY, yahoo:IWM]
 groups:
@@ -157,6 +209,10 @@ describe("the yaml ends up as the page shows an edit", () => {
     `groups:\n  - { name: 全部, symbols: [yahoo:SPY, yahoo:QQQ] }\n`,
     // groups and lists written as yaml aliases
     ALIASED,
+    // a name from an anchor, and two groups sharing one empty list
+    `label: &label US\nempty: &empty []\ngroups:\n  - { name: *label, symbols: [yahoo:SPY] }\n  - { name: A, symbols: *empty }\n  - { name: B, symbols: *empty }\n`,
+    // anchors on a group, its list and its name, read elsewhere
+    `groups:\n  - &us { name: &n 美股, symbols: &w [yahoo:SPY, yahoo:QQQ] }\n  - { name: 观察, symbols: [yahoo:IWM] }\nsaved: { group: *us, list: *w, title: *n }\n`,
   ];
 
   it.each(LISTS.map((yaml, i) => [i, yaml]))("list %i: every edit, valid or not, on both sides", async (_, yaml) => {
