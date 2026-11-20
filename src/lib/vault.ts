@@ -258,7 +258,11 @@ function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number): un
   let node: unknown = parent.get(key, true);
   if (isAlias(node)) {
     const source = node.resolve(doc)!;
-    node = copyOf(doc, source.toJS(doc), source);
+    const copy = copyOf(doc, source.toJS(doc), source);
+    // the comments written on the alias stay where it stood
+    copy.commentBefore = node.commentBefore;
+    copy.comment = node.comment;
+    node = copy;
     parent.set(key, node);
   } else if (isNode(node)) unshare(doc, node);
   return node;
@@ -271,12 +275,12 @@ function ownGroups(doc: Document): YAMLSeq {
   return isSeq(groups) ? groups : seqOf(root, "groups", doc);
 }
 
-/** Group `i` with its `name` and `symbols` as its own nodes; null when it is not a map. */
-function ownGroup(doc: Document, groups: YAMLSeq, i: number): YAMLMap | null {
+/** Group `i` as its own node, with its `name` and `symbols` too when they are to change; null when it is not a map. */
+function ownGroup(doc: Document, groups: YAMLSeq, i: number, change: { name: boolean; symbols: boolean }): YAMLMap | null {
   const group = own(doc, groups, i);
   if (!isMap(group)) return null;
-  own(doc, group, "name");
-  own(doc, group, "symbols");
+  if (change.name) own(doc, group, "name");
+  if (change.symbols) own(doc, group, "symbols");
   return group;
 }
 
@@ -299,7 +303,7 @@ function setName(doc: Document, map: YAMLMap, name: string | null): void {
 export function groupNode(doc: Document, name: string): YAMLMap {
   const groups = ownGroups(doc);
   const i = groupNames(writtenNames(doc, groups)).indexOf(name);
-  const group = i >= 0 ? ownGroup(doc, groups, i) : null;
+  const group = i >= 0 ? ownGroup(doc, groups, i, { name: false, symbols: true }) : null;
   if (group) return group;
   const node = doc.createNode({ name, symbols: [] }) as YAMLMap;
   if (i >= 0) groups.items[i] = node;
@@ -347,14 +351,16 @@ export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<strin
       });
     }
     const keys = (items: { key: string }[]) => items.map((item) => item.key).join("\n");
-    const changed = next.map((g, i) => old[i] < 0 || writing[i] !== g.written || keys(g.items) !== keys(groups[old[i]].items));
-    // the groups whose own nodes change: a deleted one only goes, which the last step takes care of
-    const targets = next.flatMap((_, i) => (changed[i] && old[i] >= 0 ? [old[i]] : []));
-    return { seq, groups, next, old, writing, changed, targets };
+    const renamed = next.map((g, i) => old[i] < 0 || writing[i] !== g.written);
+    const refilled = next.map((g, i) => old[i] < 0 || keys(g.items) !== keys(groups[old[i]].items));
+    return { seq, next, old, writing, renamed, refilled };
   };
-  // make the targets their own first, then plan again on the nodes as they are now
+  // make what changes their own first (a deleted group only goes, which the last step takes care
+  // of), then plan again on the nodes as they are now
   const first = plan();
-  for (const j of first.targets) ownGroup(doc, first.seq, j);
+  first.next.forEach((_, i) => {
+    if (first.old[i] >= 0 && (first.renamed[i] || first.refilled[i])) ownGroup(doc, first.seq, first.old[i], { name: first.renamed[i], symbols: first.refilled[i] });
+  });
   // what each alias reads before anything moves
   const sources = new Map<Alias, { node: Node | undefined; value: unknown }>();
   visit(doc, {
@@ -363,11 +369,12 @@ export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<strin
       sources.set(alias, { node, value: node?.toJS(doc) });
     },
   });
-  const { seq, next, old, writing, changed } = plan();
+  const { seq, next, writing, renamed, refilled } = plan();
   seq.items = next.map((g, i) => {
-    if (!changed[i]) return g.node;
+    if (!renamed[i] && !refilled[i]) return g.node;
     const map = isMap(g.node) ? g.node : (doc.createNode({}) as YAMLMap);
-    if (old[i] < 0 || writing[i] !== g.written) setName(doc, map, writing[i]);
+    if (renamed[i]) setName(doc, map, writing[i]);
+    if (!refilled[i]) return map;
     const after = g.items.map((item) => item.entry);
     const symbols = map.get("symbols", true);
     if (isSeq(symbols)) {

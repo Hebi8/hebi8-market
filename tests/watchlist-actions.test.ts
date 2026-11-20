@@ -200,6 +200,23 @@ alerts: *rules
     expect(readConfig(root).groups.map((g) => g.symbols.map((x) => [x.key, x.name]))).toEqual([[["yahoo:QQQ", "Correct"]], [["yahoo:SPY", "Correct"]]]);
   });
 
+  it("renaming leaves a list written as an alias, and its comments, as they are", async () => {
+    fs.writeFileSync(yamlFile, `watch: &watch\n  - yahoo:SPY # 标普\ngroups:\n  - name: A\n    symbols: *watch # 共用的列表\n`);
+    expect(await renameGroup("A", "US")).toEqual({ ok: true });
+    expect(read()).toBe(`watch: &watch\n  - yahoo:SPY # 标普\ngroups:\n  - name: US\n    symbols: *watch # 共用的列表\n`);
+    // so the list still reads as one: what is added by hand shows in the group
+    fs.writeFileSync(yamlFile, read().replace("  - yahoo:SPY # 标普\n", "  - yahoo:SPY # 标普\n  - yahoo:NVDA\n"));
+    expect(await order()).toEqual(["US:SPY,NVDA"]);
+  });
+
+  it("a list written as an alias that an edit must change becomes a copy with the comment on the alias", async () => {
+    fs.writeFileSync(yamlFile, `watch: &watch [yahoo:SPY]\ngroups:\n  - name: A\n    symbols: *watch # 共用的列表\n  - { name: B, symbols: [yahoo:QQQ] }\n`);
+    expect(await moveSymbol("yahoo:QQQ", "A")).toEqual({ ok: true });
+    expect(await order()).toEqual(["A:SPY,QQQ", "B:"]);
+    expect(read()).toContain("# 共用的列表");
+    expect(read()).toContain("watch: &watch [ yahoo:SPY ]");
+  });
+
   it("a copy reads an alias used as a key where the original stood too", async () => {
     const { readConfig } = await import("@/lib/vault");
     fs.writeFileSync(
