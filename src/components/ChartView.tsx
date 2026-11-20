@@ -445,33 +445,38 @@ export function ChartView({
     stateRef.current = change(stateRef.current);
     setChartState(stateRef.current);
   };
-  /** Send one change; `undo` puts the page back when the server refuses it. */
-  const sendChange = async (change: ChartChange, undo?: () => void) => {
+  /**
+   * Send one change, shown first by `local` when there is one. A change the server did not take
+   * (refused, or the request itself failed) is not undone on its own: once nothing more is on the
+   * way, the page reads the saved state again and shows that.
+   */
+  const failed = useRef(false);
+  const sendChange = async (change: ChartChange, local?: (state: ChartState) => ChartState) => {
     if (readOnly) {
       setMessage("登录后才能保存画线和比较商品");
-      return false;
+      return null;
     }
+    if (local) applyState(local);
     sending.current++;
-    const result = await editChartState(symbolKey, change);
+    const result = await editChartState(symbolKey, change).catch((err: Error) => ({ ok: false as const, error: err.message }));
     sending.current--;
     report(result);
-    if (!result.ok) undo?.();
-    return result.ok;
+    if (!result.ok) failed.current = true;
+    if (failed.current && sending.current === 0) {
+      failed.current = false;
+      reloadedRef.current = true;
+      startReload(() => router.refresh());
+    }
+    return result;
   };
-  const onOverlaysChange = (overlays: OverlaySpec[]) => {
-    applyState((s) => ({ ...s, overlays }));
-    void sendChange({ overlays });
-  };
-  const removeCompare = (key: string) => {
-    const entry = stateRef.current.compare.find((c) => c.key === key);
-    applyState((s) => ({ ...s, compare: s.compare.filter((c) => c.key !== key) }));
-    void sendChange({ removeCompare: key }, () => entry && applyState((s) => ({ ...s, compare: [...s.compare, entry] })));
-  };
-  /** Shown once it is saved: the symbol's bars have to be fetched first, and the chart asks for them as soon as it shows. */
+  const onOverlaysChange = (overlays: OverlaySpec[]) => void sendChange({ overlays }, (s) => ({ ...s, overlays }));
+  const removeCompare = (key: string) => void sendChange({ removeCompare: key }, (s) => ({ ...s, compare: s.compare.filter((c) => c.key !== key) }));
+  /** Shown once it is saved, as saved: the symbol's bars have to be fetched first, and the chart asks for them as soon as it shows. */
   const addCompare = async (entry: CompareEntry) => {
-    const ok = await sendChange({ addCompare: entry });
-    if (ok && !stateRef.current.compare.some((c) => c.key === entry.key)) applyState((s) => ({ ...s, compare: [...s.compare, entry] }));
-    return ok;
+    const result = await sendChange({ addCompare: entry });
+    const added = result?.ok ? result.added : undefined;
+    if (added && !stateRef.current.compare.some((c) => c.key === added.key)) applyState((s) => ({ ...s, compare: [...s.compare, added] }));
+    return result?.ok ?? false;
   };
 
   // legend row actions: eye, gear (or double click), ×, and ⋯ → 移动到

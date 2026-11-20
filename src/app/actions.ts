@@ -171,14 +171,16 @@ export async function deleteIndicator(id: string): Promise<ActionResult> {
 /**
  * One change to a chart's drawings and comparisons, applied to what the file has when it runs, so
  * changes sent one after another (Server Actions run in order) each build on the one before,
- * whatever the page had when it sent them. The page has made the change already: only adding a
- * comparison re-renders it, for that symbol's name, after its first fetch.
+ * whatever the page had when it sent them. The page shows drawings and removals at once; an added
+ * comparison it shows as saved (`added`), and only that change re-renders the page, for the
+ * symbol's name after its first fetch. A removal goes by the key as saved, not through aliases.
  */
 export type ChartChange = { overlays: OverlaySpec[] } | { addCompare: CompareEntry } | { removeCompare: string };
 
-export async function editChartState(key: string, change: ChartChange): Promise<ActionResult> {
+export async function editChartState(key: string, change: ChartChange): Promise<ActionResult & { added?: CompareEntry }> {
   const adding = "addCompare" in change;
-  return attempt(async ({ dir }) => {
+  let added: CompareEntry | undefined;
+  const result = await attempt(async ({ dir }) => {
     if (!isValidKey(key)) throw new Error("无效的 key");
     if ("overlays" in change) {
       const overlays = (Array.isArray(change.overlays) ? change.overlays : []).flatMap((o) => {
@@ -189,12 +191,13 @@ export async function editChartState(key: string, change: ChartChange): Promise<
       writeChartState(dir, key, { ...readChartState(dir, key), overlays });
       return;
     }
-    const target = resolveKey(str("removeCompare" in change ? change.removeCompare : change.addCompare?.key), readConfig(dir).aliases);
     if ("removeCompare" in change) {
+      // the key as saved: the page shows what the file has, and an alias may point elsewhere by now
       const state = readChartState(dir, key);
-      writeChartState(dir, key, { ...state, compare: state.compare.filter((c) => c.key !== target) });
+      writeChartState(dir, key, { ...state, compare: state.compare.filter((c) => c.key !== change.removeCompare) });
       return;
     }
+    const target = resolveKey(str(change.addCompare?.key), readConfig(dir).aliases);
     if (!isValidKey(target) || target === key) throw new Error(`无效的比较商品「${target}」`);
     // a comparison must be in the cache before the chart asks for it
     if (!isSynthetic(target) && !getSymbol(target)?.syncedAt) {
@@ -203,10 +206,12 @@ export async function editChartState(key: string, change: ChartChange): Promise<
     }
     // the file as it is after the fetch
     const state = readChartState(dir, key);
-    if (state.compare.some((c) => c.key === target)) return;
-    const entry = { key: target, mode: change.addCompare.mode === "pane" ? ("pane" as const) : ("percent" as const), color: str(change.addCompare.color) || "#e8891d" };
-    writeChartState(dir, key, { ...state, compare: [...state.compare, entry] });
+    added = state.compare.find((c) => c.key === target);
+    if (added) return;
+    added = { key: target, mode: change.addCompare.mode === "pane" ? "pane" : "percent", color: str(change.addCompare.color) || "#e8891d" };
+    writeChartState(dir, key, { ...state, compare: [...state.compare, added] });
   }, adding);
+  return result.ok && added ? { ...result, added } : result;
 }
 
 export async function setChartPrefs(

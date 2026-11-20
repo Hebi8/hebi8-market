@@ -121,11 +121,23 @@ describe("chart changes", () => {
       editChartState("yahoo:SPY", { removeCompare: "yahoo:NVDA" }),
       editChartState("yahoo:SPY", { addCompare: { key: "GOLD", mode: "pane", color: "#3" } }),
     ];
-    expect(await Promise.all(sent)).toEqual([{ ok: true }, { ok: true }, { ok: true }, { ok: true }]);
+    const gold = { key: "tv:TVC:GOLD", mode: "pane", color: "#3" };
+    expect(await Promise.all(sent)).toEqual([{ ok: true }, { ok: true }, { ok: true }, { ok: true, added: gold }]);
     expect(readChartState(root, "yahoo:SPY")).toEqual({ compare: [{ key: "tv:TVC:GOLD", mode: "pane", color: "#3" }], overlays: [line] });
     expect(synced.keys).toEqual(["tv:TVC:GOLD"]);
     synced.fail = "yahoo:NOPE";
     expect(await editChartState("yahoo:SPY", { addCompare: { key: "yahoo:NOPE", mode: "percent", color: "#4" } })).toEqual({ ok: false, error: "拉取 yahoo:NOPE 失败：not found" });
     expect(readChartState(root, "yahoo:SPY").compare.map((c) => c.key)).toEqual(["tv:TVC:GOLD"]);
+    // added again, by its alias: the page shows the entry the file has
+    expect(await editChartState("yahoo:SPY", { addCompare: { key: "GOLD", mode: "percent", color: "#5" } })).toEqual({ ok: true, added: gold });
+  });
+
+  it("removes the comparison saved under that key, even when an alias now points it elsewhere", async () => {
+    const { editChartState } = await import("@/app/actions");
+    const { readChartState, writeChartState } = await import("@/lib/vault");
+    writeChartState(root, "yahoo:SPY", { compare: [{ key: "yahoo:QQQ", mode: "percent", color: "#1" }, { key: "yahoo:IWM", mode: "percent", color: "#2" }], overlays: [] });
+    fs.writeFileSync(yamlFile, YAML.replace("aliases:", 'aliases:\n  "yahoo:QQQ": yahoo:IWM'));
+    expect(await editChartState("yahoo:SPY", { removeCompare: "yahoo:QQQ" })).toEqual({ ok: true });
+    expect(readChartState(root, "yahoo:SPY").compare.map((c) => c.key)).toEqual(["yahoo:IWM"]);
   });
 });
