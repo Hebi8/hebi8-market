@@ -773,6 +773,27 @@ describe("quote polling", () => {
       }
     });
 
+    it("a synthetic symbol's check is as old as its oldest operand's last bar", async () => {
+      const { runAlerts, readState, stateId } = await import("@/lib/alerts");
+      const { readConfig } = await import("@/lib/vault");
+      const { readDaily, writeBars } = await import("@/lib/store");
+      // SPY's last synced bar is Thursday's 90; BTC has bars through Saturday
+      writeBars(SPY, [bar(120, 2), bar(90, 3)], "replace");
+      writeBars(BTC, [2, 3, 4, 5].map((i) => bar(1, i)), "replace");
+      const vault = await watching([`{ id: low, key: "=${SPY}/BTC", when: "close < 100", check: price }`]);
+      const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      // a quote round sees SPY's Friday at 110 (a formula's first check only records)
+      const withFriday = (key: string) => (key === SPY ? [...readDaily(SPY), bar(110, 4)] : readDaily(key));
+      await runAlerts(vault, () => readConfig(root), "quotes", withFriday);
+      const id = stateId("alert:low", `=${SPY}/BTC`);
+      expect(readState("").get(id)).toMatchObject({ state: 0, seenT: T0 + 4 * DAY });
+      // the daily sync does not bring SPY's Friday: Thursday's 90 is no new fall below 100
+      await runAlerts(vault, () => readConfig(root));
+      expect(readState("").get(id)).toMatchObject({ state: 0, seenT: T0 + 4 * DAY });
+      expect(logs.mock.calls.flat().filter((m) => /new alert\(s\)/.test(String(m)))).toEqual([]);
+      logs.mockRestore();
+    });
+
     it("a close alert reads the other symbols of its formula up to their own last close", async () => {
       const { runAlerts, readState, stateId } = await import("@/lib/alerts");
       const { readConfig } = await import("@/lib/vault");

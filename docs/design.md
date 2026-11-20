@@ -184,7 +184,7 @@ CREATE TABLE alert_state (                  -- §2.5；删库后第一次同步�
   state INTEGER,                            -- 上次同步看到的结果 0/1
   fired_bar INTEGER,                        -- 上次推送时那根 K 线的 t，同一根只推一次
   fired_at INTEGER,
-  seen_t INTEGER,                           -- 写下这一行的那次判断看到的最后一根日线的 t（合成标的取各操作数里最新的）；更旧的判断不采纳
+  seen_t INTEGER,                           -- 写下这一行的那次判断看到的最后一根日线的 t（合成标的取各操作数最后一根里最旧的：一个操作数没更新，这次判断就不比上次新）；更旧的判断不采纳
   PRIMARY KEY (vault, rule, key)
 ) WITHOUT ROWID;
 CREATE TABLE quotes (                       -- §2.6：盘中轮询拿到的最新价，所有人共用；不是 K 线

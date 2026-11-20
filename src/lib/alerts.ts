@@ -76,7 +76,7 @@ interface Check {
   notify: boolean;
   /** The bars it was judged on, for the price in the message */
   read: DailyReader;
-  /** How far those bars go: the newest last daily bar of the symbols the key is made of */
+  /** How far those bars go: the oldest of the last daily bars of the symbols the key is made of (a synthetic one is as new as its stalest operand) */
   seenT: number | null;
   decide: (row: StateRow | undefined) => Decision;
 }
@@ -105,7 +105,7 @@ function checks(cfg: Config, pass: AlertPass, live: DailyReader, who: string): C
     const id = `${check}\u0000${key}`;
     if (!seen.has(id)) {
       const last = operands(key, cfg.aliases).flatMap((k) => read(k).at(-1)?.t ?? []);
-      seen.set(id, last.length > 0 ? Math.max(...last) : null);
+      seen.set(id, last.length > 0 ? Math.min(...last) : null);
     }
     return seen.get(id)!;
   };
