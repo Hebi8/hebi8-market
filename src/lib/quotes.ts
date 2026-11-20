@@ -15,12 +15,11 @@ import { QUOTE_ROUND_MS, QUOTE_SLOW_MS, quoteIsCurrent, scheduledSession, sessio
 import { adapters } from "./sources";
 import type { Quote, QuoteSession } from "./sources/types";
 import { computeStats, type Stats } from "./stats";
-import { calendarOfRow, getSymbol, lastClose, listSymbols, readDaily, readQuotes, writeQuotes, type QuoteRow, type SymbolRow } from "./store";
+import { calendarOfRow, getSymbol, lastClose, listSymbols, readDaily, readQuotes, writeQuotes, writeStats, type QuoteRow, type SymbolRow } from "./store";
 import { isSynthetic, isValidKey, parseKey, type Source } from "./symbols";
 import { parseSynth } from "./synth";
-import { loadVaults, type VaultConfig } from "./sync";
 import { localDay } from "./time";
-import { readConfig, readConfigSafe, vaultDir } from "./vault";
+import { loadVaults, readConfig, readConfigSafe, vaultDir, type VaultConfig } from "./vault";
 
 export const ROUND_MS = QUOTE_ROUND_MS;
 const SLOW_MS = QUOTE_SLOW_MS;
@@ -44,10 +43,10 @@ interface Intraday {
   l: number;
 }
 
-/** A vault's overview stats on today's live bars, as long as `stamp` (quotes, syncs, the list) stays the same */
-interface LiveCache {
+/** A vault's overview stats, as long as `stamp` (quotes, syncs, prices, the list, aliases) stays the same; `quotedAt` for a row whose price is a quote */
+interface OverviewCache {
   stamp: string;
-  rows: Record<string, { stats: Stats; quotedAt: number }>;
+  rows: Record<string, { stats: Stats; quotedAt: number | null }>;
 }
 
 interface State {
@@ -57,11 +56,11 @@ interface State {
   failures: Map<Source, { count: number; until: number }>;
   /** Today's first price and the extremes seen by polling, per key */
   intraday: Map<string, Intraday>;
-  live: Map<string, LiveCache>;
+  overview: Map<string, OverviewCache>;
 }
 
 const g = globalThis as unknown as { hebi8mQuotes?: State };
-const state: State = (g.hebi8mQuotes ??= { started: false, seen: new Map(), failures: new Map(), intraday: new Map(), live: new Map() });
+const state: State = (g.hebi8mQuotes ??= { started: false, seen: new Map(), failures: new Map(), intraday: new Map(), overview: new Map() });
 
 const log = (msg: string) => console.log(`[hebi8m] quotes: ${msg}`);
 
@@ -235,8 +234,8 @@ export async function quoteRound(now = Date.now(), vaults: VaultConfig[] = loadV
   writeQuotes(rows);
   const read = liveReader();
   for (const v of vaults) await runAlerts(v, () => readConfig(v.dir), "quotes", read);
-  for (const id of state.live.keys()) if (!vaults.some((v) => v.id === id)) state.live.delete(id);
-  for (const v of vaults) liveStats(v.id, v.config);
+  for (const id of state.overview.keys()) if (!vaults.some((v) => v.id === id)) state.overview.delete(id);
+  for (const v of vaults) overviewStats(v.id, v.config);
   return rows;
 }
 
@@ -261,7 +260,7 @@ export function resetQuotes(): void {
   state.seen.clear();
   state.failures.clear();
   state.intraday.clear();
-  state.live.clear();
+  state.overview.clear();
 }
 
 /** A real key's quote where `withQuote` takes it (`quoteDayIn`), judged from the symbol's row alone. */
@@ -303,33 +302,36 @@ function currentSession(quote: QuoteRow | undefined): QuoteSession | null {
 }
 
 /**
- * The overview's rows whose price comes from a quote (their own, or for a synthetic row an
- * operand's), wherever `withQuote` takes it: stats from today's live bar, so the price and the
- * changes match the chart and the alerts. Never stored: computed once after each quote round or
- * sync and kept in memory per vault, so a page view reads no bars. `status.session` is only set
+ * The overview's stats for every watched row of a vault (§3.4): the one source the overview, the
+ * chart's watchlist panel and MCP `overview` read. Computed on the bars the chart and the alerts
+ * see, so a row whose price comes from a quote (its own, or for a synthetic row an operand's,
+ * wherever `withQuote` takes it) has its changes on today's live bar. Kept in memory per vault for
+ * as long as the newest quote, the newest sync, `prices`, the list and the aliases stay the same,
+ * and written to the `stats` table when computed; a quote round and a daily sync compute it ahead,
+ * so a page view reads no bars. `status` is set for a row whose price is a quote, its session only
  * while the quote is current; a synthetic row has none.
  */
-export function liveStats(vault: string, cfg: Config, symbols = listSymbols()): Record<string, { stats: Stats; status: SymbolStatus }> {
+export function overviewStats(vault: string, cfg: Config, symbols = listSymbols()): Record<string, { stats: Stats; status: SymbolStatus | null }> {
   const quotes = readQuotes();
   const keys = allItems(cfg).map((i) => i.key);
   const newest = (values: (number | null)[]) => Math.max(0, ...values.map((v) => v ?? 0));
   const stamp = JSON.stringify([newest(Object.values(quotes).map((q) => q.fetchedAt)), newest(Object.values(symbols).map((s) => s.syncedAt)), cfg.prices, keys, cfg.aliases]);
-  let cache = state.live.get(vault);
+  let cache = state.overview.get(vault);
   if (cache?.stamp !== stamp) {
     const read = liveReader(quotes);
     cache = { stamp, rows: {} };
     for (const key of keys) {
-      const at = quotedAt(key, cfg.aliases, quotes, (k) => symbols[k]);
-      if (at === null) continue;
       const stats = computeStats(loadDaily(key, cfg.prices, cfg, read), { currency: symbols[key]?.currency ?? null });
-      if (stats) cache.rows[key] = { stats, quotedAt: at };
+      if (stats) cache.rows[key] = { stats, quotedAt: quotedAt(key, cfg.aliases, quotes, (k) => symbols[k]) };
     }
-    state.live.set(vault, cache);
+    state.overview.set(vault, cache);
+    writeStats(vault, Object.fromEntries(Object.entries(cache.rows).map(([key, row]) => [key, row.stats])));
   }
   return Object.fromEntries(
     Object.entries(cache.rows).map(([key, { stats, quotedAt }]) => {
       const row = symbols[key];
-      return [key, { stats, status: { syncedAt: row?.syncedAt ?? null, syncError: row?.syncError ?? null, quotedAt, session: isSynthetic(key) ? null : currentSession(quotes[key]) } }];
+      const status = quotedAt === null ? null : { syncedAt: row?.syncedAt ?? null, syncError: row?.syncError ?? null, quotedAt, session: isSynthetic(key) ? null : currentSession(quotes[key]) };
+      return [key, { stats, status }];
     }),
   );
 }

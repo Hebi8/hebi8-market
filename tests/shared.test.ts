@@ -214,7 +214,8 @@ describe("drafts", () => {
 
 describe("sync across vaults", () => {
   it("fetches the union of every vault's keys and comparisons, skipping broken and stale vaults", async () => {
-    const { loadVaults, unionSyncKeys } = await import("@/lib/sync");
+    const { unionSyncKeys } = await import("@/lib/sync");
+    const { loadVaults } = await import("@/lib/vault");
     const { writeChartState } = await import("@/lib/vault");
     const alice = path.join(users, "alice");
     fs.writeFileSync(path.join(alice, "hebi8.yaml"), read(alice, "hebi8.yaml").replace(/symbols: \[ ?BTC ?\]/, "symbols: [BTC, yahoo:SPY]"));
@@ -257,15 +258,17 @@ describe("stats and alerts per vault", () => {
   });
 
   it("keeps each vault's stats in its own rows", async () => {
-    const { recomputeStats } = await import("@/lib/sync");
-    const { ensureSymbol, readAllStats, writeBars } = await import("@/lib/store");
+    const { overviewStats } = await import("@/lib/quotes");
+    const { ensureSymbol, writeBars } = await import("@/lib/store");
+    const { getDb } = await import("@/lib/db");
+    const rows = (vault: string) => getDb().prepare("SELECT key, json FROM stats WHERE vault = ?").all(vault) as { key: string; json: string }[];
     ensureSymbol(KEY);
     writeBars(KEY, bars([90, 95, 101]), "replace");
-    recomputeStats("", rootCfg);
-    recomputeStats("alice", aliceCfg);
-    expect(readAllStats("")[KEY].last).toBe(101);
-    expect(readAllStats("alice")[KEY].last).toBe(101);
-    expect(readAllStats("bob")).toEqual({});
+    expect(overviewStats("", rootCfg)[KEY].stats.last).toBe(101);
+    expect(overviewStats("alice", aliceCfg)[KEY].stats.last).toBe(101);
+    expect(rows("").map((r) => [r.key, JSON.parse(r.json).last])).toEqual([[KEY, 101]]);
+    expect(rows("alice").map((r) => r.key)).toEqual([KEY]);
+    expect(rows("bob")).toEqual([]);
   });
 
   it("hides the owner's last review from visitors, retaining it for the owner and single-user mode", async () => {
@@ -285,11 +288,26 @@ describe("stats and alerts per vault", () => {
   });
 
   it("computes a vault's stats from the cache the first time a page asks", async () => {
-    const { statsFor } = await import("@/lib/sync");
-    const { readAllStats } = await import("@/lib/store");
-    expect(readAllStats("carol")).toEqual({});
-    expect(statsFor("carol", aliceCfg)[KEY].last).toBe(101);
-    expect(Object.keys(readAllStats("carol"))).toEqual([KEY]);
+    const { overviewStats } = await import("@/lib/quotes");
+    expect(overviewStats("carol", aliceCfg)[KEY]).toEqual({ stats: expect.objectContaining({ last: 101 }), status: null });
+  });
+
+  it("the chart's watchlist panel shows the price the overview does, a quote newer than the sync included", async () => {
+    const { getDb } = await import("@/lib/db");
+    const { markSynced, writeQuotes } = await import("@/lib/store");
+    const { default: Home } = await import("@/app/page");
+    const { default: ChartPage } = await import("@/app/chart/[key]/page");
+    request.session = sessions.owner;
+    markSynced(KEY, {});
+    writeQuotes([{ key: KEY, price: 120, time: Math.floor(Date.now() / 1000), session: "always", fetchedAt: Date.now() + 1000 }]);
+    try {
+      const home = (await Home()).props.data.groups[0].items[0];
+      const panel = (await ChartPage({ params: Promise.resolve({ key: encodeURIComponent(KEY) }) })).props.watchlist[0].items[0];
+      expect(home.stats.last).toBe(120);
+      expect(panel).toMatchObject({ key: KEY, last: 120 });
+    } finally {
+      getDb().exec("DELETE FROM quotes");
+    }
   });
 
   it("/api/bars answers per person, never from a shared conditional cache", async () => {

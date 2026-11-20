@@ -142,16 +142,14 @@ export function markSyncError(key: string, message: string): void {
   getDb().prepare("UPDATE symbols SET sync_error = ? WHERE key = ?").run(message, key);
 }
 
-/** Stats are per vault ('' = root): the watchlist and the prices mode are each person's own. */
-export function writeStats(vault: string, key: string, stats: Stats | null): void {
+/** A vault's overview stats as last computed ('' = root): the watchlist and the prices mode are each person's own. */
+export function writeStats(vault: string, rows: Record<string, Stats>): void {
   const db = getDb();
-  if (!stats) db.prepare("DELETE FROM stats WHERE vault = ? AND key = ?").run(vault, key);
-  else db.prepare("INSERT OR REPLACE INTO stats (vault, key, computed_at, json) VALUES (?, ?, ?, ?)").run(vault, key, Date.now(), JSON.stringify(stats));
-}
-
-export function readAllStats(vault: string): Record<string, Stats> {
-  const rows = getDb().prepare("SELECT key, json FROM stats WHERE vault = ?").all(vault) as { key: string; json: string }[];
-  return Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.json) as Stats]));
+  const insert = db.prepare("INSERT INTO stats (vault, key, computed_at, json) VALUES (?, ?, ?, ?)");
+  db.transaction(() => {
+    db.prepare("DELETE FROM stats WHERE vault = ?").run(vault);
+    for (const [key, stats] of Object.entries(rows)) insert.run(vault, key, Date.now(), JSON.stringify(stats));
+  })();
 }
 
 export function maxSyncedAt(): number | null {

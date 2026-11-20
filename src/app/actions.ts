@@ -12,7 +12,7 @@ import type { Prices } from "@/lib/series";
 import { getSymbol } from "@/lib/store";
 import { isSynthetic, isTimeframe, isValidKey } from "@/lib/symbols";
 import { parseSynth } from "@/lib/synth";
-import { recomputeStats, syncAll, syncOne } from "@/lib/sync";
+import { syncAll, syncOne } from "@/lib/sync";
 import {
   flowNode,
   groupName,
@@ -211,7 +211,7 @@ export async function renameSymbol(key: string, name: string): Promise<ActionRes
 }
 
 export async function setBench(key: string, bench: string | null): Promise<ActionResult> {
-  return attempt(async ({ dir, vault }) => {
+  return attempt(async ({ dir }) => {
     const cfg = readConfig(dir);
     const benchRef = str(bench);
     const target = benchRef ? resolveKey(benchRef, cfg.aliases) : null;
@@ -230,7 +230,6 @@ export async function setBench(key: string, bench: string | null): Promise<Actio
       if (benchRef) entry.set("bench", benchRef);
       else entry.delete("bench");
     });
-    recomputeStats(vault, readConfig(dir));
   });
 }
 
@@ -289,8 +288,7 @@ export async function saveChartState(key: string, state: ChartState): Promise<Ac
 export async function setChartPrefs(
   partial: Partial<Omit<ChartPrefs, "panes" | "styles">> & { prices?: Prices; panes?: Record<string, "main" | "sub" | null>; styles?: Record<string, LineOverride[] | null> },
 ): Promise<ActionResult> {
-  return attempt(({ dir, vault }) => {
-    const cfg = readConfig(dir);
+  return attempt(({ dir }) => {
     updateConfig(dir, (doc) => {
       if (partial.tf !== undefined) {
         if (!isTimeframe(partial.tf)) throw new Error("无效的周期");
@@ -335,7 +333,6 @@ export async function setChartPrefs(
         setScalar(doc, ["prices"], partial.prices);
       }
     });
-    if (partial.prices !== undefined && partial.prices !== cfg.prices) recomputeStats(vault, readConfig(dir));
   });
 }
 

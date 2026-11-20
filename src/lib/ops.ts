@@ -13,7 +13,7 @@ import { findItem, parseAlert, resolveKey, type FormulaDef } from "./config";
 import { liveReader } from "./quotes";
 import { isCJK } from "./search";
 import { isSynthetic, isTimeframe, isValidKey, type Timeframe } from "./symbols";
-import { recomputeStats, syncOne } from "./sync";
+import { syncOne } from "./sync";
 import { parseSynth } from "./synth";
 import { JOURNAL_TEMPLATE, flowNode, groupNode, locateEntry, readConfig, readJournal, readNote, seqOf, setList, updateConfig, writeJournal, writeNote } from "./vault";
 import type { Viewer } from "./viewer";
@@ -34,7 +34,7 @@ export interface AddSymbolInput {
 }
 
 /** Add a symbol to a group (created when new). The first fetch doubles as validation; nothing is written unless it succeeds. */
-export async function addSymbol({ dir, vault }: Viewer, input: AddSymbolInput): Promise<void> {
+export async function addSymbol({ dir }: Viewer, input: AddSymbolInput): Promise<void> {
   const cfg = readConfig(dir);
   const ref = str(input.key);
   const key = resolveKey(ref, cfg.aliases);
@@ -74,7 +74,6 @@ export async function addSymbol({ dir, vault }: Viewer, input: AddSymbolInput): 
       else doc.set("aliases", doc.createNode({ [alias]: key }));
     }
   });
-  recomputeStats(vault, readConfig(dir));
 }
 
 /** Take a key (aliases resolved by the caller) out of the watchlist; one that is not there is left alone. */

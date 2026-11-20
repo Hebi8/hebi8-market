@@ -16,7 +16,8 @@ A map of the code and the conventions it follows, for anyone changing hebi8/mark
 
 ## Pages and sync
 
-- Pages are RSCs that read SQLite/vault directly and must stay `force-dynamic`; reads never touch the network. Syncing happens in `src/lib/sync.ts` (scheduler in `src/lib/scheduler.ts`, started from `src/instrumentation.ts`) and recomputes `stats` afterwards.
+- Pages are RSCs that read SQLite/vault directly and must stay `force-dynamic`; reads never touch the network. Syncing happens in `src/lib/sync.ts` (scheduler in `src/lib/scheduler.ts`, started from `src/instrumentation.ts`).
+- The overview's stats have one source, `overviewStats()` in `quotes.ts`: the overview, the chart's watchlist panel and MCP `overview` read it. It caches per vault on the newest quote and sync, `prices`, the list and the aliases, so no write path has to remember to recompute anything; the `stats` table only keeps the last result.
 - This is Next.js 16, which has breaking changes from earlier versions: read the relevant guide in `node_modules/next/dist/docs/` before relying on habits from older ones. How the app uses it (dynamic rendering, Server Actions, instrumentation) is in [design.md](design.md) §7.
 
 ## Agents (MCP)

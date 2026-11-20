@@ -17,7 +17,7 @@ import * as ops from "../ops";
 import { CHANGE_PERIODS } from "../periods";
 import { valuation } from "../profile";
 import { profileView } from "../profiles";
-import { liveReader, liveStats, tradedPrice } from "../quotes";
+import { liveReader, overviewStats, tradedPrice } from "../quotes";
 import { readerFor, scan, testFormula } from "../scan";
 import { scheduledNextSync, nextRun } from "../scheduler";
 import { localSearch, mergeResults, normalizeQuery, suggestGroup } from "../search";
@@ -26,7 +26,6 @@ import { searchExternal } from "../search-external";
 import { aggregate } from "../series";
 import { getSymbol, listSymbols, maxSyncedAt } from "../store";
 import { isSynthetic, isValidKey, TIMEFRAMES } from "../symbols";
-import { statsFor } from "../sync";
 import { listJournals, listNotes, readConfig, readJournal, readNote } from "../vault";
 import type { Viewer } from "../viewer";
 import { currentWeekId, isWeekId } from "../week";
@@ -79,8 +78,7 @@ export const TOOLS: Tool[] = [
     run: ({ dir, vault }) => {
       const cfg = readConfig(dir);
       const symbols = listSymbols();
-      const stats = statsFor(vault, cfg);
-      const live = liveStats(vault, cfg, symbols);
+      const stats = overviewStats(vault, cfg, symbols);
       const badges = alertBadges(vault, cfg);
       const failed = allItems(cfg).flatMap((i) => (symbols[i.key]?.syncError ? [{ key: i.key, error: symbols[i.key].syncError }] : []));
       return {
@@ -90,8 +88,8 @@ export const TOOLS: Tool[] = [
           name: g.name,
           symbols: g.symbols.map((item) => {
             const row = symbols[item.key];
-            const s = live[item.key]?.stats ?? stats[item.key];
-            const quote = live[item.key]?.status;
+            const s = stats[item.key]?.stats;
+            const quote = stats[item.key]?.status;
             const holding = (badges[item.key] ?? []).filter((b) => b.state === "fresh" || b.state === "on");
             return {
               key: item.key,
@@ -100,7 +98,7 @@ export const TOOLS: Tool[] = [
               bench: item.bench ?? undefined,
               price: s ? num(s.last) : null,
               date: s ? fmtDate(s.lastTime) : null,
-              currency: row?.currency ?? s?.currency ?? undefined,
+              currency: row?.currency ?? undefined,
               session: quote?.session ?? undefined,
               quoted_at: iso(quote?.quotedAt) ?? undefined,
               change_pct: s ? Object.fromEntries(CHANGE_PERIODS.map((p) => [p.key, pct(s.changes[p.key])])) : null,

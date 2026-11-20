@@ -1,9 +1,9 @@
 /** In-app daily sync at the wall-clock times in `sync.at`, with a catch-up run after downtime. */
 import { refreshProfiles } from "./profiles";
 import { maxSyncedAt } from "./store";
-import { loadVaults, syncAll, unionSyncKeys } from "./sync";
+import { syncAll, unionSyncKeys } from "./sync";
 import { dayOf, partsIn, zonedToUtc } from "./tz";
-import { ensureVault, readConfigSafe, vaultDir } from "./vault";
+import { ensureVault, loadVaults, readConfigSafe, vaultDir } from "./vault";
 
 const DEFAULT_SYNC = { at: ["07:30", "17:30"], tz: "Asia/Tokyo" };
 

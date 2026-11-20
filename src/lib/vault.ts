@@ -96,6 +96,21 @@ export function listVaults(owners: string[]): VaultRef[] {
   return out;
 }
 
+export interface VaultConfig extends VaultRef {
+  config: Config;
+}
+
+/** Every vault that syncs, with its config. A broken root yaml throws; a person's broken yaml only leaves them out. */
+export function loadVaults(): VaultConfig[] {
+  const root = readConfig(vaultDir());
+  return listVaults(root.owners).flatMap((v) => {
+    if (v.id === "") return [{ ...v, config: root }];
+    const { config, error } = readConfigSafe(v.dir);
+    if (!config) console.warn(`[hebi8m] vault ${v.id} skipped: ${error}`);
+    return config ? [{ ...v, config }] : [];
+  });
+}
+
 function atomicWrite(file: string, text: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
