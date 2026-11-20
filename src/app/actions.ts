@@ -11,7 +11,7 @@ import { translateDescription } from "@/lib/profiles";
 import type { Prices } from "@/lib/series";
 import { getSymbol } from "@/lib/store";
 import { isSynthetic, isTimeframe, isValidKey } from "@/lib/symbols";
-import { parseSynth } from "@/lib/synth";
+import { operands } from "@/lib/synth";
 import { syncAll, syncOne } from "@/lib/sync";
 import {
   flowNode,
@@ -75,8 +75,7 @@ export async function addSymbol(input: AddSymbolInput): Promise<ActionResult> {
 export async function loadSymbol(key: string): Promise<ActionResult> {
   return attempt(async ({ dir }) => {
     if (!isValidKey(key)) throw new Error(`无效的 key「${key}」`);
-    const keys = isSynthetic(key) ? parseSynth(key.slice(1), readConfig(dir).aliases).keys : [key];
-    for (const k of keys) {
+    for (const k of operands(key, readConfig(dir).aliases)) {
       const outcome = await syncOne(k);
       if (!outcome.ok) throw new Error(`拉取 ${k} 失败：${outcome.error}`);
     }

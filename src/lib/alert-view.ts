@@ -5,7 +5,7 @@ import { adoptConditionState, alertFiredAt, alertKeys, readState, stateId } from
 import { loadDaily, type DailyReader } from "./bars";
 import { checkNote, describeAlert, isLive, type AlertDef, type Config } from "./config";
 import { nameOf } from "./names";
-import { liveReader } from "./quotes";
+import { liveReader, priceTime } from "./quotes";
 import { getSymbol, readQuotes, type SymbolRow } from "./store";
 import type { Timeframe } from "./symbols";
 import { currentWeekId } from "./week";
@@ -42,25 +42,32 @@ export interface AlertView {
   priceAt: number | null;
 }
 
-/** The latest price of any key, synthetic ones included: today's live bar when a quote is newer than the daily sync. */
-export function latestPrice(key: string, cfg: Config, read: DailyReader = liveReader()): { price: number | null; at: number | null } {
+/**
+ * The latest price of any key, synthetic ones included, and when it was taken (`priceTime`):
+ * today's live bar where a quote is taken (`withQuote`), else the last daily close. One snapshot
+ * of the quotes and the symbols serves every key asked for.
+ */
+export function latestPrice(key: string, cfg: Config, quotes = readQuotes(), symbols: (key: string) => SymbolRow | null | undefined = getSymbol, read: DailyReader = liveReader(quotes)): { price: number | null; at: number | null } {
   let price: number | null = null;
   try {
     price = loadDaily(key, cfg.prices, cfg, read).at(-1)?.c ?? null;
   } catch {
     // a broken synthetic expression shows no price
   }
-  const quote = readQuotes()[key];
-  const meta = getSymbol(key);
-  const at = quote && (!meta?.syncedAt || quote.fetchedAt > meta.syncedAt) ? quote.fetchedAt : (meta?.syncedAt ?? null);
-  return { price, at };
+  return { price, at: priceTime(key, cfg.aliases, quotes, symbols) };
 }
 
 export function alertViews(vault: string, cfg: Config, symbols: Record<string, SymbolRow>): AlertView[] {
   const fired = alertFiredAt(vault);
-  const read = liveReader();
+  const quotes = readQuotes();
+  const read = liveReader(quotes);
+  const prices = new Map<string, { price: number | null; at: number | null }>();
+  const priceOf = (key: string) => {
+    if (!prices.has(key)) prices.set(key, latestPrice(key, cfg, quotes, (k) => symbols[k], read));
+    return prices.get(key)!;
+  };
   return cfg.alerts.map((a) => {
-    const { price, at } = a.key ? latestPrice(a.key, cfg, read) : { price: null, at: null };
+    const { price, at } = a.key ? priceOf(a.key) : { price: null, at: null };
     return {
       id: a.id,
       key: a.key,

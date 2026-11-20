@@ -10,7 +10,7 @@ import { ALERT_CONDS, type AlertCond, type AlertCondition } from "../alert-conds
 import { alertBadges, alertViews } from "../alert-view";
 import { adoptConditionState, alertKeys, readState, stateId } from "../alerts";
 import { barClosed, loadDaily, synthNoData, tradesWeekends } from "../bars";
-import { allItems, findItem, resolveKey, type Config } from "../config";
+import { aliasOf, allItems, findItem, resolveKey, type Config } from "../config";
 import { fmtDate } from "../format";
 import { nameOf } from "../names";
 import * as ops from "../ops";
@@ -62,7 +62,6 @@ function keyOf(cfg: Config, ref: string): string {
   return key;
 }
 
-const aliasOf = (cfg: Config, key: string) => Object.entries(cfg.aliases).find(([, k]) => k === key)?.[0];
 
 const SAVED_DRAFT =
   "Saved as a DRAFT, not active. An alert on the whole watchlist only takes effect after the user confirms it on the page: 确认 at the top of the overview, or in the 警报 panel of any chart. Until then it is not judged and nothing is pushed. Tell the user it is waiting for their confirmation.";
@@ -93,7 +92,7 @@ export const TOOLS: Tool[] = [
             const holding = (badges[item.key] ?? []).filter((b) => b.state === "fresh" || b.state === "on");
             return {
               key: item.key,
-              alias: aliasOf(cfg, item.key),
+              alias: aliasOf(cfg.aliases, item.key),
               name: nameOf(cfg, item.key, row?.name),
               bench: item.bench ?? undefined,
               price: s ? num(s.last) : null,
@@ -231,7 +230,7 @@ export const TOOLS: Tool[] = [
         turned_true: rows.filter((r) => r.holds && r.held === false).map((r) => r.key),
         failed: rows.filter((r) => r.error).length,
         uncached_references: uncached.length ? uncached : undefined,
-        rows: (args.only_true ? rows.filter((r) => r.holds || r.error) : rows).map((r) => ({ key: r.key, alias: aliasOf(cfg, r.key), name: r.name, value: r.value, prev: r.prev, holds: r.holds ?? undefined, date: r.date, error: r.error })),
+        rows: (args.only_true ? rows.filter((r) => r.holds || r.error) : rows).map((r) => ({ key: r.key, alias: aliasOf(cfg.aliases, r.key), name: r.name, value: r.value, prev: r.prev, holds: r.holds ?? undefined, date: r.date, error: r.error })),
       };
     },
   }),

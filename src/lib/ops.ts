@@ -9,12 +9,12 @@ import { compile } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
 import { defaultCheck, type AlertCheck, type AlertCond, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { adoptConditionState, alertIndex, editAlerts, forgetAlerts, runAlerts, serializeAlerts, setAlertsEnabled } from "./alerts";
-import { findItem, parseAlert, resolveKey, type FormulaDef } from "./config";
+import { aliasOf, findItem, parseAlert, resolveKey, type FormulaDef } from "./config";
 import { liveReader } from "./quotes";
 import { isCJK } from "./search";
-import { isSynthetic, isTimeframe, isValidKey, type Timeframe } from "./symbols";
+import { isTimeframe, isValidKey, type Timeframe } from "./symbols";
 import { syncOne } from "./sync";
-import { parseSynth } from "./synth";
+import { operands } from "./synth";
 import { JOURNAL_TEMPLATE, editGroups, flowNode, groupNode, readConfig, readJournal, readNote, seqOf, setList, updateConfig, writeJournal, writeNote } from "./vault";
 import type { Viewer } from "./viewer";
 import type { WatchlistOp } from "./watchlist";
@@ -48,14 +48,9 @@ export async function addSymbol({ dir }: Viewer, input: AddSymbolInput): Promise
   const bench = benchRef ? resolveKey(benchRef, cfg.aliases) : null;
   if (bench && !isValidKey(bench)) throw new Error(`无效的基准「${bench}」`);
 
-  if (isSynthetic(key)) {
-    for (const k of parseSynth(key.slice(1), cfg.aliases).keys) {
-      const outcome = await syncOne(k);
-      if (!outcome.ok) throw new Error(`拉取 ${k} 失败：${outcome.error}`);
-    }
-  } else {
-    const outcome = await syncOne(key);
-    if (!outcome.ok) throw new Error(`拉取 ${key} 失败：${outcome.error}`);
+  for (const k of operands(key, cfg.aliases)) {
+    const outcome = await syncOne(k);
+    if (!outcome.ok) throw new Error(`拉取 ${k} 失败：${outcome.error}`);
   }
   if (bench) await syncOne(bench);
 
@@ -224,7 +219,7 @@ export async function saveAlert({ dir, vault }: Viewer, input: AlertInput, origi
     if (key !== null && !isValidKey(key)) throw new Error("无效的 key");
     if (origin === "agent" && cfg.alerts.some((a) => a.id === input.id && !a.key && !a.draft)) throw new Error(AGENT_EDITS_WATCHLIST);
     // written the way a person would: the alias when there is one
-    const entry: Record<string, unknown> = key ? { key: Object.entries(cfg.aliases).find(([, k]) => k === key)?.[0] ?? key } : {};
+    const entry: Record<string, unknown> = key ? { key: aliasOf(cfg.aliases, key) ?? key } : {};
     if (input.cond === "formula") {
       const when = str(input.when);
       if (!when) throw new Error("公式为空");

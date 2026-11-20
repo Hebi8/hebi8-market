@@ -16,8 +16,8 @@ import { nameOf } from "./names";
 import { channelNames, channelsFor, deliver, formatDigest, type AlertEvent } from "./notify";
 import type { ConditionResult } from "./stats";
 import { listSymbols, readDaily } from "./store";
-import { isSynthetic, isTimeframe, type Timeframe } from "./symbols";
-import { parseSynth } from "./synth";
+import { isTimeframe, type Timeframe } from "./symbols";
+import { operands } from "./synth";
 import { updateConfig, type VaultRef } from "./vault";
 
 export interface StateRow {
@@ -104,7 +104,7 @@ function checks(cfg: Config, pass: AlertPass, live: DailyReader, who: string): C
   const seenT = (key: string, check: string, read: DailyReader) => {
     const id = `${check}\u0000${key}`;
     if (!seen.has(id)) {
-      const last = (isSynthetic(key) ? parseSynth(key.slice(1), cfg.aliases).keys : [key]).flatMap((k) => read(k).at(-1)?.t ?? []);
+      const last = operands(key, cfg.aliases).flatMap((k) => read(k).at(-1)?.t ?? []);
       seen.set(id, last.length > 0 ? Math.max(...last) : null);
     }
     return seen.get(id)!;

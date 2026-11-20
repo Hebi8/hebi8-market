@@ -926,5 +926,33 @@ describe("quote polling", () => {
       expect(await last("W")).toMatchObject({ close: 410, bench: 150 });
       expect(await last("M")).toMatchObject({ close: 410, bench: 150 });
     });
+
+    it("an alert on a synthetic symbol shows its price with the time of the quote it moves with", async () => {
+      const { alertViews } = await import("@/lib/alert-view");
+      const { readConfig } = await import("@/lib/vault");
+      const { listSymbols, writeBars, writeQuotes } = await import("@/lib/store");
+      const GOLD = "tv:TVC:GOLD";
+      writeBars(BTC, closes(100, 101), "replace");
+      writeBars(GOLD, closes(4000, 4100), "replace");
+      const fetchedAt = Date.now();
+      writeQuotes([{ key: BTC, price: 150, time: Math.floor(fetchedAt / 1000), session: "always", fetchedAt }]);
+      const vault = await watching(['{ key: "=BTC/tv:TVC:GOLD", cond: greater, value: 1 }', "{ key: BTC, cond: greater, value: 1 }"]);
+      const [synthetic, btc] = alertViews("", readConfig(vault.dir), listSymbols());
+      expect(btc).toMatchObject({ price: 150, priceAt: fetchedAt });
+      expect(synthetic.price).toBeCloseTo(150 / 4100);
+      expect(synthetic.priceAt).toBe(fetchedAt);
+    });
+
+    it("/api/bars names a symbol from the dictionary when the yaml does not", async () => {
+      const { writeBars } = await import("@/lib/store");
+      const { getDb } = await import("@/lib/db");
+      const { NextRequest } = await import("next/server");
+      const { GET } = await import("@/app/api/bars/route");
+      writeBars("tv:TVC:GOLD", closes(4000, 4100), "replace");
+      getDb().prepare("UPDATE symbols SET name = 'Gold Spot / U.S. Dollar' WHERE key = 'tv:TVC:GOLD'").run();
+      vaultsWith([]);
+      const res = await GET(new NextRequest(`http://h/api/bars?key=${encodeURIComponent("tv:TVC:GOLD")}&tf=D`));
+      expect((await res.json()).symbol.name).toBe("黄金");
+    });
   });
 });

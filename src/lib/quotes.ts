@@ -17,7 +17,7 @@ import type { Quote, QuoteSession } from "./sources/types";
 import { computeStats, type Stats } from "./stats";
 import { calendarOfRow, getSymbol, lastClose, listSymbols, readDaily, readQuotes, writeQuotes, writeStats, type QuoteRow, type SymbolRow } from "./store";
 import { isSynthetic, isValidKey, parseKey, type Source } from "./symbols";
-import { parseSynth } from "./synth";
+import { operands } from "./synth";
 import { localDay } from "./time";
 import { loadVaults, readConfig, readConfigSafe, vaultDir, type VaultConfig } from "./vault";
 
@@ -73,13 +73,11 @@ export function quoteKeys(configs: Config[]): string[] {
   for (const cfg of configs) {
     const add = (key: string) => {
       if (!isValidKey(key)) return;
-      if (isSynthetic(key)) {
-        try {
-          parseSynth(key.slice(1), cfg.aliases).keys.forEach(add);
-        } catch {
-          // reported where the symbol is shown
-        }
-      } else if (parseKey(key).source !== "data") keys.add(key);
+      try {
+        for (const k of operands(key, cfg.aliases)) if (parseKey(k).source !== "data") keys.add(k);
+      } catch {
+        // reported where the symbol is shown
+      }
     };
     for (const item of allItems(cfg)) {
       add(item.key);
@@ -279,9 +277,19 @@ export function tradedPrice(key: string, quotes = readQuotes()): number | null {
 
 /** The oldest quote among the ones a key's price comes from: its own, or for a synthetic key its operands'. */
 function quotedAt(key: string, aliases: Record<string, string>, quotes: Record<string, QuoteRow>, symbols: (key: string) => SymbolRow | null | undefined): number | null {
-  const keys = isSynthetic(key) ? parseSynth(key.slice(1), aliases).keys : [key];
-  const taken = keys.flatMap((k) => takenQuote(quotes[k], symbols(k))?.fetchedAt ?? []);
+  const taken = operands(key, aliases).flatMap((k) => takenQuote(quotes[k], symbols(k))?.fetchedAt ?? []);
   return taken.length > 0 ? Math.min(...taken) : null;
+}
+
+/**
+ * When a key's latest price was taken (ms): the oldest quote it comes from (`quotedAt`), else the
+ * oldest daily sync of the symbols it is made of; null for a key never synced.
+ */
+export function priceTime(key: string, aliases: Record<string, string>, quotes: Record<string, QuoteRow>, symbols: (key: string) => SymbolRow | null | undefined): number | null {
+  const quoted = quotedAt(key, aliases, quotes, symbols);
+  if (quoted !== null) return quoted;
+  const synced = operands(key, aliases).map((k) => symbols(k)?.syncedAt ?? null);
+  return synced.every((t) => t !== null) ? Math.min(...synced) : null;
 }
 
 /**
