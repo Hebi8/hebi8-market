@@ -11,6 +11,7 @@ import { NextRequest } from "next/server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertEvent } from "@/lib/notify";
 import type { PushDevice } from "@/lib/push";
+import { localTransport } from "./local-transport";
 
 // Narrow the overload used by the address policy.
 const resolver = dns as { lookup: (host: string, options: { all: true }) => Promise<LookupAddress[]> };
@@ -54,15 +55,16 @@ const server = http.createServer((req, res) => {
   });
 });
 
+let port: number;
 let api: string;
 let sessions: Record<string, string>;
 
 /** A browser's subscription: the push service's endpoint and the keys only that browser can decrypt with. */
-function browser(name: string) {
+function browser(name: string, service = api) {
   const ecdh = crypto.createECDH("prime256v1");
   ecdh.generateKeys();
   const auth = crypto.randomBytes(16).toString("base64url");
-  const sub = { endpoint: `${api}/push/${name}`, keys: { p256dh: ecdh.getPublicKey("base64url"), auth } };
+  const sub = { endpoint: `${service}/push/${name}`, keys: { p256dh: ecdh.getPublicKey("base64url"), auth } };
   const device: PushDevice = { ...sub, label: name, added: 1 };
   const read = (body: Buffer) => JSON.parse(ece.decrypt(body, { version: "aes128gcm", privateKey: ecdh, authSecret: auth }).toString());
   return { sub, device, read };
@@ -77,7 +79,8 @@ const req = (url: string, init: { method?: string; session?: string; body?: unkn
 
 beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  port = (server.address() as AddressInfo).port;
+  api = `http://127.0.0.1:${port}`;
   process.env.HEBI8_VAULT = path.join(dir, "vault");
   process.env.HEBI8_DB = path.join(dir, "hebi8.db");
   process.env.HEBI8_SECRETS = secrets;
@@ -289,6 +292,46 @@ describe("delivery", () => {
     expect((await deliver(channelsFor("", "Owner").config, "t", "t\n\nx", [btc])).failed[0].channel).toBe("push");
     expect(readNotifyUsers().owner.push).toBeUndefined();
     expect(channelNames(channelsFor("", "Owner").config)).toEqual(["webhook"]);
+  });
+});
+
+describe("delivery for someone other than the owner", () => {
+  const SERVICE = "https://push.example";
+  beforeEach(() => {
+    vi.spyOn(resolver, "lookup").mockResolvedValue([{ address: "8.8.8.8", family: 4 }]);
+    localTransport(port);
+  });
+
+  it("goes only to the checked public address, encrypted and signed the same way", async () => {
+    const { addPushDevice, channelsFor, deliver, formatDigest } = await import("@/lib/notify");
+    const phone = browser("phone", SERVICE);
+    addPushDevice("alice", phone.device);
+    const { config } = channelsFor("alice", "Owner");
+    expect(config.publicOnly).toBe(true);
+    const { title, text } = formatDigest([btc], config.link);
+    expect(await deliver(config, title, text, [btc])).toEqual({ sent: ["push"], failed: [] });
+    expect(dns.lookup).toHaveBeenCalledWith("push.example", { all: true });
+
+    const [got] = pushed;
+    expect(pushed).toHaveLength(1);
+    expect(got.headers.host).toBe(`push.example:${port}`);
+    expect(got.headers["content-encoding"]).toBe("aes128gcm");
+    expect(got.headers.authorization).toMatch(/^vapid t=.+, k=.+$/);
+    expect(phone.read(got.body)).toEqual({ title: "hebi8/market · 1 条新提醒", body: "• 比特币：站上 100（日线）  收 102.00", url: "/chart/binance%3ABTCUSDT" });
+  });
+
+  it("removes a device the push service says is gone, and keeps the response body out of errors", async () => {
+    const { addPushDevice, channelsFor, deliver, readNotifyUsers } = await import("@/lib/notify");
+    for (const name of ["kept", "gone"]) addPushDevice("alice", browser(name, SERVICE).device);
+    status.gone = 410;
+    expect(await deliver(channelsFor("alice", "Owner").config, "t", "t\n\nx", [btc])).toEqual({ sent: ["push"], failed: [] });
+    expect(readNotifyUsers().alice.push?.map((d) => d.label)).toEqual(["kept"]);
+
+    status.kept = 500;
+    expect((await deliver(channelsFor("alice", "Owner").config, "t", "t\n\nx", [btc])).failed).toEqual([{ channel: "push", error: "push.example 500" }]);
+    status.kept = 410;
+    expect((await deliver(channelsFor("alice", "Owner").config, "t", "t\n\nx", [btc])).failed).toEqual([{ channel: "push", error: "1 台设备的订阅已失效，已移除" }]);
+    expect(readNotifyUsers()).toEqual({});
   });
 });
 
