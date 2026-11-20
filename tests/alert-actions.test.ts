@@ -169,10 +169,10 @@ describe("alert Server Actions", () => {
     fs.rmSync(path.join(secrets, "notify.json"));
   });
 
-  it("a new alert on the whole watchlist is judged at once; the old conditions moved into alerts at startup are alerts like any other", async () => {
+  it("a new alert on the whole watchlist is judged at once; the old conditions move into alerts on the first edit", async () => {
     const { saveAlert, setAlertEnabled } = await import("@/app/actions");
-    const { readConfig, readConfigSafe } = await import("@/lib/vault");
-    const { migrateConditions, readState, stateId } = await import("@/lib/alerts");
+    const { readConfig } = await import("@/lib/vault");
+    const { readState, stateId } = await import("@/lib/alerts");
     const { ensureSymbol, writeBars } = await import("@/lib/store");
     const t0 = Date.UTC(2026, 0, 5) / 1000;
     ensureSymbol("binance:BTCUSDT");
@@ -188,23 +188,19 @@ alerts: [] # 图表上建的写在这里
 `,
       ),
     );
-    // not read while the app runs; the next start moves them
-    expect(readConfigSafe(root).error).toContain("conditions 是旧的写法");
-    expect(migrateConditions({ id: "", dir: root })).toBe(true);
-    expect(migrateConditions({ id: "", dir: root })).toBe(false);
+    // readable as they are
     expect(readConfig(root).alerts.map((a) => [a.id, a.key, a.notify])).toEqual([
       ["alert:trend", null, false],
       ["alert:hot", null, true],
     ]);
-    let text = read();
+
+    expect(await saveAlert({ key: null, cond: "formula", when: "close > ref(close, 1)", tf: "W", trigger: "once", label: "周涨", notify: false })).toEqual({ ok: true });
+    const text = read();
     expect(text).not.toContain("conditions:");
     expect(text).toContain("# 比特币");
     // the nodes themselves move: the formula is renamed, the old defaults are written out
     expect(text).toContain('- { id: trend, label: 趋势, when: "close > 1", tf: W, notify: false }');
     expect(text).toContain('- { id: hot, label: 新高, when: "close >= highest(close, 52)", notify: true, tf: D }');
-
-    expect(await saveAlert({ key: null, cond: "formula", when: "close > ref(close, 1)", tf: "W", trigger: "once", label: "周涨", notify: false })).toEqual({ ok: true });
-    text = read();
     expect(text).toContain('- { when: "close > ref(close, 1)", tf: W, label: 周涨, notify: false }');
     const added = readConfig(root).alerts[2];
     expect(added).toMatchObject({ key: null, trigger: "bar", tf: "W", notify: false });
@@ -218,8 +214,9 @@ alerts: [] # 图表上建的写在这里
   });
 
   it("an old condition keeps comments and aliases when it moves, yields its id to an alert, and keeps its state", async () => {
-    const { migrateConditions, readState, stateId } = await import("@/lib/alerts");
+    const { setAlertEnabled } = await import("@/app/actions");
     const { readConfig } = await import("@/lib/vault");
+    const { readState, stateId } = await import("@/lib/alerts");
     const { alertBadges } = await import("@/lib/alert-view");
     const { getDb } = await import("@/lib/db");
     const BTC = "binance:BTCUSDT";
@@ -241,69 +238,39 @@ alerts:
   - { key: BTC, id: trend, cond: greater, value: 1 }
 `,
     );
+    // readable as it was: the price alert keeps `trend`, the condition becomes cond-trend
+    const before = readConfig(root);
+    expect(before.alerts.map((a) => [a.id, a.key, a.when])).toEqual([
+      ["alert:trend", BTC, null],
+      ["alert:cond-trend", null, "close > ref(close, 1)"],
+      [expect.stringMatching(/^alert:[0-9a-f]{6}$/), null, "close > 2"],
+    ]);
+    expect(before.conditionRules).toEqual({ "cond:trend": "alert:cond-trend", "cond:趋势": before.alerts[2].id });
+
     const firedAt = Date.now();
     const db = getDb();
     db.prepare("DELETE FROM alert_state WHERE vault = ''").run();
     db.prepare("INSERT INTO alert_state (vault, rule, key, state, fired_bar, fired_at) VALUES ('', 'cond:trend', ?, 1, 7, ?)").run(BTC, firedAt);
     db.prepare("INSERT INTO alert_state (vault, rule, key, state) VALUES ('', 'alert:trend', ?, 0)").run(BTC);
 
-    expect(migrateConditions({ id: "", dir: root })).toBe(true);
+    expect(await setAlertEnabled("alert:trend", false)).toEqual({ ok: true });
     const text = read();
     expect(text).not.toContain("conditions:");
     expect(text).not.toContain("formula: *up");
     for (const kept of ["# 周线趋势", "id: cond-trend # 趋势的 id", "when: *up # 和指标同一个公式", "label: trend", 'formula: &up "close > ref(close, 1)"']) expect(text).toContain(kept);
-    // a free-text id cannot be an alert id: it goes, the label keeps it, and the alert is known by a hash
-    expect(text).toContain('- { when: "close > 2", label: 趋势, tf: W, notify: false }');
+    expect(text).toContain('- { formula: "close > 2" }'.replace("formula", "when").replace(" }", ", label: 趋势, tf: W, notify: false }"));
     const after = readConfig(root);
-    // the price alert keeps `trend`, the condition becomes cond-trend
-    expect(after.alerts.map((a) => [a.id, a.key, a.when, a.tf, a.notify])).toEqual([
-      ["alert:trend", BTC, null, "D", true],
-      ["alert:cond-trend", null, "close > ref(close, 1)", "W", false],
-      [expect.stringMatching(/^alert:[0-9a-f]{6}$/), null, "close > 2", "W", false],
+    expect(after.alerts.map((a) => [a.id, a.when, a.tf, a.notify, a.enabled])).toEqual([
+      ["alert:trend", null, "D", true, false],
+      ["alert:cond-trend", "close > ref(close, 1)", "W", false, true],
+      [before.alerts[2].id, "close > 2", "W", false, true],
     ]);
+    expect(after.conditionRules).toEqual({});
 
     // the condition's state went with it; the price alert's row is its own
     expect(readState("").get(stateId("alert:cond-trend", BTC))).toEqual({ state: 1, firedBar: 7, firedAt, seenT: null });
     expect(readState("").get(stateId("alert:trend", BTC))).toMatchObject({ state: 0 });
     expect(alertBadges("", after)[BTC].find((b) => b.id === "alert:cond-trend")).toMatchObject({ label: "trend", state: "fresh" });
-  });
-
-  it("an old condition written with yaml aliases moves as it reads", async () => {
-    const { migrateConditions, readState, stateId } = await import("@/lib/alerts");
-    const { readConfig } = await import("@/lib/vault");
-    const { getDb } = await import("@/lib/db");
-    const BTC = "binance:BTCUSDT";
-    const shared = `defaults: { id: &id trend, tf: &tf D, notify: &on true }
-groups:
-  - { name: 加密, symbols: [${BTC}] }
-`;
-    const db = getDb();
-    db.prepare("DELETE FROM alert_state WHERE vault = ''").run();
-    db.prepare("INSERT INTO alert_state (vault, rule, key, state, fired_bar) VALUES ('', 'cond:trend', ?, 1, 7)").run(BTC);
-    fs.writeFileSync(yamlFile, `${shared}conditions:\n  - { id: *id, formula: "close > 1", tf: *tf, notify: *on }\n`);
-    expect(migrateConditions({ id: "", dir: root })).toBe(true);
-    expect(readConfig(root).alerts.map((a) => [a.id, a.when, a.tf, a.notify])).toEqual([["alert:trend", "close > 1", "D", true]]);
-    expect(readState("").get(stateId("alert:trend", BTC))).toMatchObject({ state: 1, firedBar: 7 });
-    // the whole list as an alias: its entries move as copies, the list it points at stays
-    fs.writeFileSync(yamlFile, `${shared}old: &old\n  - { id: up, formula: "close > 2" }\nconditions: *old\n`);
-    expect(migrateConditions({ id: "", dir: root })).toBe(true);
-    expect(readConfig(root).alerts.map((a) => [a.id, a.when, a.tf, a.notify])).toEqual([["alert:up", "close > 2", "W", false]]);
-    expect(read()).toContain("old: &old");
-  });
-
-  it("moves every vault's old conditions when the app starts, the root's first", async () => {
-    const { migrateAllConditions } = await import("@/lib/alerts");
-    const { readConfig, userVaultDir } = await import("@/lib/vault");
-    const old = `conditions:\n  - { id: trend, formula: "close > 1" }\n`;
-    fs.writeFileSync(yamlFile, `owner: dreaife\n${old}`);
-    const alice = userVaultDir("alice");
-    fs.mkdirSync(alice, { recursive: true });
-    fs.writeFileSync(path.join(alice, "hebi8.yaml"), old);
-    const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    migrateAllConditions();
-    logs.mockRestore();
-    expect(readConfig(root).alerts.map((a) => a.id)).toEqual(["alert:trend"]);
-    expect(readConfig(alice).alerts.map((a) => a.id)).toEqual(["alert:trend"]);
   });
 
   it("checks the input and the formula", async () => {

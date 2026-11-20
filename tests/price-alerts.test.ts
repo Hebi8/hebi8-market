@@ -508,23 +508,23 @@ describe("quote polling", () => {
     });
 
     it("judges the whole watchlist after a daily sync only; quote rounds keep its rows, old cond: rows continue", async () => {
-      const { migrateConditions, runAlerts, readState, stateId } = await import("@/lib/alerts");
+      const { runAlerts, readState, stateId } = await import("@/lib/alerts");
       const { liveReader } = await import("@/lib/quotes");
       const { readConfig, updateConfig } = await import("@/lib/vault");
       const { writeBars } = await import("@/lib/store");
       const { getDb } = await import("@/lib/db");
       writeBars(BTC, closes(100, 101), "replace");
       const vaults = vaultsWith([{ key: "BTC", cond: "greater", value: 1000 }]);
-      updateConfig(root, (doc) => void doc.set("groups", [{ name: "Crypto", symbols: ["BTC"] }]));
-      fs.appendFileSync(path.join(root, "hebi8.yaml"), `conditions:\n  - { id: gate, label: Above, formula: "close > ref(close, 1)", tf: D }\n`);
+      updateConfig(root, (doc) => {
+        doc.set("groups", [{ name: "Crypto", symbols: ["BTC"] }]);
+        doc.set("conditions", [{ id: "gate", label: "Above", formula: "close > ref(close, 1)", tf: "D" }]);
+      });
       getDb().prepare("INSERT INTO alert_state (vault, rule, key, state) VALUES ('', 'cond:gate', ?, 0)").run(BTC);
-      // the app starts: the condition and its row become the alert's
-      expect(migrateConditions({ id: "", dir: root })).toBe(true);
       const load = () => readConfig(root);
       const rules = () => [...readState("").keys()].map((k) => k.split("\u0000")[0]).sort();
       const [alertId] = vaults[0].config.alerts.map((a) => a.id);
 
-      // a quote round does not judge the watchlist
+      // any pass renames the old row first; a quote round does not judge the watchlist
       await runAlerts(vaults[0], load, "quotes", liveReader());
       expect(rules()).toEqual([alertId, "alert:gate"].sort());
       expect(readState("").get(stateId("alert:gate", BTC))).toMatchObject({ state: 0, firedAt: null });

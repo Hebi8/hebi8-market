@@ -6,11 +6,11 @@
  * vault, so a restart does not repeat a message, event conditions compare with the previous
  * check, and the overview can tell which alerts fired when.
  */
-import { isAlias, isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
+import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { crossed, observe, ALERT_CONDS, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { closedReader, loadDaily, type DailyReader } from "./bars";
 import { evalRule, type SeriesCache } from "./conditions";
-import { allItems, isLive, parseAlert, type AlertDef, type Config } from "./config";
+import { allItems, conditionId, isLive, parseAlert, type AlertDef, type Config } from "./config";
 import { getDb } from "./db";
 import { nameOf } from "./names";
 import { channelNames, channelsFor, deliver, formatDigest, type AlertEvent } from "./notify";
@@ -18,7 +18,7 @@ import type { ConditionResult } from "./stats";
 import { listSymbols, readDaily } from "./store";
 import { isTimeframe, type Timeframe } from "./symbols";
 import { operands } from "./synth";
-import { ensureVault, listVaults, moveConditions, readConfigSafe, updateConfig, vaultDir, type VaultRef } from "./vault";
+import { updateConfig, type VaultRef } from "./vault";
 
 export interface StateRow {
   /** 0/1 for formulas and states; an event's position (-1, 0, 1, see `observe`) */
@@ -200,91 +200,59 @@ export function alertIndex(doc: Document, alertId: string, aliases: Record<strin
   });
 }
 
-/** A vault's `alerts` list, created when missing; `alerts: []` from the example becomes a block list once it has entries. */
-function alertsSeq(doc: Document): YAMLSeq {
-  let alerts = doc.get("alerts");
-  if (!isSeq(alerts)) {
-    alerts = doc.createNode([]);
-    doc.set("alerts", alerts);
+/**
+ * The migration of the old `conditions` list: each entry moves, as the node it is (comments and
+ * aliases stay), to the end of `alerts` and becomes the alert on the whole watchlist it is read as:
+ * `formula` is renamed `when`, the id is the one `conditionId` gives, and the old defaults are
+ * written out (label = id, tf W, not pushed unless `notify: true`). Then `conditions` goes.
+ */
+function adoptConditions(doc: Document, alerts: YAMLSeq, cfg: Config): void {
+  const moved = new Set(Object.values(cfg.conditionRules));
+  const taken = new Set(cfg.alerts.map((a) => a.id).filter((id) => !moved.has(id)));
+  const conditions = doc.get("conditions");
+  const nodes = (isSeq(conditions) ? conditions.items : []) as YAMLMap[];
+  // the comments on the `conditions:` line and above its first entry belong to the list; they go with that entry
+  if (nodes[0] && isSeq(conditions) && conditions.commentBefore) nodes[0].commentBefore = [conditions.commentBefore, nodes[0].commentBefore].filter(Boolean).join("\n");
+  for (const node of nodes) {
+    const own = node.get("id");
+    const id = conditionId(own, taken);
+    const idNode = node.get("id", true);
+    if (!id) node.delete("id");
+    else if (isScalar(idNode)) idNode.value = id;
+    const formula = node.items.find((pair) => isScalar(pair.key) && pair.key.value === "formula");
+    if (formula && isScalar(formula.key)) formula.key.value = "when";
+    if (!node.has("label")) node.set("label", own);
+    if (!isTimeframe(node.get("tf"))) node.set("tf", "W");
+    if (node.get("notify") !== true) node.set("notify", false);
+    alerts.items.push(node);
   }
-  const seq = alerts as YAMLSeq;
-  seq.flow = false;
-  return seq;
+  doc.delete("conditions");
 }
 
-/** Every UI edit of the alerts goes through here. */
+/**
+ * The old conditions' state rows (`cond:<id>`) continue as their alerts' rows, so a condition that
+ * fired this week still shows it and the next turn still pushes. Run before a vault's state is
+ * read and before the yaml moves the conditions; a no-op once the rows are renamed.
+ */
+export function adoptConditionState(vault: string, cfg: Config): void {
+  const rename = getDb().prepare("UPDATE OR IGNORE alert_state SET rule = ? WHERE vault = ? AND rule = ?");
+  for (const [from, to] of Object.entries(cfg.conditionRules)) rename.run(to, vault, from);
+}
+
+/** Every UI edit of the alerts goes through here, so the old conditions become editable alerts first. */
 export function editAlerts(dir: string, mutate: (doc: Document, alerts: YAMLSeq, current: Config) => void): Config {
-  return updateConfig(dir, (doc, current) => mutate(doc, alertsSeq(doc), current));
-}
-
-const trimmed = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
-
-/**
- * The id an old condition keeps as an alert: its own, `cond-<id>` when an alert in `alerts` has
- * it already, none (a hash) when it is free text an alert id cannot be.
- */
-function conditionId(raw: unknown, taken: Set<string>): string | undefined {
-  const id = trimmed(raw);
-  if (!id || !/^[A-Za-z0-9_-]+$/.test(id)) return undefined;
-  return taken.has(`alert:${id}`) ? `cond-${id}` : id;
-}
-
-/**
- * The old `conditions` list of one vault (before v0.2.0) becomes alerts on the whole watchlist,
- * once, when the app starts. Each entry moves, as the node it is (comments stay), to the end of
- * `alerts`: `formula` is renamed `when`, the id is the one `conditionId` gives, and the old defaults
- * are written out (label = id, tf W, not pushed unless `notify: true`); then `conditions` goes.
- * Everything is decided on the entries as they read, yaml aliases resolved (`id: *x`, `tf: *w`,
- * `conditions: *list`). Before the yaml moves, the conditions' state rows (`cond:<id>`) are renamed
- * to the ids the moved alerts read with, so one that fired this week still shows it and the next
- * turn still pushes. False when the vault has no such list.
- */
-export function migrateConditions(vault: VaultRef): boolean {
-  return moveConditions(vault.dir, (doc, current) => {
-    const taken = new Set(current.alerts.map((a) => a.id));
-    const own = doc.get("conditions", true);
-    const conditions = isAlias(own) ? own.resolve(doc) : own;
-    const items = isSeq(conditions) ? conditions.items : [];
-    const raws = items.length ? (doc.toJS() as { conditions: Record<string, unknown>[] }).conditions : [];
-    const rename = getDb().prepare("UPDATE OR IGNORE alert_state SET rule = ? WHERE vault = ? AND rule = ?");
-    const alerts = alertsSeq(doc);
-    // an entry (or the list) written as an alias stands for a node other places share: a copy moves
-    const nodes = items.map((item, i) => (isMap(item) && !isAlias(own) ? item : doc.createNode(raws[i])) as YAMLMap);
-    // the comments on the `conditions:` line and above its first entry belong to the list; they go with that entry
-    if (nodes[0] && isSeq(own) && own.commentBefore) nodes[0].commentBefore = [own.commentBefore, nodes[0].commentBefore].filter(Boolean).join("\n");
-    nodes.forEach((node, i) => {
-      const raw = raws[i];
-      const id = conditionId(raw.id, taken);
-      const idNode = node.get("id", true);
-      if (!id) node.delete("id");
-      else if (isScalar(idNode)) idNode.value = id;
-      else node.set("id", id);
-      const formula = node.items.find((pair) => isScalar(pair.key) && pair.key.value === "formula");
-      if (formula && isScalar(formula.key)) formula.key.value = "when";
-      if (!node.has("label")) node.set("label", raw.id);
-      if (!isTimeframe(raw.tf)) node.set("tf", "W");
-      if (raw.notify !== true) node.set("notify", false);
-      alerts.items.push(node);
-      rename.run(parseAlert(node.toJS(doc), i, current.aliases, "conditions").id, vault.id, `cond:${trimmed(raw.id)}`);
-    });
-    doc.delete("conditions");
-  });
-}
-
-/** At startup, before anything reads a config: every vault's old `conditions` (the root's first, the others are read with it). */
-export function migrateAllConditions(): void {
-  const migrate = (vault: VaultRef) => {
-    const who = vault.id ? ` (${vault.id})` : "";
-    try {
-      if (migrateConditions(vault)) log(`moved the old conditions into alerts${who}`);
-    } catch (err) {
-      log(`could not move the old conditions into alerts${who}: ${message(err)}`);
+  return updateConfig(dir, (doc, current) => {
+    let alerts = doc.get("alerts");
+    if (!isSeq(alerts)) {
+      alerts = doc.createNode([]);
+      doc.set("alerts", alerts);
     }
-  };
-  ensureVault();
-  migrate({ id: "", dir: vaultDir() });
-  const { config } = readConfigSafe(vaultDir());
-  for (const v of listVaults(config?.owners ?? [])) if (v.id) migrate(v);
+    const seq = alerts as YAMLSeq;
+    // `alerts: []` from the example becomes a block list once it has entries
+    seq.flow = false;
+    if (doc.has("conditions")) adoptConditions(doc, seq, current);
+    mutate(doc, seq, current);
+  });
 }
 
 /** Switch alerts on or off in a vault's yaml, keeping comments. */
@@ -324,6 +292,7 @@ async function judge(vault: VaultRef, loadConfig: () => Config, pass: AlertPass,
   const who = vault.id ? ` (${vault.id})` : "";
   try {
     const cfg = loadConfig();
+    adoptConditionState(vault.id, cfg);
     const list = checks(cfg, pass, read ?? readDaily, who);
     const state = readState(vault.id);
     const symbols = listSymbols();

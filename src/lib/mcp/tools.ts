@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { ALERT_CONDS, type AlertCond, type AlertCondition } from "../alert-conds";
 import { alertBadges, alertViews } from "../alert-view";
-import { alertKeys, readState, stateId } from "../alerts";
+import { adoptConditionState, alertKeys, readState, stateId } from "../alerts";
 import { barClosed, loadDaily, synthNoData, tradesWeekends } from "../bars";
 import { aliasOf, allItems, findItem, resolveKey, type Config } from "../config";
 import { fmtDate } from "../format";
@@ -296,6 +296,7 @@ export const TOOLS: Tool[] = [
     input: {},
     run: ({ dir, vault }) => {
       const cfg = readConfig(dir);
+      adoptConditionState(vault, cfg);
       const rows = readState(vault);
       const views = alertViews(vault, cfg, listSymbols());
       return cfg.alerts.map((a, i) => {

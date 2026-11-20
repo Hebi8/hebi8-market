@@ -8,7 +8,7 @@ import { isMap, isScalar, isSeq, type Document, type YAMLMap } from "yaml";
 import { compile } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
 import { defaultCheck, type AlertCheck, type AlertCond, type AlertCondition, type AlertTrigger } from "./alert-conds";
-import { alertIndex, editAlerts, forgetAlerts, runAlerts, serializeAlerts, setAlertsEnabled } from "./alerts";
+import { adoptConditionState, alertIndex, editAlerts, forgetAlerts, runAlerts, serializeAlerts, setAlertsEnabled } from "./alerts";
 import { aliasOf, findItem, parseAlert, resolveKey, type FormulaDef } from "./config";
 import { liveReader } from "./quotes";
 import { isCJK } from "./search";
@@ -221,6 +221,8 @@ function setField(doc: Document, map: YAMLMap, field: string, value: unknown): v
 export async function saveAlert({ dir, vault }: Viewer, input: AlertInput, origin: AlertOrigin = "page"): Promise<{ id: string; draft: boolean }> {
   const saved = await serializeAlerts(() => {
     const cfg = readConfig(dir);
+    // the old conditions' state follows them before the yaml moves them
+    adoptConditionState(vault, cfg);
     const key = input.key == null ? null : resolveKey(str(input.key), cfg.aliases);
     if (key !== null && !isValidKey(key)) throw new Error("无效的 key");
     if (origin === "agent" && cfg.alerts.some((a) => a.id === input.id && !a.key && !a.draft)) throw new Error(AGENT_EDITS_WATCHLIST);
@@ -295,6 +297,7 @@ export async function saveAlert({ dir, vault }: Viewer, input: AlertInput, origi
 export function deleteAlert({ dir, vault }: Viewer, id: string): Promise<void> {
   return serializeAlerts(() => {
     const cfg = readConfig(dir);
+    adoptConditionState(vault, cfg);
     const aliases = cfg.aliases;
     editAlerts(dir, (doc) => {
       const index = alertIndex(doc, str(id), aliases);
@@ -314,6 +317,7 @@ export async function setAlertEnabled({ dir, vault }: Viewer, id: string, enable
   await serializeAlerts(() => {
     const cfg = readConfig(dir);
     if (on && origin === "agent" && cfg.alerts.some((a) => a.id === target && !a.key)) throw new Error("对全部自选的警报只能由用户在页面上恢复");
+    adoptConditionState(vault, cfg);
     setAlertsEnabled(dir, [target], on);
     if (on) forgetAlerts(vault, [target]);
   });
@@ -328,6 +332,7 @@ export async function confirmAlert({ dir, vault }: Viewer, id: string): Promise<
   const target = str(id);
   await serializeAlerts(() => {
     const cfg = readConfig(dir);
+    adoptConditionState(vault, cfg);
     editAlerts(dir, (doc) => {
       const index = alertIndex(doc, target, cfg.aliases);
       if (index < 0) throw new Error("这条警报已经不在 hebi8.yaml 里了");

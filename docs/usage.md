@@ -188,7 +188,7 @@ alerts:
 - `check`：`price`（盘中价格）或 `close`（日线收盘），不写就是默认值（有 `key` 的 `price`，没有的 `close`）。
   已触发的 `once` 手改 yaml 的 `enabled: true` 不会重新启用；重新启用请用界面上的恢复。
 - `when` 公式「新成立才推送」，`tf` 默认 D；要明确的上穿下穿写 `cross(close, X)`。`label` 省了按条件自动生成。
-- 以前的 `conditions: [{ id, label, formula, tf, notify }]` 在应用启动时自动搬进 `alerts`，成为对全部自选的警报（`tf` 默认 W，没标 `notify` 的不推送），注释保留，本周已触发的状态也跟着走；运行中再手写 `conditions` 会报配置错误，重启一次就会搬过去。
+- 以前的 `conditions: [{ id, label, formula, tf, notify }]` 照样能读，当作对全部自选的警报（`tf` 默认 W，没标 `notify` 的不推送）；第一次在界面上建、改、暂停或删除警报时，它们会被搬进 `alerts`。
 - `data:` 数据集只有日线，跟着日线同步判断。
 - 所有通道都发送失败时不记账，下次再试；没配通道时只写日志。
 

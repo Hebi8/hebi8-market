@@ -1,7 +1,7 @@
 /** What the alert lines, the alert list and the overview badges show (§2.6, §5.1, §5.2), read from the vault, the cache and the quotes table. No network. */
 import type { AlertCheck, AlertCond, AlertCondition, AlertTrigger } from "./alert-conds";
 import { ALERT_CHECKS, ALERT_CONDS, WATCHLIST, conditionLevels } from "./alert-conds";
-import { alertFiredAt, alertKeys, readState, stateId } from "./alerts";
+import { adoptConditionState, alertFiredAt, alertKeys, readState, stateId } from "./alerts";
 import { loadDaily, type DailyReader } from "./bars";
 import { checkNote, describeAlert, isLive, type AlertDef, type Config } from "./config";
 import { nameOf } from "./names";
@@ -116,6 +116,7 @@ export function alertScope(a: Pick<AlertDef, "key" | "trigger" | "notify" | "che
  * week by the clock in `sync.tz`), so it reads like a filter.
  */
 export function alertBadges(vault: string, cfg: Config, now = new Date()): Record<string, AlertBadge[]> {
+  adoptConditionState(vault, cfg);
   const rows = readState(vault);
   const week = currentWeekId(cfg.sync.tz, now);
   const day = new Intl.DateTimeFormat("zh-CN", { timeZone: cfg.sync.tz, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
