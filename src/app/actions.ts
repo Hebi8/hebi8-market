@@ -16,6 +16,7 @@ import { syncAll, syncOne } from "@/lib/sync";
 import {
   flowNode,
   locateEntry,
+  readChartState,
   readConfig,
   setList,
   setScalar,
@@ -23,7 +24,8 @@ import {
   writeChartState,
   writeJournal,
   writeNote,
-  type ChartState,
+  type CompareEntry,
+  type OverlaySpec,
 } from "@/lib/vault";
 import { getViewer, requireWriter, type Viewer } from "@/lib/viewer";
 import type { WatchlistOp } from "@/lib/watchlist";
@@ -36,10 +38,10 @@ export type ActionResult = { ok: true } | { ok: false; error: string };
  * reachable from here. The ones an agent can also reach through `/mcp` are shells around
  * `src/lib/ops.ts`: one implementation, the same checks.
  */
-async function attempt(fn: (viewer: Viewer) => Promise<void> | void): Promise<ActionResult> {
+async function attempt(fn: (viewer: Viewer) => Promise<void> | void, revalidate = true): Promise<ActionResult> {
   try {
     await fn(requireWriter(await getViewer()));
-    revalidatePath("/", "layout");
+    if (revalidate) revalidatePath("/", "layout");
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -165,30 +167,45 @@ export async function deleteIndicator(id: string): Promise<ActionResult> {
   return attempt((viewer) => ops.deleteIndicator(viewer, id));
 }
 
-export async function saveChartState(key: string, state: ChartState): Promise<ActionResult> {
+/**
+ * One change to a chart's drawings and comparisons, applied to what the file has when it runs, so
+ * changes sent one after another (Server Actions run in order) each build on the one before,
+ * whatever the page had when it sent them. The page has made the change already: only adding a
+ * comparison re-renders it, for that symbol's name, after its first fetch.
+ */
+export type ChartChange = { overlays: OverlaySpec[] } | { addCompare: CompareEntry } | { removeCompare: string };
+
+export async function editChartState(key: string, change: ChartChange): Promise<ActionResult> {
+  const adding = "addCompare" in change;
   return attempt(async ({ dir }) => {
     if (!isValidKey(key)) throw new Error("无效的 key");
-    const cfg = readConfig(dir);
-    const compare = (Array.isArray(state.compare) ? state.compare : []).flatMap((c) => {
-      const target = resolveKey(str(c.key), cfg.aliases);
-      if (!isValidKey(target) || target === key) return [];
-      return [{ key: target, mode: c.mode === "pane" ? ("pane" as const) : ("percent" as const), color: str(c.color) || "#e8891d" }];
-    });
-    const overlays = (Array.isArray(state.overlays) ? state.overlays : []).flatMap((o) => {
-      if (typeof o?.name !== "string" || !Array.isArray(o.points)) return [];
-      const points = o.points.filter((p) => Number.isFinite(p?.timestamp) && Number.isFinite(p?.value)).map((p) => ({ timestamp: p.timestamp, value: p.value }));
-      return [{ name: o.name, points, ...(o.styles ? { styles: o.styles } : {}), ...(o.lock ? { lock: true } : {}), ...(o.hidden ? { hidden: true } : {}), ...(o.extendData !== undefined ? { extendData: o.extendData } : {}), ...(typeof o.tvId === "string" ? { tvId: o.tvId } : {}), ...(o.scale === "log" || o.scale === "linear" ? { scale: o.scale } : {}) }];
-    });
-    // compare targets must be in the cache before the chart asks for them
-    for (const c of compare) {
-      if (isSynthetic(c.key)) continue;
-      if (!getSymbol(c.key)?.syncedAt) {
-        const outcome = await syncOne(c.key, true);
-        if (!outcome.ok) throw new Error(`拉取 ${c.key} 失败：${outcome.error}`);
-      }
+    if ("overlays" in change) {
+      const overlays = (Array.isArray(change.overlays) ? change.overlays : []).flatMap((o) => {
+        if (typeof o?.name !== "string" || !Array.isArray(o.points)) return [];
+        const points = o.points.filter((p) => Number.isFinite(p?.timestamp) && Number.isFinite(p?.value)).map((p) => ({ timestamp: p.timestamp, value: p.value }));
+        return [{ name: o.name, points, ...(o.styles ? { styles: o.styles } : {}), ...(o.lock ? { lock: true } : {}), ...(o.hidden ? { hidden: true } : {}), ...(o.extendData !== undefined ? { extendData: o.extendData } : {}), ...(typeof o.tvId === "string" ? { tvId: o.tvId } : {}), ...(o.scale === "log" || o.scale === "linear" ? { scale: o.scale } : {}) }];
+      });
+      writeChartState(dir, key, { ...readChartState(dir, key), overlays });
+      return;
     }
-    writeChartState(dir, key, { compare, overlays });
-  });
+    const target = resolveKey(str("removeCompare" in change ? change.removeCompare : change.addCompare?.key), readConfig(dir).aliases);
+    if ("removeCompare" in change) {
+      const state = readChartState(dir, key);
+      writeChartState(dir, key, { ...state, compare: state.compare.filter((c) => c.key !== target) });
+      return;
+    }
+    if (!isValidKey(target) || target === key) throw new Error(`无效的比较商品「${target}」`);
+    // a comparison must be in the cache before the chart asks for it
+    if (!isSynthetic(target) && !getSymbol(target)?.syncedAt) {
+      const outcome = await syncOne(target, true);
+      if (!outcome.ok) throw new Error(`拉取 ${target} 失败：${outcome.error}`);
+    }
+    // the file as it is after the fetch
+    const state = readChartState(dir, key);
+    if (state.compare.some((c) => c.key === target)) return;
+    const entry = { key: target, mode: change.addCompare.mode === "pane" ? ("pane" as const) : ("percent" as const), color: str(change.addCompare.color) || "#e8891d" };
+    writeChartState(dir, key, { ...state, compare: [...state.compare, entry] });
+  }, adding);
 }
 
 export async function setChartPrefs(

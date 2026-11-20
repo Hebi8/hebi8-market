@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
-import { addSymbol, deleteIndicator, editWatchlist, loadSymbol, saveChartState, saveIndicator, setChartPrefs } from "@/app/actions";
+import { addSymbol, deleteIndicator, editChartState, editWatchlist, loadSymbol, saveIndicator, setChartPrefs, type ChartChange } from "@/app/actions";
 import type { AlertView } from "@/lib/alert-view";
 import { INDICATORS } from "@/indicators/catalog";
 import { compileFormula, formulaIndicatorName, formulaTemplate, isFormulaIndicator } from "@/indicators/formula-indicators";
@@ -21,7 +21,7 @@ import type { ProfileView } from "@/lib/profile";
 import { synthName } from "@/lib/synth";
 import { useLocalStorage } from "@/lib/use-local-storage";
 import { useMediaQuery } from "@/lib/use-media-query";
-import type { ChartState, OverlaySpec } from "@/lib/vault";
+import type { ChartState, CompareEntry, OverlaySpec } from "@/lib/vault";
 import {
   IconArea,
   IconBack,
@@ -141,7 +141,7 @@ export function ChartView({
   names,
   watchlist,
   changeLabel,
-  chartState,
+  chartState: savedState,
   note,
   noteHtml,
   noteSavedAt,
@@ -224,10 +224,17 @@ export function ChartView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbolKey]);
 
-  const stateRef = useRef(chartState);
+  // The drawings and comparisons as this page has them: a change shows at once and is sent as that
+  // change (`editChartState`), which the server applies to what it has. What the page reads again
+  // from the server (back in view, another tab's import) is taken while none of its own is on the way.
+  const [chartState, setChartState] = useState(savedState);
+  const stateRef = useRef(savedState);
+  const sending = useRef(0);
   useEffect(() => {
-    stateRef.current = chartState;
-  }, [chartState]);
+    if (sending.current > 0) return;
+    stateRef.current = savedState;
+    setChartState(savedState);
+  }, [savedState]);
 
   // Back in view (another tab may have imported drawings or changed the comparisons): read the
   // page again, then let the chart take over drawings that differ, before anything here saves.
@@ -434,17 +441,38 @@ export function ChartView({
     return result.ok ? null : result.error;
   };
 
-  const saveState = async (next: Partial<ChartState>) => {
+  const applyState = (change: (state: ChartState) => ChartState) => {
+    stateRef.current = change(stateRef.current);
+    setChartState(stateRef.current);
+  };
+  /** Send one change; `undo` puts the page back when the server refuses it. */
+  const sendChange = async (change: ChartChange, undo?: () => void) => {
     if (readOnly) {
       setMessage("登录后才能保存画线和比较商品");
       return false;
     }
-    const result = await saveChartState(symbolKey, { ...stateRef.current, ...next });
+    sending.current++;
+    const result = await editChartState(symbolKey, change);
+    sending.current--;
     report(result);
+    if (!result.ok) undo?.();
     return result.ok;
   };
-  const onOverlaysChange = (overlays: OverlaySpec[]) => void saveState({ overlays });
-  const removeCompare = (key: string) => void saveState({ compare: compare.filter((c) => c.key !== key) });
+  const onOverlaysChange = (overlays: OverlaySpec[]) => {
+    applyState((s) => ({ ...s, overlays }));
+    void sendChange({ overlays });
+  };
+  const removeCompare = (key: string) => {
+    const entry = stateRef.current.compare.find((c) => c.key === key);
+    applyState((s) => ({ ...s, compare: s.compare.filter((c) => c.key !== key) }));
+    void sendChange({ removeCompare: key }, () => entry && applyState((s) => ({ ...s, compare: [...s.compare, entry] })));
+  };
+  /** Shown once it is saved: the symbol's bars have to be fetched first, and the chart asks for them as soon as it shows. */
+  const addCompare = async (entry: CompareEntry) => {
+    const ok = await sendChange({ addCompare: entry });
+    if (ok && !stateRef.current.compare.some((c) => c.key === entry.key)) applyState((s) => ({ ...s, compare: [...s.compare, entry] }));
+    return ok;
+  };
 
   // legend row actions: eye, gear (or double click), ×, and ⋯ → 移动到
   const onIndicator = (name: string, action: "toggle" | "settings" | "remove" | "move") => {
@@ -1191,7 +1219,7 @@ export function ChartView({
           onAdd={async (key, mode) => {
             const used = new Set(compare.map((c) => c.color));
             const color = COMPARE_COLORS.find((c) => !used.has(c)) ?? COMPARE_COLORS[compare.length % COMPARE_COLORS.length];
-            return saveState({ compare: [...compare, { key, mode, color }] });
+            return addCompare({ key, mode, color });
           }}
           onRemove={removeCompare}
           onClose={() => setDialog(null)}

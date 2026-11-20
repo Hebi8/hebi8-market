@@ -84,3 +84,25 @@ describe("writes that wait for a fetch", () => {
     expect(readConfig(root)).toMatchObject({ indicators: [{ id: "gap" }], chart: { indicators: ["MA", "VOL", "gap"] } });
   });
 });
+
+describe("chart changes", () => {
+  it("each change builds on the one before it, whatever the page had when it sent them", async () => {
+    const { editChartState } = await import("@/app/actions");
+    const { readChartState, writeChartState } = await import("@/lib/vault");
+    const line = { name: "segment", points: [{ timestamp: 1, value: 1 }, { timestamp: 2, value: 2 }] };
+    writeChartState(root, "yahoo:SPY", { compare: [{ key: "yahoo:QQQ", mode: "percent", color: "#1" }, { key: "yahoo:NVDA", mode: "percent", color: "#2" }], overlays: [] });
+    // two comparisons removed, a line drawn and a symbol added, all sent before any answer came back
+    const sent = [
+      editChartState("yahoo:SPY", { removeCompare: "yahoo:QQQ" }),
+      editChartState("yahoo:SPY", { overlays: [line] }),
+      editChartState("yahoo:SPY", { removeCompare: "yahoo:NVDA" }),
+      editChartState("yahoo:SPY", { addCompare: { key: "GOLD", mode: "pane", color: "#3" } }),
+    ];
+    expect(await Promise.all(sent)).toEqual([{ ok: true }, { ok: true }, { ok: true }, { ok: true }]);
+    expect(readChartState(root, "yahoo:SPY")).toEqual({ compare: [{ key: "tv:TVC:GOLD", mode: "pane", color: "#3" }], overlays: [line] });
+    expect(synced.keys).toEqual(["tv:TVC:GOLD"]);
+    synced.fail = "yahoo:NOPE";
+    expect(await editChartState("yahoo:SPY", { addCompare: { key: "yahoo:NOPE", mode: "percent", color: "#4" } })).toEqual({ ok: false, error: "拉取 yahoo:NOPE 失败：not found" });
+    expect(readChartState(root, "yahoo:SPY").compare.map((c) => c.key)).toEqual(["tv:TVC:GOLD"]);
+  });
+});
