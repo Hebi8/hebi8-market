@@ -1010,6 +1010,26 @@ describe("quote polling", () => {
       logs.mockRestore();
     });
 
+    it("a synthetic key whose first operand's alias moves to a symbol with older days starts over", async () => {
+      const { runAlerts } = await import("@/lib/alerts");
+      const { readConfig } = await import("@/lib/vault");
+      const { writeBars } = await import("@/lib/store");
+      const ETH = "binance:ETHUSDT";
+      // BTC's last bar is Saturday's 90, SPY's Friday's 110; ETH is 1 on both days
+      writeBars(BTC, [bar(90, 4), bar(90, 5)], "replace");
+      writeBars(SPY, [bar(110, 3), bar(110, 4)], "replace");
+      writeBars(ETH, [bar(1, 4), bar(1, 5)], "replace");
+      const yaml = (target: string) => `aliases:\n  FIRST: ${target}\nalerts:\n  - { id: first, key: "=FIRST/${ETH}", when: "close > 100", check: price }\n`;
+      fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml(BTC));
+      const vault = { id: "", dir: root, config: readConfig(root) };
+      const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      await runAlerts(vault, () => readConfig(root));
+      fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml(SPY));
+      await runAlerts(vault, () => readConfig(root));
+      expect(logs.mock.calls.flat().filter((m) => /new alert\(s\)/.test(String(m)))).toEqual([expect.stringContaining("1 new alert(s)")]);
+      logs.mockRestore();
+    });
+
     it("a synthetic symbol's price is not dated by a quote its last bar does not use", async () => {
       const { alertViews } = await import("@/lib/alert-view");
       const { readConfig } = await import("@/lib/vault");

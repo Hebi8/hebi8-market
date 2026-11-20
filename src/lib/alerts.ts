@@ -305,10 +305,11 @@ async function judge(vault: VaultRef, loadConfig: () => Config, pass: AlertPass,
       }
       // bars older than the ones the row was last judged on (a sync that failed or did not bring
       // today's bar, between two quote rounds; for a synthetic key, any operand's) are not news:
-      // they neither fire nor turn it off. Only the same symbol is compared: an alias pointed at
-      // another symbol starts it over.
+      // they neither fire nor turn it off. Only for the same symbols: a synthetic key whose alias
+      // now points at another symbol is another series, and starts over.
       const was = row?.seen;
-      if (was && Object.entries(c.seen).some(([key, t]) => key in was && t < was[key])) continue;
+      const same = was && Object.keys(was).join("\n") === Object.keys(c.seen).join("\n");
+      if (same && Object.entries(c.seen).some(([key, t]) => t < was[key])) continue;
       const { fire, next } = c.decide(row);
       if (next) updates.push({ rule: c.rule, key: c.key, row: { ...next, seen: c.seen }, fired: fire, notify: c.notify });
       if (!fire) continue;
