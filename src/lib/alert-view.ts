@@ -48,13 +48,12 @@ export interface AlertView {
  * of the quotes and the symbols serves every key asked for.
  */
 export function latestPrice(key: string, cfg: Config, quotes = readQuotes(), symbols: (key: string) => SymbolRow | null | undefined = getSymbol, read: DailyReader = liveReader(quotes)): { price: number | null; at: number | null } {
-  let price: number | null = null;
   try {
-    price = loadDaily(key, cfg.prices, cfg, read).at(-1)?.c ?? null;
+    return { price: loadDaily(key, cfg.prices, cfg, read).at(-1)?.c ?? null, at: priceTime(key, cfg.aliases, quotes, symbols) };
   } catch {
-    // a broken synthetic expression shows no price
+    // a broken synthetic expression (an alias since removed) has neither; the chart says why
+    return { price: null, at: null };
   }
-  return { price, at: priceTime(key, cfg.aliases, quotes, symbols) };
 }
 
 export function alertViews(vault: string, cfg: Config, symbols: Record<string, SymbolRow>): AlertView[] {

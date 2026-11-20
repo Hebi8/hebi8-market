@@ -964,6 +964,13 @@ describe("quote polling", () => {
       expect(synthetic.priceAt).toBe(fetchedAt);
     });
 
+    it("a chart link to a synthetic symbol whose alias is gone has no price, and does not throw", async () => {
+      const { latestPrice } = await import("@/lib/alert-view");
+      const { readConfig } = await import("@/lib/vault");
+      const vault = await watching([]);
+      expect(latestPrice("=MISSING", readConfig(vault.dir))).toEqual({ price: null, at: null });
+    });
+
     it("/api/bars names a symbol from the dictionary when the yaml does not", async () => {
       const { writeBars } = await import("@/lib/store");
       const { getDb } = await import("@/lib/db");
