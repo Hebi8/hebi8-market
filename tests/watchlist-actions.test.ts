@@ -200,6 +200,34 @@ alerts: *rules
     expect(readConfig(root).groups.map((g) => g.symbols.map((x) => [x.key, x.name]))).toEqual([[["yahoo:QQQ", "Correct"]], [["yahoo:SPY", "Correct"]]]);
   });
 
+  it("a copy reads an alias used as a key where the original stood too", async () => {
+    const { readConfig } = await import("@/lib/vault");
+    fs.writeFileSync(
+      yamlFile,
+      `field: &field enabled
+groups:
+  - name: A
+    symbols: [yahoo:SPY]
+    rules: &rules
+      - { key: yahoo:SPY, cond: greater, value: 100, ? *field : false }
+  - { name: B, symbols: [yahoo:QQQ], other: &field memo }
+alerts: *rules
+`,
+    );
+    expect(readConfig(root).alerts.map((a) => a.enabled)).toEqual([false]);
+    expect(await renameGroup("A", "美股")).toEqual({ ok: true });
+    expect(readConfig(root).alerts.map((a) => a.enabled)).toEqual([false]);
+  });
+
+  it("renames a group holding a node that refers to itself, read elsewhere too", async () => {
+    const { parse } = await import("yaml");
+    fs.writeFileSync(yamlFile, `groups:\n  - { name: A, symbols: [yahoo:SPY], metadata: &node { self: *node, x: 1 } }\n  - { name: B, symbols: [yahoo:QQQ], backup: *node }\n`);
+    expect(await renameGroup("A", "美股")).toEqual({ ok: true });
+    expect(await order()).toEqual(["美股:SPY", "B:QQQ"]);
+    const after = parse(read(), { maxAliasCount: -1 }) as { groups: { backup?: { x: number; self: unknown } }[] };
+    expect(after.groups[1].backup?.x).toBe(1);
+  });
+
   it("writes out an alias that a move would put before its anchor", async () => {
     fs.writeFileSync(
       yamlFile,

@@ -230,74 +230,44 @@ export function locateEntry(doc: Document, key: string, aliases: Record<string, 
   return null;
 }
 
-// Watchlist edits and yaml aliases. An edit changes only its target groups: the ones whose name or
-// symbols change, a new one, a deleted one. Before anything changes, each target (and the `groups`
-// list, `name` and `symbols` on the way to it) is made its own: one written as an alias becomes a
-// copy in its place, and aliases elsewhere that read an anchor in it become copies, so no node
-// another place reads is changed. A field is replaced where it is, added only when missing. After
-// the edit, an alias that would now come before its anchor (or whose anchor went with a deleted
-// group) is written out as a copy: every alias reads what it read before.
+// Watchlist edits and yaml aliases. An edit changes only the nodes of its target groups (the ones
+// whose name or symbols change, or the one a symbol is added to): the group map, its `name` and its
+// `symbols`, and the `groups` list holding them. Before any changes, each of these is made its own:
+// written as an alias, it becomes a copy in its place; carrying an anchor that aliases elsewhere
+// read, those aliases become copies. So no node another place reads is changed. A field is
+// replaced where it is, added only when missing. A copy is made from what the node reads where it
+// stands (`toJS`: aliases in keys and values resolved there, a node that contains itself included),
+// so no anchor of the same name elsewhere changes it. After the edit, an alias whose anchor now
+// comes after it, or went with a deleted group, is written out as a copy of what it read before:
+// every alias reads what it read before.
 
-const hasAnchor = (n: Node) => !isAlias(n) && n.anchor !== undefined;
+/** A node holding `value`, written the way `like` is (flow or block), with no anchors another place can read. */
+const copyOf = (doc: Document, value: unknown, like: unknown) => doc.createNode(value, { flow: (isMap(like) || isSeq(like)) && like.flow }) as Node;
 
-/** What an alias reads: where it stands now, or (after a move) what it read before. */
-type Reader = (alias: Alias) => Node | undefined;
-
-/**
- * A node to stand where an alias to it stood: a copy without anchors, so nothing else reads it.
- * An alias inside it becomes a copy of what it reads where the original stands, so a later anchor
- * of the same name does not change the copy.
- */
-function copyOf(node: Node, read: Reader): Node {
-  if (isAlias(node)) return copyOf(read(node)!, read);
-  const copy = node.clone() as Node;
-  if (!isAlias(copy)) copy.anchor = undefined;
-  if (isMap(node) && isMap(copy)) {
-    node.items.forEach((pair, i) => {
-      if (isNode(pair.value)) copy.items[i].value = copyOf(pair.value, read);
-    });
-  } else if (isSeq(node) && isSeq(copy)) {
-    node.items.forEach((item, i) => {
-      if (isNode(item)) copy.items[i] = copyOf(item, read);
-    });
-  }
-  return copy;
-}
-
-/** Aliases anywhere that read an anchor of `node` (or, `within`, of anything in it) become copies. */
-function unshare(doc: Document, node: Node, within: boolean): void {
-  const anchored = new Set<Node>();
-  if (within) {
-    visit(node, {
-      Node: (_, n) => {
-        if (hasAnchor(n)) anchored.add(n);
-      },
-    });
-  } else if (hasAnchor(node)) anchored.add(node);
-  if (anchored.size === 0) return;
+/** Aliases anywhere that read `node` become copies of what it reads now, so it can change alone. */
+function unshare(doc: Document, node: Node): void {
+  if (isAlias(node) || node.anchor === undefined) return;
+  const value = node.toJS(doc);
   visit(doc, {
-    Alias: (_, alias) => {
-      const source = alias.resolve(doc);
-      if (source && anchored.has(source)) return copyOf(source, (a) => a.resolve(doc));
-    },
+    Alias: (_, alias) => (alias.resolve(doc) === node ? copyOf(doc, value, node) : undefined),
   });
 }
 
 /** The node at `key` of `parent` made its own (see above), so it can change in place. */
-function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number, within = true): unknown {
+function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number): unknown {
   let node: unknown = parent.get(key, true);
   if (isAlias(node)) {
-    node = copyOf(node, (a) => a.resolve(doc));
+    const source = node.resolve(doc)!;
+    node = copyOf(doc, source.toJS(doc), source);
     parent.set(key, node);
-  }
-  if (isNode(node)) unshare(doc, node, within);
+  } else if (isNode(node)) unshare(doc, node);
   return node;
 }
 
 /** The `groups` list as its own node (the groups in it are not touched), created empty when missing. */
 function ownGroups(doc: Document): YAMLSeq {
   const root = doc.contents as YAMLMap;
-  const groups = own(doc, root, "groups", false);
+  const groups = own(doc, root, "groups");
   return isSeq(groups) ? groups : seqOf(root, "groups", doc);
 }
 
@@ -378,17 +348,19 @@ export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<strin
     }
     const keys = (items: { key: string }[]) => items.map((item) => item.key).join("\n");
     const changed = next.map((g, i) => old[i] < 0 || writing[i] !== g.written || keys(g.items) !== keys(groups[old[i]].items));
-    const targets = groups.flatMap((_, j) => (old.includes(j) && !changed[old.indexOf(j)] ? [] : [j]));
+    // the groups whose own nodes change: a deleted one only goes, which the last step takes care of
+    const targets = next.flatMap((_, i) => (changed[i] && old[i] >= 0 ? [old[i]] : []));
     return { seq, groups, next, old, writing, changed, targets };
   };
   // make the targets their own first, then plan again on the nodes as they are now
   const first = plan();
   for (const j of first.targets) ownGroup(doc, first.seq, j);
   // what each alias reads before anything moves
-  const sources = new Map<Alias, Node | undefined>();
+  const sources = new Map<Alias, { node: Node | undefined; value: unknown }>();
   visit(doc, {
     Alias: (_, alias) => {
-      sources.set(alias, alias.resolve(doc));
+      const node = alias.resolve(doc);
+      sources.set(alias, { node, value: node?.toJS(doc) });
     },
   });
   const { seq, next, old, writing, changed } = plan();
@@ -413,7 +385,7 @@ export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<strin
   visit(doc, {
     Alias: (_, alias) => {
       const source = sources.get(alias);
-      if (source && alias.resolve(doc) !== source) return copyOf(source, (a) => sources.get(a));
+      if (source?.node && alias.resolve(doc) !== source.node) return copyOf(doc, source.value, source.node);
     },
   });
 }
