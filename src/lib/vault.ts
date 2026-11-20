@@ -43,14 +43,14 @@ export function ensureVault(): void {
 
 /**
  * A person's first visit: their yaml starts as a copy of the root one without the instance
- * settings and the owner's alerts (the old `conditions` included, nothing is assigned to anyone),
- * with 美股、宏观、加密 first; notes, journal and charts start empty. Returns the directory.
+ * settings and the owner's alerts (nothing is assigned to anyone), with 美股、宏观、加密 first;
+ * notes, journal and charts start empty. Returns the directory.
  */
 export function ensureUserVault(login: string): string {
   const dir = userVaultDir(login);
   if (fs.existsSync(yamlPath(dir))) return dir;
   const doc = parseYaml(fs.readFileSync(yamlPath(vaultDir()), "utf8"));
-  const drop: string[] = [...INSTANCE_KEYS, "alerts", "conditions"];
+  const drop: string[] = [...INSTANCE_KEYS, "alerts"];
   // the yaml library hangs a file's opening comment on the first key; keep it when that key goes
   const first = isMap(doc.contents) ? doc.contents.items[0]?.key : null;
   if (isScalar(first) && first.commentBefore && drop.includes(String(first.value))) {
@@ -169,10 +169,31 @@ export function readConfigSafe(dir: string): { config: Config | null; error: str
  * already, what an alias stands for) is what it changes, however long the caller waited before.
  */
 export function updateConfig(dir: string, mutate: (doc: Document, current: Config) => void): Config {
-  const file = yamlPath(dir);
-  const doc = parseYaml(fs.readFileSync(file, "utf8"));
+  const doc = parseYaml(fs.readFileSync(yamlPath(dir), "utf8"));
   const root = isRoot(dir) ? null : readConfig(vaultDir());
   mutate(doc, normalizeIn(doc.toJS(), root));
+  return writeDoc(dir, doc, root);
+}
+
+/**
+ * Once at startup, for a yaml that still has the old `conditions` list (before v0.2.0), which the
+ * config reader no longer takes: `adopt` gets the document and the config the rest of it reads as,
+ * moves the list into `alerts`, and the result is validated and written like any edit. False when
+ * there is no list to move.
+ */
+export function moveConditions(dir: string, adopt: (doc: Document, current: Config) => void): boolean {
+  const doc = parseYaml(fs.readFileSync(yamlPath(dir), "utf8"));
+  if (!doc.has("conditions")) return false;
+  const root = isRoot(dir) ? null : readConfig(vaultDir());
+  const rest = { ...(doc.toJS() as Record<string, unknown>) };
+  delete rest.conditions;
+  adopt(doc, normalizeIn(rest, root));
+  writeDoc(dir, doc, root);
+  return true;
+}
+
+function writeDoc(dir: string, doc: Document, root: Config | null): Config {
+  const file = yamlPath(dir);
   const config = normalizeIn(doc.toJS(), root);
   // Comments and order survive; the library re-spaces inline comments, which is as close as it gets.
   atomicWrite(file, doc.toString({ lineWidth: 0 }));

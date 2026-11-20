@@ -114,14 +114,8 @@ describe("alerts in hebi8.yaml", () => {
     expect(syncKeys(cfg)).toEqual(["binance:BTCUSDT"]);
   });
 
-  it("reads the old conditions as alerts on the whole watchlist, weekly by default, pushed only with notify", () => {
-    const cfg = normalizeConfig({ ...base, conditions: [{ id: "a", label: "甲", formula: "close > 1" }, { id: "b", formula: "close > 2", notify: true, tf: "D" }, { id: "趋势", formula: "close > 3" }] });
-    expect(cfg.alerts.map(({ id, key, label, when, tf, notify }) => ({ id, key, label, when, tf, notify }))).toEqual([
-      { id: "alert:a", key: null, label: "甲", when: "close > 1", tf: "W", notify: false },
-      { id: "alert:b", key: null, label: "b", when: "close > 2", tf: "D", notify: true },
-      // a free-text id cannot be an alert id; the label keeps it
-      { id: expect.stringMatching(/^alert:[0-9a-f]{6}$/), key: null, label: "趋势", when: "close > 3", tf: "W", notify: false },
-    ]);
+  it("does not read the old conditions: they move into alerts when the app starts", () => {
+    expect(() => normalizeConfig({ ...base, conditions: [{ id: "a", label: "甲", formula: "close > 1" }] })).toThrow(/conditions 是旧的写法/);
   });
 });
 
@@ -201,11 +195,11 @@ describe("runAlerts", () => {
     const cfg = normalizeConfig({
       aliases: { BTC: key },
       groups: [{ name: "加密", symbols: [{ key: "BTC", name: "比特币" }] }],
-      conditions: [{ id: "up", label: "上涨", formula: "close > ref(close, 1)", tf: "D", notify: true }],
       alerts: [
         { key: "BTC", label: "站上 100", when: "close > 100", trigger: "bar" },
         { label: "站上 50", when: "close > 50", tf: "D", notify: false },
         { label: "回落", when: "close < ref(close, 1)", tf: "D", notify: false },
+        { id: "up", label: "上涨", when: "close > ref(close, 1)", tf: "D" },
       ],
     });
     const run = () => runAlerts({ id: "", dir: dir }, () => cfg);

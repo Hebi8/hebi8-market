@@ -23,10 +23,9 @@ groups:
   # 先看币
   - name: 加密
     symbols: [BTC]
-conditions:
-  - { id: up, label: 上涨, formula: "close > ref(close, 1)", tf: D }
 alerts:
   - { key: BTC, label: 站上 100, when: "close > 100" }
+  - { id: up, label: 上涨, when: "close > ref(close, 1)", tf: D, notify: false }
 datasets:
   gpu: ./gpu
 `;
@@ -132,8 +131,8 @@ describe("resolveViewer", () => {
     expect(alice).toMatchObject({ vault: "alice", dir: path.join(users, "alice"), login: "Alice", canWrite: true, isOwner: false, shared: true });
 
     const text = read(users, "alice", "hebi8.yaml");
-    // nothing is assigned: neither the owner's alerts nor the old conditions come along
-    for (const gone of ["owner:", "sync:", "datasets:", "alerts:", "站上 100", "conditions:", "上涨"]) expect(text).not.toContain(gone);
+    // nothing is assigned: none of the owner's alerts come along
+    for (const gone of ["owner:", "sync:", "datasets:", "alerts:", "站上 100", "上涨"]) expect(text).not.toContain(gone);
     expect(text.startsWith("# 共用实例的根 vault\n")).toBe(true);
     expect(text).toContain("# 比特币");
     expect(text).toContain("# 先看币");
@@ -248,13 +247,15 @@ describe("stats and alerts per vault", () => {
   const rootCfg = normalizeConfig({
     aliases: { BTC: KEY },
     groups: [{ name: "加密", symbols: ["BTC"] }],
-    conditions: [{ id: "up", label: "上涨", formula: "close > ref(close, 1)", tf: "D" }],
-    alerts: [{ key: "BTC", label: "站上 100", when: "close > 100", trigger: "bar" }],
+    alerts: [
+      { key: "BTC", label: "站上 100", when: "close > 100", trigger: "bar" },
+      { id: "up", label: "上涨", when: "close > ref(close, 1)", tf: "D", notify: false },
+    ],
   });
   const aliceCfg = normalizeConfig({
     aliases: { BTC: KEY },
     groups: [{ name: "币", symbols: ["BTC"] }],
-    conditions: [{ id: "down", label: "下跌", formula: "close < ref(close, 1)", tf: "D", notify: true }],
+    alerts: [{ id: "down", label: "下跌", when: "close < ref(close, 1)", tf: "D" }],
   });
 
   it("keeps each vault's stats in its own rows", async () => {
@@ -331,7 +332,7 @@ describe("stats and alerts per vault", () => {
     writeBars(KEY, bars([90, 95, 101]), "replace");
     expect(await run()).toEqual({ root: [], alice: [] }); // first sighting everywhere
     const rows = getDb().prepare("SELECT vault, rule FROM alert_state ORDER BY vault, rule").all();
-    // the old conditions are alerts on the whole watchlist now
+    // one row per alert and watched symbol, in each vault
     expect(rows).toEqual([
       ...[rootCfg.alerts[0].id, "alert:up"].sort().map((rule) => ({ vault: "", rule })),
       { vault: "alice", rule: "alert:down" },
