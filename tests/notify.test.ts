@@ -1,10 +1,16 @@
+import dns from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
 import fs from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { localTransport } from "./local-transport";
+
+// Narrow the overload used by the address policy.
+const resolver = dns as { lookup: (host: string, options: { all: true }) => Promise<LookupAddress[]> };
 
 const TOKEN = "123456:SECRET-token";
 const ORIGIN = "http://100.64.0.1:8808";
@@ -69,6 +75,7 @@ const until = async (check: () => boolean | Promise<boolean>, ms = 3000) => {
   }
 };
 
+let port: number;
 let api: string;
 let sessions: Record<string, string>;
 const writeRoot = (owner: string | null) =>
@@ -77,7 +84,8 @@ const writeNotify = (value: unknown) => fs.writeFileSync(path.join(secrets, "not
 
 beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  api = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  port = (server.address() as AddressInfo).port;
+  api = `http://127.0.0.1:${port}`;
   process.env.HEBI8_VAULT = path.join(dir, "vault");
   process.env.HEBI8_DB = path.join(dir, "hebi8.db");
   process.env.HEBI8_SECRETS = secrets;
@@ -95,6 +103,8 @@ afterAll(() => {
   delete process.env.HEBI8_SECRETS;
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 beforeEach(() => {
   fs.rmSync(usersFile, { force: true });
@@ -339,6 +349,29 @@ describe("/api/notify", () => {
 
     expect(await (await webhook.DELETE(req("/api/notify/webhook", { method: "DELETE", session: sessions.alice }))).json()).toMatchObject({ webhook: null });
     expect(readNotifyUsers()).toEqual({});
+  });
+
+  it("sends an ordinary user's test message to a public webhook once they have a usable channel", async () => {
+    const webhook = await import("@/app/api/notify/webhook/route");
+    const test = await import("@/app/api/notify/test/route");
+    const { channelNames, channelsFor, setUserChannel, testDigest } = await import("@/lib/notify");
+    vi.spyOn(resolver, "lookup").mockResolvedValue([{ address: "8.8.8.8", family: 4 }]);
+    localTransport(port);
+    hooks.length = 0;
+
+    // a chat bound while the instance has no bot is not a channel
+    writeNotify({ link: ORIGIN });
+    setUserChannel("alice", "telegram", { chat: "3003" });
+    expect(channelNames(channelsFor("alice", "Owner").config)).toEqual([]);
+    expect(await (await test.POST(req("/api/notify/test", { method: "POST", session: sessions.alice }))).json()).toEqual({ error: "还没有可用的通知通道" });
+
+    const saved = await webhook.PUT(req("/api/notify/webhook", { method: "PUT", session: sessions.alice, body: { url: "https://hooks.example/hook" } }));
+    expect(await saved.json()).toMatchObject({ webhook: { host: "hooks.example", format: "text", fromFile: false } });
+    expect(channelNames(channelsFor("alice", "Owner").config)).toEqual(["webhook"]);
+    const sent = await test.POST(req("/api/notify/test", { method: "POST", session: sessions.alice }));
+    expect(await sent.json()).toEqual({ sent: ["webhook"], failed: [] });
+    expect(hooks).toEqual([testDigest(ORIGIN).text]);
+    expect(dns.lookup).toHaveBeenCalledWith("hooks.example", { all: true });
   });
 
   it("binds Telegram through the routes", async () => {

@@ -139,6 +139,7 @@ vault/
 - **不登录只能看**：看到的是 owner 的总览和图表（含画线），警报、笔记和复盘都看不到。每个页面、接口和 Server Action 先从会话解析出这是谁（`src/lib/viewer.ts`），不能写的一律回「请先登录」；读写哪个目录只看解析出来的身份，不接受请求里带来的目录或用户名。
 - **登录的人只动得了自己的 vault**（`vault/users/<login>/`）：`owner`、`sync`、`datasets`、`usage` 只认根 vault，实例的 Telegram bot 和 `/usage` 只有 owner 能设、能看。
 - **会话**：32 字节的随机 id，cookie 是 HttpOnly、SameSite=Lax，经 HTTPS 时带 Secure；GitHub 的 token 和 client secret 只在服务端的密钥目录（700 / 600），不进浏览器。
+- **其他人的通知只发往公网地址**：owner 以外的人设的 webhook 和网页推送只发往公网地址。局域网、Tailscale 和本机的地址（包括这台机器网卡上的公网 IP）保存时就拒绝；每次发送前重新解析、再查一遍，不跟随重定向，也不把对方回的内容带回页面。
 - **`/mcp` 只认令牌**：任何模式下每个请求都要带个人令牌；服务器上只存令牌的 SHA-256，明文只在生成时显示一次；只读令牌不能写。
 
 还挡不住的：
