@@ -8,7 +8,7 @@
 import { compile } from "@/indicators/formula";
 import type { SymbolStatus } from "./api-types";
 import { runAlerts } from "./alerts";
-import { loadDaily } from "./bars";
+import { lastInputs, loadDaily, type BarInput } from "./bars";
 import { allItems, findItem, isLive, type Config } from "./config";
 import type { Bar } from "./series";
 import { QUOTE_ROUND_MS, QUOTE_SLOW_MS, quoteIsCurrent, scheduledSession, sessionStartsBetween, tradingDayAt, type TradingCalendar } from "./session";
@@ -261,9 +261,14 @@ export function resetQuotes(): void {
   state.overview.clear();
 }
 
-/** A real key's quote where `withQuote` takes it (`quoteDayIn`), judged from the symbol's row alone. */
+/** The day of the bar a real key's quote makes where `withQuote` takes it (`quoteDayIn`), judged from the symbol's row alone. */
+function quoteBarDay(quote: QuoteRow | undefined, meta: SymbolRow | null | undefined): number | null {
+  return quote ? quoteDayIn(meta?.lastT, quote, meta?.timezone ?? "UTC", meta?.syncedAt ?? null, calendarOfRow(meta)) : null;
+}
+
+/** A real key's quote where `withQuote` takes it. */
 function takenQuote(quote: QuoteRow | undefined, meta: SymbolRow | null | undefined): QuoteRow | null {
-  return quote && quoteDayIn(meta?.lastT, quote, meta?.timezone ?? "UTC", meta?.syncedAt ?? null, calendarOfRow(meta)) !== null ? quote : null;
+  return quoteBarDay(quote, meta) !== null ? quote! : null;
 }
 
 /**
@@ -275,21 +280,22 @@ export function tradedPrice(key: string, quotes = readQuotes()): number | null {
   return takenQuote(quotes[key], getSymbol(key))?.price ?? lastClose(key);
 }
 
-/** The oldest quote among the ones a key's price comes from: its own, or for a synthetic key its operands'. */
-function quotedAt(key: string, aliases: Record<string, string>, quotes: Record<string, QuoteRow>, symbols: (key: string) => SymbolRow | null | undefined): number | null {
-  const taken = operands(key, aliases).flatMap((k) => takenQuote(quotes[k], symbols(k))?.fetchedAt ?? []);
+/** The oldest quote a last bar is made of (`lastInputs`): an input whose bar its quote made; null when none is. */
+function quotedAt(inputs: BarInput[], quotes: Record<string, QuoteRow>, symbols: (key: string) => SymbolRow | null | undefined): number | null {
+  const taken = inputs.flatMap(({ key, t }) => (quoteBarDay(quotes[key], symbols(key)) === t ? [quotes[key].fetchedAt] : []));
   return taken.length > 0 ? Math.min(...taken) : null;
 }
 
 /**
- * When a key's latest price was taken (ms): the oldest quote it comes from (`quotedAt`), else the
- * oldest daily sync of the symbols it is made of; null for a key never synced.
+ * When a last bar's price was taken (ms), from what it is made of (`lastInputs`): the oldest quote
+ * it uses (`quotedAt`; a quote of an operand the bar does not reach is not one), else the oldest
+ * daily sync of its inputs; null with an input never synced.
  */
-export function priceTime(key: string, aliases: Record<string, string>, quotes: Record<string, QuoteRow>, symbols: (key: string) => SymbolRow | null | undefined): number | null {
-  const quoted = quotedAt(key, aliases, quotes, symbols);
+export function priceTime(inputs: BarInput[], quotes: Record<string, QuoteRow>, symbols: (key: string) => SymbolRow | null | undefined): number | null {
+  const quoted = quotedAt(inputs, quotes, symbols);
   if (quoted !== null) return quoted;
-  const synced = operands(key, aliases).map((k) => symbols(k)?.syncedAt ?? null);
-  return synced.every((t) => t !== null) ? Math.min(...synced) : null;
+  const synced = inputs.map(({ key }) => symbols(key)?.syncedAt ?? null);
+  return synced.length > 0 && synced.every((t) => t !== null) ? Math.min(...(synced as number[])) : null;
 }
 
 /**
@@ -297,8 +303,11 @@ export function priceTime(key: string, aliases: Record<string, string>, quotes: 
  * after next is overdue. A synthetic key has no sync or session of its own: it is as fresh as the
  * oldest quote its operands' prices come from.
  */
-export function symbolStatus(key: string, aliases: Record<string, string> = {}, quotes = readQuotes()): SymbolStatus {
-  if (isSynthetic(key)) return { syncedAt: null, syncError: null, quotedAt: quotedAt(key, aliases, quotes, getSymbol), session: null };
+export function symbolStatus(key: string, cfg: Config, quotes = readQuotes()): SymbolStatus {
+  if (isSynthetic(key)) {
+    const read = liveReader(quotes);
+    return { syncedAt: null, syncError: null, quotedAt: quotedAt(lastInputs(key, loadDaily(key, cfg.prices, cfg, read), cfg.aliases, read), quotes, getSymbol), session: null };
+  }
   const row = getSymbol(key);
   const quote = quotes[key];
   return { syncedAt: row?.syncedAt ?? null, syncError: row?.syncError ?? null, quotedAt: quote?.fetchedAt ?? null, session: currentSession(quote) };
@@ -329,8 +338,9 @@ export function overviewStats(vault: string, cfg: Config, symbols = listSymbols(
     const read = liveReader(quotes);
     cache = { stamp, rows: {} };
     for (const key of keys) {
-      const stats = computeStats(loadDaily(key, cfg.prices, cfg, read), { currency: symbols[key]?.currency ?? null });
-      if (stats) cache.rows[key] = { stats, quotedAt: quotedAt(key, cfg.aliases, quotes, (k) => symbols[k]) };
+      const bars = loadDaily(key, cfg.prices, cfg, read);
+      const stats = computeStats(bars, { currency: symbols[key]?.currency ?? null });
+      if (stats) cache.rows[key] = { stats, quotedAt: quotedAt(lastInputs(key, bars, cfg.aliases, read), quotes, (k) => symbols[k]) };
     }
     state.overview.set(vault, cache);
     writeStats(vault, Object.fromEntries(Object.entries(cache.rows).map(([key, row]) => [key, row.stats])));

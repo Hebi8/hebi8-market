@@ -2,7 +2,7 @@
 import type { AlertCheck, AlertCond, AlertCondition, AlertTrigger } from "./alert-conds";
 import { ALERT_CHECKS, ALERT_CONDS, WATCHLIST, conditionLevels } from "./alert-conds";
 import { adoptConditionState, alertFiredAt, alertKeys, readState, stateId } from "./alerts";
-import { loadDaily, type DailyReader } from "./bars";
+import { lastInputs, loadDaily, type DailyReader } from "./bars";
 import { checkNote, describeAlert, isLive, type AlertDef, type Config } from "./config";
 import { nameOf } from "./names";
 import { liveReader, priceTime } from "./quotes";
@@ -49,7 +49,8 @@ export interface AlertView {
  */
 export function latestPrice(key: string, cfg: Config, quotes = readQuotes(), symbols: (key: string) => SymbolRow | null | undefined = getSymbol, read: DailyReader = liveReader(quotes)): { price: number | null; at: number | null } {
   try {
-    return { price: loadDaily(key, cfg.prices, cfg, read).at(-1)?.c ?? null, at: priceTime(key, cfg.aliases, quotes, symbols) };
+    const bars = loadDaily(key, cfg.prices, cfg, read);
+    return { price: bars.at(-1)?.c ?? null, at: priceTime(lastInputs(key, bars, cfg.aliases, read), quotes, symbols) };
   } catch {
     // a broken synthetic expression (an alias since removed) has neither; the chart says why
     return { price: null, at: null };

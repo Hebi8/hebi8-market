@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
       exchange: row?.exchange ?? null,
       bench: item?.bench ?? null,
       calendar: calendarOfRow(row),
-      ...symbolStatus(key, config.aliases),
+      ...symbolStatus(key, config),
       lastDay: daily[daily.length - 1].t * 1000,
     },
     pricePrecision: pricePrecision(daily[daily.length - 1].c),

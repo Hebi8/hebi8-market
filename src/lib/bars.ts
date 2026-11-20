@@ -49,6 +49,21 @@ export function loadDaily(key: string, prices: Prices, cfg: Config, read: DailyR
   return evalSynth(synth, series);
 }
 
+/** An input of a key's last daily bar: the symbol (a real key itself, else an operand) and the day of the bar of it used. */
+export type BarInput = { key: string; t: number };
+
+/**
+ * What the last of a key's daily bars is made of: a real key's own bar; a synthetic key's bar is
+ * on its first operand's day, with each other operand's bar of that day or the last one before
+ * (forward-filled, `evalSynth`). Empty without bars.
+ */
+export function lastInputs(key: string, bars: Bar[], aliases: Record<string, string>, read: DailyReader = readDaily): BarInput[] {
+  const last = bars.at(-1);
+  if (!last) return [];
+  if (!isSynthetic(key)) return [{ key, t: last.t }];
+  return parseSynth(key.slice(1), aliases).keys.map((k) => ({ key: k, t: read(k).findLast((b) => b.t <= last.t)!.t }));
+}
+
 /** Why a synthetic key has no bars: each operand without any, with its sync error. */
 export function synthNoData(key: string, cfg: Config, syncError: (key: string) => string | null, read: DailyReader = readDaily): string {
   const missing = parseSynth(key.slice(1), cfg.aliases).keys.filter((k) => read(k).length === 0);
