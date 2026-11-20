@@ -25,8 +25,8 @@ export interface StateRow {
   firedBar: number | null;
   /** When it last fired (ms), as committed */
   firedAt?: number | null;
-  /** The days of the inputs of the last daily bar the check that wrote this row saw (`lastInputs`); a check where any is older is not taken */
-  seen?: number[] | null;
+  /** The day of each input of the last daily bar the check that wrote this row saw, by key (`lastInputs`); a check where one of them is older is not taken */
+  seen?: Record<string, number> | null;
 }
 
 type Decision = { fire: boolean; next: StateRow | null };
@@ -75,8 +75,8 @@ interface Check {
   notify: boolean;
   /** The bars it was judged on, for the price in the message */
   read: DailyReader;
-  /** How far those bars go: the days of the inputs of the last one (`lastInputs`) */
-  seen: number[];
+  /** How far those bars go: the day of each input of the last one, by key (`lastInputs`) */
+  seen: Record<string, number>;
   decide: (row: StateRow | undefined) => Decision;
 }
 
@@ -99,10 +99,10 @@ function checks(cfg: Config, pass: AlertPass, live: DailyReader, who: string): C
   const closed = closedReader();
   // formulas on the same symbol, bars and timeframe share the loaded series
   const caches = new Map<string, SeriesCache>();
-  const seen = new Map<string, number[]>();
+  const seen = new Map<string, Record<string, number>>();
   const seenOf = (key: string, check: string, read: DailyReader) => {
     const id = `${check}\u0000${key}`;
-    if (!seen.has(id)) seen.set(id, lastInputs(key, loadDaily(key, cfg.prices, cfg, read), cfg.aliases, read).map((input) => input.t));
+    if (!seen.has(id)) seen.set(id, Object.fromEntries(lastInputs(key, loadDaily(key, cfg.prices, cfg, read), cfg.aliases, read).map((input) => [input.key, input.t])));
     return seen.get(id)!;
   };
   for (const alert of cfg.alerts) {
@@ -151,7 +151,7 @@ export function readState(vault: string): Map<string, StateRow> {
     fired_at: number | null;
     seen: string | null;
   }[];
-  return new Map(rows.map((r) => [stateId(r.rule, r.key), { state: r.state ?? 0, firedBar: r.fired_bar, firedAt: r.fired_at, seen: r.seen === null ? null : (JSON.parse(r.seen) as number[]) }]));
+  return new Map(rows.map((r) => [stateId(r.rule, r.key), { state: r.state ?? 0, firedBar: r.fired_bar, firedAt: r.fired_at, seen: r.seen === null ? null : (JSON.parse(r.seen) as Record<string, number>) }]));
 }
 
 /** Rows of an alert that left the yaml, or of a symbol it no longer covers, start over (old `cond:` rows included). */
@@ -165,7 +165,7 @@ function writeState(vault: string, updates: { rule: string; key: string; row: St
   const remove = db.prepare("DELETE FROM alert_state WHERE vault = ? AND rule = ? AND key = ?");
   db.transaction(() => {
     for (const u of updates) {
-      upsert.run({ vault, rule: u.rule, key: u.key, state: u.row.state, firedBar: u.row.firedBar, firedAt: u.fired ? Date.now() : null, seen: u.row.seen?.length ? JSON.stringify(u.row.seen) : null });
+      upsert.run({ vault, rule: u.rule, key: u.key, state: u.row.state, firedBar: u.row.firedBar, firedAt: u.fired ? Date.now() : null, seen: u.row.seen && Object.keys(u.row.seen).length > 0 ? JSON.stringify(u.row.seen) : null });
     }
     for (const r of all) if (!keep.has(stateId(r.rule, r.key))) remove.run(vault, r.rule, r.key);
   })();
@@ -305,9 +305,10 @@ async function judge(vault: VaultRef, loadConfig: () => Config, pass: AlertPass,
       }
       // bars older than the ones the row was last judged on (a sync that failed or did not bring
       // today's bar, between two quote rounds; for a synthetic key, any operand's) are not news:
-      // they neither fire nor turn it off
+      // they neither fire nor turn it off. Only the same symbol is compared: an alias pointed at
+      // another symbol starts it over.
       const was = row?.seen;
-      if (was && was.length === c.seen.length && c.seen.some((t, i) => t < was[i])) continue;
+      if (was && Object.entries(c.seen).some(([key, t]) => key in was && t < was[key])) continue;
       const { fire, next } = c.decide(row);
       if (next) updates.push({ rule: c.rule, key: c.key, row: { ...next, seen: c.seen }, fired: fire, notify: c.notify });
       if (!fire) continue;

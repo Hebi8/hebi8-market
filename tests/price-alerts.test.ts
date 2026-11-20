@@ -729,8 +729,8 @@ describe("quote polling", () => {
       await quote(99);
       // the daily sync fails: its pass sees the old bar, where both would hold again, and is not taken
       await runAlerts(vault, () => readConfig(root));
-      expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 0, firedBar: today, seen: [today] });
-      expect(readState("").get(stateId("alert:level", BTC))).toMatchObject({ state: 0, firedBar: today, seen: [today] });
+      expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 0, firedBar: today, seen: { [BTC]: today } });
+      expect(readState("").get(stateId("alert:level", BTC))).toMatchObject({ state: 0, firedBar: today, seen: { [BTC]: today } });
       await quote(99);
       await quote(101);
       expect(fired()).toHaveLength(1);
@@ -764,7 +764,7 @@ describe("quote polling", () => {
         await quote(111, 2);
         // the daily sync fails: its pass sees the old bar at 90 and must not take the state back
         await runAlerts(vault, () => readConfig(root));
-        expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 1, seen: [d0 + 2 * DAY] });
+        expect(readState("").get(stateId("alert:formula", BTC))).toMatchObject({ state: 1, seen: { [BTC]: d0 + 2 * DAY } });
         await quote(112, 2, 5);
         expect(fired()).toHaveLength(1);
       } finally {
@@ -776,9 +776,9 @@ describe("quote polling", () => {
     // SPY trades Monday to Friday, BTC every day; T0 is a Monday
     const synthetic = [
       // SPY's last synced bar is Thursday's 90 while a quote makes its Friday 110; BTC has bars through Saturday
-      { key: `=${SPY}/BTC`, quoted: SPY, bars: { [SPY]: [bar(120, 2), bar(90, 3)], [BTC]: [2, 3, 4, 5].map((i) => bar(1, i)) }, quote: bar(110, 4), seen: [4, 4] },
+      { key: `=${SPY}/BTC`, quoted: SPY, bars: { [SPY]: [bar(120, 2), bar(90, 3)], [BTC]: [2, 3, 4, 5].map((i) => bar(1, i)) }, quote: bar(110, 4), seen: { [SPY]: 4, [BTC]: 4 } },
       // BTC's Saturday is a quote at 110 over SPY's Thursday (forward-filled); the synced bars end on BTC's Friday at 90
-      { key: `=BTC/${SPY}`, quoted: BTC, bars: { [BTC]: [bar(120, 2), bar(120, 3), bar(90, 4)], [SPY]: [bar(1, 2), bar(1, 3)] }, quote: bar(110, 5), seen: [5, 3] },
+      { key: `=BTC/${SPY}`, quoted: BTC, bars: { [BTC]: [bar(120, 2), bar(120, 3), bar(90, 4)], [SPY]: [bar(1, 2), bar(1, 3)] }, quote: bar(110, 5), seen: { [BTC]: 5, [SPY]: 3 } },
     ];
     it.each(synthetic.flatMap((c) => ["D", "W"].map((tf) => ({ ...c, tf }))))(
       "$key on $tf: a sync that brings an operand's older bar is no new fall",
@@ -793,7 +793,7 @@ describe("quote polling", () => {
         const withQuote = (k: string) => (k === quoted ? [...readDaily(k), quote] : readDaily(k));
         await runAlerts(vault, () => readConfig(root), "quotes", withQuote);
         const id = stateId("alert:low", key);
-        const days = seen.map((i) => T0 + i * DAY);
+        const days = Object.fromEntries(Object.entries(seen).map(([k, i]) => [k, T0 + i * DAY]));
         expect(readState("").get(id)).toMatchObject({ state: 0, seen: days });
         // the daily sync without the quoted day: an older bar of an operand, not a fall below 100
         await runAlerts(vault, () => readConfig(root));
@@ -990,6 +990,24 @@ describe("quote polling", () => {
       expect(btc).toMatchObject({ price: 150, priceAt: fetchedAt });
       expect(synthetic.price).toBeCloseTo(150 / 4100);
       expect(synthetic.priceAt).toBe(fetchedAt);
+    });
+
+    it("an alias pointed at another symbol is judged on that one's bars, not held back by the old one's day", async () => {
+      const { runAlerts } = await import("@/lib/alerts");
+      const { readConfig } = await import("@/lib/vault");
+      const { writeBars } = await import("@/lib/store");
+      // SPY's last bar is Friday's 90; NVDA's is Thursday's 110
+      writeBars(SPY, [bar(90, 3), bar(90, 4)], "replace");
+      writeBars("yahoo:NVDA", [bar(110, 2), bar(110, 3)], "replace");
+      const yaml = (target: string) => `aliases:\n  PICK: ${target}\nalerts:\n  - { id: pick, key: "=PICK", when: "close > 100", check: price }\n`;
+      fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml(SPY));
+      const vault = { id: "", dir: root, config: readConfig(root) };
+      const logs = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      await runAlerts(vault, () => readConfig(root));
+      fs.writeFileSync(path.join(root, "hebi8.yaml"), yaml("yahoo:NVDA"));
+      await runAlerts(vault, () => readConfig(root));
+      expect(logs.mock.calls.flat().filter((m) => /new alert\(s\)/.test(String(m)))).toEqual([expect.stringContaining("1 new alert(s)")]);
+      logs.mockRestore();
     });
 
     it("a synthetic symbol's price is not dated by a quote its last bar does not use", async () => {

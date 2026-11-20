@@ -181,9 +181,9 @@ const MIGRATIONS: ((db: Database.Database) => void)[] = [
   (db) =>
     db.exec(`
       -- What the last daily bar the accepted check of an alert row saw is made of (src/lib/alerts.ts):
-      -- the day of each input's bar, a JSON array ([t] for a real key, one per operand for a
-      -- synthetic one). A check where any input is older (a sync that failed, between two quote
-      -- rounds) changes nothing.
+      -- the day of each input's bar by its key, a JSON object (the key itself for a real key, each
+      -- operand for a synthetic one). A check where one of them is older (a sync that failed,
+      -- between two quote rounds) changes nothing.
       ALTER TABLE alert_state ADD COLUMN seen TEXT;
     `),
   (db) =>
