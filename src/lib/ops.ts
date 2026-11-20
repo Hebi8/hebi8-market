@@ -15,8 +15,9 @@ import { isCJK } from "./search";
 import { isSynthetic, isTimeframe, isValidKey, type Timeframe } from "./symbols";
 import { syncOne } from "./sync";
 import { parseSynth } from "./synth";
-import { JOURNAL_TEMPLATE, flowNode, groupNode, locateEntry, readConfig, readJournal, readNote, seqOf, setList, updateConfig, writeJournal, writeNote } from "./vault";
+import { JOURNAL_TEMPLATE, editGroups, flowNode, groupNode, readConfig, readJournal, readNote, seqOf, setList, updateConfig, writeJournal, writeNote } from "./vault";
 import type { Viewer } from "./viewer";
+import type { WatchlistOp } from "./watchlist";
 import { isWeekId } from "./week";
 import { wellKnownName } from "./wellknown";
 
@@ -76,12 +77,14 @@ export async function addSymbol({ dir }: Viewer, input: AddSymbolInput): Promise
   });
 }
 
-/** Take a key (aliases resolved by the caller) out of the watchlist; one that is not there is left alone. */
-export function removeSymbol({ dir }: Viewer, key: string): void {
-  updateConfig(dir, (doc) => {
-    const found = locateEntry(doc, key, readConfig(dir).aliases);
-    if (found) found.symbols.delete(found.index);
-  });
+/**
+ * One edit of the watchlist's groups (move or remove a symbol; add, move, rename or delete a
+ * group), by the rules the page shows it with at once (`applyOp`), so the yaml ends up as shown.
+ * Keys are resolved by the caller; removing one that is not there leaves the list alone.
+ */
+export function editWatchlist({ dir }: Viewer, op: WatchlistOp): void {
+  const aliases = readConfig(dir).aliases;
+  updateConfig(dir, (doc) => editGroups(doc, op, aliases));
 }
 
 // ---------------------------------------------------------------------------- notes and journal

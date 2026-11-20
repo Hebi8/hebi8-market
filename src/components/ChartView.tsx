@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
-import { addSymbol, deleteIndicator, loadSymbol, removeSymbol, saveChartState, saveIndicator, setChartPrefs } from "@/app/actions";
+import { addSymbol, deleteIndicator, editWatchlist, loadSymbol, saveChartState, saveIndicator, setChartPrefs } from "@/app/actions";
 import type { AlertView } from "@/lib/alert-view";
 import { INDICATORS } from "@/indicators/catalog";
 import { compileFormula, formulaIndicatorName, formulaTemplate, isFormulaIndicator } from "@/indicators/formula-indicators";
@@ -701,7 +701,7 @@ export function ChartView({
     const result = await addSymbol({ key: symbolKey, group });
     if (!result.ok) return setMessage(result.error);
     setMessage(null);
-    toast(`已把 ${name} 加入「${group}」`, { action: { label: "撤销", onClick: () => void removeSymbol(symbolKey).then(report) } });
+    toast(`已把 ${name} 加入「${group}」`, { action: { label: "撤销", onClick: () => void editWatchlist({ type: "removeSymbol", key: symbolKey }).then(report) } });
   };
   const paramDef = dialog?.kind === "params" ? INDICATORS.find((d) => d.name === dialog.name) : undefined;
 

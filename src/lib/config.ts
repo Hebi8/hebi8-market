@@ -6,6 +6,7 @@ import { CHANGE_PERIODS, DEFAULT_PERIODS, MAX_PERIODS, type ChangePeriod } from 
 import type { Prices } from "./series";
 import { DATA_ID, TF_LABELS, hash6, isSynthetic, isTimeframe, isValidKey, tickerOf, type Timeframe } from "./symbols";
 import { parseSynth, synthName } from "./synth";
+import { groupNames } from "./watchlist";
 
 export type UpDown = "green-up" | "red-up";
 export type ChartStyle = "candle_solid" | "candle_up_stroke" | "ohlc" | "area";
@@ -161,11 +162,15 @@ function checkKey(key: string, aliases: Record<string, string>, where: string): 
   }
 }
 
+/** A group's `name` as the yaml has it, trimmed; null for none. */
+export const writtenGroupName = (name: unknown) => text(name);
+
 function parseGroups(raw: unknown, aliases: Record<string, string>): Group[] {
   const seen = new Map<string, string>();
+  const names = groupNames(list(raw).map((g) => text(obj(g).name)));
   return list(raw).map((g, gi) => {
     const group = obj(g);
-    const name = text(group.name) ?? `组 ${gi + 1}`;
+    const name = names[gi];
     const symbols = list(group.symbols).map((s, si) => {
       const where = `groups[${gi}].symbols[${si}]`;
       const entry = typeof s === "string" ? { key: s } : obj(s);

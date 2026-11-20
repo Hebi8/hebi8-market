@@ -2,7 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { addSymbol, removeSymbol } from "@/app/actions";
+import { addSymbol, editWatchlist } from "@/app/actions";
 import type { SearchContext } from "@/lib/search";
 import { IconHelp } from "./chart-icons";
 import { AccountPanel } from "./AccountPanel";
@@ -221,7 +221,7 @@ export function UiProvider({
       action: {
         label: "撤销",
         onClick: () => {
-          void removeSymbol(d.key).then((r) => {
+          void editWatchlist({ type: "removeSymbol", key: d.key }).then((r) => {
             if (r.ok) toast(`已移除 ${d.name}`);
             else toast(r.error, { kind: "error" });
           });

@@ -10,8 +10,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isMap, isScalar, isSeq, parse, parseDocument, type Document, type YAMLMap, type YAMLSeq } from "yaml";
-import { ConfigError, INSTANCE_KEYS, isLogin, normalizeConfig, normalizeUserConfig, resolveKey, type Config } from "./config";
+import { ConfigError, INSTANCE_KEYS, isLogin, normalizeConfig, normalizeUserConfig, resolveKey, writtenGroupName, type Config } from "./config";
 import { fileKey, hash6, isValidKey } from "./symbols";
+import { applyOp, groupNames, opError, type WatchlistOp } from "./watchlist";
 import { isWeekId } from "./week";
 
 /** The root vault: the single user's, or the owner's on a shared instance. */
@@ -221,18 +222,56 @@ export function locateEntry(doc: Document, key: string, aliases: Record<string, 
   return null;
 }
 
-/** A group's name as the page shows it: an unnamed one is「组 N」, like the config reader says. */
-export const groupName = (group: unknown, index: number) => (isMap(group) && String(group.get("name") ?? "").trim()) || `组 ${index + 1}`;
+/** The `groups` list's names as the page shows them (`groupNames`, the same as the config reader). */
+const shownNames = (groups: YAMLSeq) => groupNames(groups.items.map((g) => writtenGroupName(isMap(g) ? g.get("name") : null)));
 
 /** The group shown as `name`, added at the end when there is none. */
 export function groupNode(doc: Document, name: string): YAMLMap {
   const groups = seqOf(doc.contents as YAMLMap, "groups", doc);
-  let node = groups.items.find((g, i) => isMap(g) && groupName(g, i) === name) as YAMLMap | undefined;
-  if (!node) {
+  let node = groups.items[shownNames(groups).indexOf(name)] as YAMLMap | undefined;
+  if (!isMap(node)) {
     node = doc.createNode({ name, symbols: [] }) as YAMLMap;
     groups.add(node);
   }
   return node;
+}
+
+/**
+ * Apply a watchlist edit to the yaml with the page's own rules (`applyOp`): the groups and their
+ * entries are taken as the nodes they are, so comments, aliases and fields go wherever the edit
+ * puts them, and the result is written back in that order. A group whose shown name would change
+ * when read again (an unnamed one that moved, one renamed) gets the name it is shown with written
+ * down, so the next edit finds the same group. Throws what `opError` says.
+ */
+export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<string, string>): void {
+  const seq = seqOf(doc.contents as YAMLMap, "groups", doc);
+  const names = shownNames(seq);
+  const groups = seq.items.map((node, i) => {
+    const symbols = isMap(node) ? node.get("symbols") : null;
+    const entries = isSeq(symbols) ? symbols.items : [];
+    return { name: names[i], node, items: entries.map((entry) => ({ key: entryKey(entry, aliases)!, entry })) };
+  });
+  const error = opError(groups, op);
+  if (error) throw new Error(error);
+  const next = applyOp(groups, op);
+  seq.items = next.map((g) => {
+    const node = isMap(g.node) ? g.node : (doc.createNode({ name: g.name, symbols: [] }) as YAMLMap);
+    const symbols = seqOf(node, "symbols", doc);
+    const after = g.items.map((i) => i.entry);
+    const kept = symbols.items.filter((entry) => after.includes(entry));
+    // `[GOLD]` becomes a block list once it takes an entry or changes order, so an entry with a comment stays on one line
+    if (after.length !== kept.length || after.some((entry, i) => entry !== kept[i])) symbols.flow = false;
+    symbols.items = after;
+    return node;
+  });
+  for (let shown = shownNames(seq); shown.some((name, i) => name !== next[i].name); shown = shownNames(seq)) {
+    seq.items.forEach((node, i) => {
+      if (shown[i] === next[i].name) return;
+      const own = (node as YAMLMap).get("name", true);
+      if (isScalar(own)) own.value = next[i].name;
+      else (node as YAMLMap).items.unshift(doc.createPair("name", next[i].name));
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------- per-key files

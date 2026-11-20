@@ -452,7 +452,7 @@ export const TOOLS: Tool[] = [
       const cfg = readConfig(viewer.dir);
       const key = keyOf(cfg, args.key);
       if (!findItem(cfg, key)) throw new Error(`${key} 不在自选里`);
-      ops.removeSymbol(viewer, key);
+      ops.editWatchlist(viewer, { type: "removeSymbol", key });
       return { removed: key };
     },
   }),

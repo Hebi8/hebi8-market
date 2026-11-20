@@ -166,8 +166,8 @@ describe("Server Actions write as the viewer", () => {
   const note = (vaultDir: string) => path.join(vaultDir, "notes", "binance_BTCUSDT.md");
 
   it("refuses visitors who are not logged in on a shared instance", async () => {
-    const { saveNote, saveJournal, setUpdown, removeSymbol } = await import("@/app/actions");
-    for (const result of [await saveNote("binance:BTCUSDT", "x"), await saveJournal("2026-W41", "x"), await setUpdown("red-up"), await removeSymbol("binance:BTCUSDT")]) {
+    const { editWatchlist, saveNote, saveJournal, setUpdown } = await import("@/app/actions");
+    for (const result of [await saveNote("binance:BTCUSDT", "x"), await saveJournal("2026-W41", "x"), await setUpdown("red-up"), await editWatchlist({ type: "removeSymbol", key: "binance:BTCUSDT" })]) {
       expect(result).toEqual({ ok: false, error: "请先登录" });
     }
     expect(fs.existsSync(note(root))).toBe(false);
