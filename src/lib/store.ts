@@ -103,8 +103,19 @@ export function lastClose(key: string): number | null {
   return row?.c ?? null;
 }
 
+// Every write of bars, quotes or a symbol's sync goes through this process (the scheduler and the
+// quote polling run in it), so a counter here tells a reader whether any changed since it looked.
+const globalForVersion = globalThis as unknown as { hebi8MarketVersion?: number };
+const changed = () => {
+  globalForVersion.hebi8MarketVersion = (globalForVersion.hebi8MarketVersion ?? 0) + 1;
+};
+
+/** Goes up with every write of bars, quotes or a symbol's sync state; caches computed from them compare it. */
+export const marketVersion = () => globalForVersion.hebi8MarketVersion ?? 0;
+
 export function writeBars(key: string, bars: Bar[], mode: "replace" | "merge"): void {
   const db = getDb();
+  changed();
   const insert = db.prepare("INSERT OR REPLACE INTO bars (key, t, o, h, l, c, v, adj) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   db.transaction(() => {
     if (mode === "replace") db.prepare("DELETE FROM bars WHERE key = ?").run(key);
@@ -116,6 +127,7 @@ export function writeBars(key: string, bars: Bar[], mode: "replace" | "merge"): 
 }
 
 export function markSynced(key: string, meta: SourceMeta): void {
+  changed();
   getDb()
     .prepare(
       `UPDATE symbols SET synced_at = @now, sync_error = NULL,
@@ -139,6 +151,7 @@ export function markSynced(key: string, meta: SourceMeta): void {
 }
 
 export function markSyncError(key: string, message: string): void {
+  changed();
   getDb().prepare("UPDATE symbols SET sync_error = ? WHERE key = ?").run(message, key);
 }
 
@@ -181,6 +194,7 @@ export interface QuoteRow extends Quote {
 
 export function writeQuotes(rows: QuoteRow[]): void {
   const db = getDb();
+  changed();
   const upsert = db.prepare(
     `INSERT OR REPLACE INTO quotes (key, price, time, day_open, day_high, day_low, day_volume, session, fetched_at)
      VALUES (@key, @price, @time, @dayOpen, @dayHigh, @dayLow, @dayVolume, @session, @fetchedAt)`,

@@ -15,7 +15,7 @@ import { QUOTE_ROUND_MS, QUOTE_SLOW_MS, quoteIsCurrent, scheduledSession, sessio
 import { adapters } from "./sources";
 import type { Quote, QuoteSession } from "./sources/types";
 import { computeStats, type Stats } from "./stats";
-import { calendarOfRow, getSymbol, lastClose, listSymbols, readDaily, readQuotes, writeQuotes, writeStats, type QuoteRow, type SymbolRow } from "./store";
+import { calendarOfRow, getSymbol, lastClose, listSymbols, marketVersion, readDaily, readQuotes, writeQuotes, writeStats, type QuoteRow, type SymbolRow } from "./store";
 import { isSynthetic, isValidKey, parseKey, type Source } from "./symbols";
 import { operands } from "./synth";
 import { localDay } from "./time";
@@ -323,7 +323,7 @@ function currentSession(quote: QuoteRow | undefined): QuoteSession | null {
  * chart's watchlist panel and MCP `overview` read. Computed on the bars the chart and the alerts
  * see, so a row whose price comes from a quote (its own, or for a synthetic row an operand's,
  * wherever `withQuote` takes it) has its changes on today's live bar. Kept in memory per vault for
- * as long as the newest quote, the newest sync, `prices`, the list and the aliases stay the same,
+ * as long as the bars, quotes and syncs (`marketVersion`), `prices`, the list and the aliases stay the same,
  * and written to the `stats` table when computed; a quote round and a daily sync compute it ahead,
  * so a page view reads no bars. `status` is set for a row whose price is a quote, its session only
  * while the quote is current; a synthetic row has none.
@@ -331,8 +331,7 @@ function currentSession(quote: QuoteRow | undefined): QuoteSession | null {
 export function overviewStats(vault: string, cfg: Config, symbols = listSymbols()): Record<string, { stats: Stats; status: SymbolStatus | null }> {
   const quotes = readQuotes();
   const keys = allItems(cfg).map((i) => i.key);
-  const newest = (values: (number | null)[]) => Math.max(0, ...values.map((v) => v ?? 0));
-  const stamp = JSON.stringify([newest(Object.values(quotes).map((q) => q.fetchedAt)), newest(Object.values(symbols).map((s) => s.syncedAt)), cfg.prices, keys, cfg.aliases]);
+  const stamp = JSON.stringify([marketVersion(), cfg.prices, keys, cfg.aliases]);
   let cache = state.overview.get(vault);
   if (cache?.stamp !== stamp) {
     const read = liveReader(quotes);

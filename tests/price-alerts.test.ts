@@ -929,6 +929,25 @@ describe("quote polling", () => {
       reads.mockRestore();
     });
 
+    it("the overview follows a sync that lands in the same millisecond as the one before", async () => {
+      const { overviewStats } = await import("@/lib/quotes");
+      const { getDb } = await import("@/lib/db");
+      const store = await import("@/lib/store");
+      getDb().prepare("DELETE FROM quotes").run();
+      const cfg = normalizeConfig({ groups: [{ name: "all", symbols: [BTC] }] });
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        store.writeBars(BTC, closes(4, 5), "replace");
+        store.markSynced(BTC, {});
+        expect(overviewStats("", cfg)[BTC].stats.last).toBe(5);
+        store.writeBars(BTC, closes(4, 7), "replace");
+        store.markSynced(BTC, {});
+        expect(overviewStats("", cfg)[BTC].stats.last).toBe(7);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("the overview leaves a quote for a day before the last bar alone: no tag, the daily close", async () => {
       const { liveReader, overviewStats } = await import("@/lib/quotes");
       const { writeBars, writeQuotes } = await import("@/lib/store");
