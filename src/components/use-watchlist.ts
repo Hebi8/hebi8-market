@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useOptimistic, useRef, useTransition } from "react";
-import { addGroup, addSymbol, deleteGroup, moveGroup, moveSymbol, removeSymbol, renameGroup, type ActionResult } from "@/app/actions";
+import { addSymbol, editWatchlist } from "@/app/actions";
 import { useLocalStorage } from "@/lib/use-local-storage";
-import { applyOp, COLLAPSED_KEY, mergeTarget, type ListGroup, type WatchlistOp } from "@/lib/watchlist";
+import { applyOp, COLLAPSED_KEY, mergeTarget, opError, type ListGroup, type WatchlistOp } from "@/lib/watchlist";
 import { useUi } from "./UiProvider";
 import { useDragSort } from "./use-drag-sort";
 
@@ -17,8 +17,9 @@ export interface Removable {
 
 /**
  * The watchlist's groups as the overview and the chart's panel edit them: every change shows at
- * once and is written to the yaml by a Server Action; a failure puts the server's order back and
- * says why. Folded groups are remembered in the browser.
+ * once and is written to the yaml by `editWatchlist`, which applies the same edit with the same
+ * rules; one the rules refuse is not sent, and says why at once. A failure on the server puts its
+ * order back and says why. Folded groups are remembered in the browser.
  */
 export function useWatchlist<T extends { key: string }>(groups: ListGroup<T>[], { readOnly, sorted = false }: { readOnly: boolean; sorted?: boolean }) {
   const { toast } = useUi();
@@ -31,19 +32,22 @@ export function useWatchlist<T extends { key: string }>(groups: ListGroup<T>[], 
     latestCollapsed.current = collapsed;
   });
 
-  const run = (op: WatchlistOp, action: () => Promise<ActionResult>, done?: () => void) =>
+  const run = (op: WatchlistOp, done?: () => void) => {
+    const error = opError(list, op);
+    if (error) return toast(error, { kind: "error" });
     startTransition(async () => {
       apply(op);
-      const result = await action();
+      const result = await editWatchlist(op);
       if (result.ok) done?.();
       else toast(result.error, { kind: "error" });
     });
+  };
 
   const edit = {
-    moveSymbol: (key: string, group: string, index: number) => run({ type: "moveSymbol", key, group, index }, () => moveSymbol(key, group, index)),
+    moveSymbol: (key: string, group: string, index: number) => run({ type: "moveSymbol", key, group, index }),
     /** Gone at once, with a toast that puts it back at the end of its group (the first fetch of `addSymbol` included). */
     removeSymbol: (item: Removable, group: string) =>
-      run({ type: "removeSymbol", key: item.key }, () => removeSymbol(item.key), () =>
+      run({ type: "removeSymbol", key: item.key }, () =>
         toast(`已移除 ${item.name}`, {
           action: {
             label: "撤销",
@@ -54,17 +58,17 @@ export function useWatchlist<T extends { key: string }>(groups: ListGroup<T>[], 
           },
         }),
       ),
-    moveGroup: (name: string, index: number) => run({ type: "moveGroup", name, index }, () => moveGroup(name, index)),
-    addGroup: (name: string) => run({ type: "addGroup", name }, () => addGroup(name)),
+    moveGroup: (name: string, index: number) => run({ type: "moveGroup", name, index }),
+    addGroup: (name: string) => run({ type: "addGroup", name }),
     renameGroup: (name: string, next: string) =>
-      run({ type: "renameGroup", name, next }, () => renameGroup(name, next), () => {
+      run({ type: "renameGroup", name, next }, () => {
         const now = latestCollapsed.current;
         if (now.includes(name)) setCollapsed(now.map((n) => (n === name ? next : n)));
       }),
     deleteGroup: (name: string) => {
       const into = mergeTarget(list, name);
       const count = list.find((g) => g.name === name)?.items.length ?? 0;
-      run({ type: "deleteGroup", name }, () => deleteGroup(name), () => toast(count && into ? `已删除分组「${name}」，${count} 个标的并入「${into}」` : `已删除分组「${name}」`));
+      run({ type: "deleteGroup", name }, () => toast(count && into ? `已删除分组「${name}」，${count} 个标的并入「${into}」` : `已删除分组「${name}」`));
     },
   };
 

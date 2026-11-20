@@ -178,6 +178,21 @@ const MIGRATIONS: ((db: Database.Database) => void)[] = [
         at    INTEGER NOT NULL
       );
     `),
+  (db) =>
+    db.exec(`
+      -- What the last daily bar the accepted check of an alert row saw is made of (src/lib/alerts.ts):
+      -- the day of each input's bar by its key, a JSON object (the key itself for a real key, each
+      -- operand for a synthetic one). A check on the same symbols where one of them is older (a
+      -- sync that failed, between two quote rounds) changes nothing.
+      ALTER TABLE alert_state ADD COLUMN seen TEXT;
+    `),
+  (db) =>
+    db.exec(`
+      -- When the last syncAll that went through every vault started (ms), one row: the scheduled
+      -- times at or before it are covered, so a restart catches up from here (src/lib/scheduler.ts).
+      -- A symbol synced on its own does not count.
+      CREATE TABLE full_sync (started_at INTEGER NOT NULL);
+    `),
 ];
 
 const dbFile = () => process.env.HEBI8_DB ?? path.join(process.cwd(), "data", "hebi8.db");

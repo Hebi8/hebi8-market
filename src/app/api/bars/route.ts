@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { BarsResponse } from "@/lib/api-types";
 import { loadChart, synthNoData, type ChartData } from "@/lib/bars";
 import { findItem } from "@/lib/config";
+import { nameOf } from "@/lib/names";
 import { pricePrecision } from "@/lib/stats";
 import { liveReader, symbolStatus } from "@/lib/quotes";
 import { calendarOfRow, getSymbol } from "@/lib/store";
@@ -41,14 +42,14 @@ export async function GET(request: NextRequest) {
   const body: BarsResponse = {
     symbol: {
       key,
-      name: item?.name ?? row?.name ?? (isSynthetic(key) ? synthName(key) : parseKey(key).ticker),
+      name: nameOf(config, key, row?.name),
       source: isSynthetic(key) ? "expr" : parseKey(key).source,
       ticker: isSynthetic(key) ? synthName(key) : parseKey(key).ticker,
       currency: row?.currency ?? null,
       exchange: row?.exchange ?? null,
       bench: item?.bench ?? null,
       calendar: calendarOfRow(row),
-      ...symbolStatus(key, config.aliases),
+      ...symbolStatus(key, config),
       lastDay: daily[daily.length - 1].t * 1000,
     },
     pricePrecision: pricePrecision(daily[daily.length - 1].c),

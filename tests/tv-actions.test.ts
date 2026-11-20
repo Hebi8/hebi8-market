@@ -206,20 +206,20 @@ describe("TradingView drawings", () => {
 
   it("keeps the ids through the chart's saves, and brings back what a stale chart dropped", async () => {
     const { importTvDrawings } = await import("@/app/tv-actions");
-    const { saveChartState } = await import("@/app/actions");
+    const { editChartState } = await import("@/app/actions");
     const { parseTvSources } = await import("@/lib/tv-drawings");
     const { readChartState } = await import("@/lib/vault");
     const drawings = parseTvSources(JSON.stringify(RESPONSE));
     const mine = { name: "segment", points: [{ timestamp: day("2026-09-02") * 1000, value: 100 }, { timestamp: day("2026-09-04") * 1000, value: 101 }] };
     // a chart page opened before the import, with its own drawing
-    expect(await saveChartState("yahoo:NVDA", { compare: [], overlays: [mine] })).toEqual({ ok: true });
+    expect(await editChartState("yahoo:NVDA", { overlays: [mine] })).toEqual({ ok: true });
     await importTvDrawings({ drawings, add: {} });
     const imported = readChartState(root, "yahoo:NVDA").overlays;
     // a chart that has them saves them with their ids
-    expect(await saveChartState("yahoo:NVDA", { compare: [], overlays: imported.slice(0, 3) })).toEqual({ ok: true });
+    expect(await editChartState("yahoo:NVDA", { overlays: imported.slice(0, 3) })).toEqual({ ok: true });
     expect(readChartState(root, "yahoo:NVDA").overlays.map((o) => o.tvId)).toEqual([undefined, "h1", "t1"]);
     // the stale page saves what it had: the imported drawings are gone, and the next import puts them back once
-    expect(await saveChartState("yahoo:NVDA", { compare: [], overlays: [mine] })).toEqual({ ok: true });
+    expect(await editChartState("yahoo:NVDA", { overlays: [mine] })).toEqual({ ok: true });
     const again = await importTvDrawings({ drawings, add: {} });
     expect(again.ok && again.symbols[0]).toMatchObject({ imported: 3, already: 0 });
     expect(readChartState(root, "yahoo:NVDA").overlays.map((o) => o.tvId)).toEqual([undefined, "h1", "t1", "x1"]);
@@ -228,7 +228,7 @@ describe("TradingView drawings", () => {
   });
 
   it("keeps the scale a drawing was drawn on, and only a known one", async () => {
-    const { saveChartState } = await import("@/app/actions");
+    const { editChartState } = await import("@/app/actions");
     const { readChartState } = await import("@/lib/vault");
     const points = [{ timestamp: day("2026-09-02") * 1000, value: 100 }, { timestamp: day("2026-09-04") * 1000, value: 101 }];
     const overlays = [
@@ -237,7 +237,7 @@ describe("TradingView drawings", () => {
       { name: "segment", points, scale: "percent" as unknown as "log" },
       { name: "segment", points },
     ];
-    expect(await saveChartState("yahoo:NVDA", { compare: [], overlays })).toEqual({ ok: true });
+    expect(await editChartState("yahoo:NVDA", { overlays })).toEqual({ ok: true });
     expect(readChartState(root, "yahoo:NVDA").overlays.map((o) => o.scale)).toEqual(["log", "linear", undefined, undefined]);
   });
 

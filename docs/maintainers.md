@@ -1,19 +1,20 @@
 # 维护者说明
 
-给改这个仓库的人看：文档放哪、反馈用的 GitHub App、issue 的标签、分支与发版、正式环境、dev 实例、源码结构和验证命令。数据模型和各模块的设计见 [design.md](design.md)，给 agent 的约定见 [`AGENTS.md`](../AGENTS.md)。
+给改这个仓库的人看：文档放哪、反馈用的 GitHub App、issue 的标签、分支与发版、正式环境、dev 实例、源码结构和验证命令。数据模型和各模块的设计见 [design.md](design.md)，代码地图和各模块要守的约定见 [architecture.md](architecture.md)（英文）。
 
 ## 文档放哪
 
 | 文件 | 写什么 |
 |---|---|
-| [`README.md`](../README.md) | 给第一次来的人：一句话介绍、核心功能各一两句、快速开始、数据源概览、文档索引。不写操作细节 |
+| [`README.md`](../README.md)、[`README.cn.md`](../README.cn.md) | 给第一次来的人，英文和中文各一份：一句话介绍、核心功能各一两句、快速开始、数据源概览、文档索引。不写操作细节 |
 | [`docs/usage.md`](usage.md) | 每项功能的完整操作、快捷键、公式、警报和通知、代码指标、MCP 接入 |
-| [`docs/self-hosting.md`](self-hosting.md) | 生产运行、`deploy.sh`、GitHub Actions 自动部署、环境变量、vault、实例状态、多人共用、网页登录 |
+| [`docs/self-hosting.md`](self-hosting.md) | 生产运行、`deploy.sh`、GitHub Actions 自动部署、环境变量、vault、实例状态、多人共用、放到公网、网页登录 |
+| [`docs/architecture.md`](architecture.md) | 英文：代码地图和各模块要守的约定（vault、viewer、行情和警报、MCP、标的资料、指标）、issue 和分支的流程概要、文档分工、验证命令 |
 | `docs/maintainers.md`（本文） | 文档约定、GitHub App、反馈标签、分支与发版、正式环境、dev 实例、源码结构、验证 |
 | [`docs/design.md`](design.md) | 设计：数据模型、同步、接口、页面行为的规格 |
 | [`CHANGELOG.md`](../CHANGELOG.md) | 每个版本的更新记录，给用的人看；写法见[分支与发版](#分支与发版) |
 
-新功能或改了行为时，操作说明写进 `usage.md`（运维相关写进 `self-hosting.md`），规格写进 `design.md`；README 只在功能列表需要多一行、或快速开始变了时才改。
+新功能或改了行为时，操作说明写进 `usage.md`（运维相关写进 `self-hosting.md`），规格写进 `design.md`；README 只在功能列表需要多一行、或快速开始变了时才改，两个 README 结构一一对应，改一边就同步改另一边。代码里的约定变了（新的不变量、共用的写操作该放哪）改 `architecture.md`。
 
 ## 反馈用的 GitHub App
 
@@ -29,12 +30,12 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 ## 分支与发版
 
-- **`dev`**：日常开发和每日 issue 巡检的修复都经 PR 合进这里，不上线；[dev 实例](#dev-实例)每分钟自己看一次 origin 的 dev，合并后最多约一分钟（加上构建的时间）就更新上去。**进 dev 的 PR** 由巡检协调者在 Codex + Argon 两份审查都通过后自己合并（`gh pr merge <n> --merge --delete-branch`，用户的 gh 身份），用户也可以随时手动合。dev 在 GitHub 上合并，本地的 `dev` 分支会落后：要「基于 dev」或「和 dev 比」的地方一律先 `git fetch origin`，再用 `origin/dev`（脚本都这样做），不要 checkout 或更新本地的 `dev`。
-- **`master`**：线上版本，只经两种 PR 进来：Release PR（`release/vX.Y.Z` → master）和热补丁 PR（`hotfix/vX.Y.Z` → master），**只由用户手动合并**（协调者和 agent 不合），**都用 Create a merge commit 合并**（squash / rebase 会让 master 不再是 dev 的祖先）。**合并就是批准**：推到 master 就触发 Deploy 工作流部署到线上，没有额外的审批。**master 是 dev 的祖先**是发版的前提，但不是时时成立：PR 的合并提交进了 master、还没合回 dev 的这段时间不成立，部署成功后工作流把 master 合回 dev 才恢复。部署失败（或合回卡住）时不会自动合回，要手动补（见下面「部署失败时」），不然下一次 `release.sh` 会因为「origin/master 有 origin/dev 没有的提交」拒绝。GitHub 默认分支仍是 master，提交里的 `Fixes #n` 在合进 master 时关掉 issue。
+- **`dev`**：日常开发和 issue 的修复都经 PR 合进这里，不上线；[dev 实例](#dev-实例)每分钟自己看一次 origin 的 dev，合并后最多约一分钟（加上构建的时间）就更新上去。**进 dev 的 PR** 在两份代码审查都没有 blocking 之后合并（`gh pr merge <n> --merge --delete-branch`，维护者的 gh 身份，见下面的[审查](#审查)），维护者也可以随时手动合。dev 在 GitHub 上合并，本地的 `dev` 分支会落后：要「基于 dev」或「和 dev 比」的地方一律先 `git fetch origin`，再用 `origin/dev`（脚本都这样做），不要 checkout 或更新本地的 `dev`。
+- **`master`**：线上版本，只经两种 PR 进来：Release PR（`release/vX.Y.Z` → master）和热补丁 PR（`hotfix/vX.Y.Z` → master），**只由维护者手动合并**，**都用 Create a merge commit 合并**（squash / rebase 会让 master 不再是 dev 的祖先）。**合并就是批准**：推到 master 就触发 Deploy 工作流部署到线上，没有额外的审批。**master 是 dev 的祖先**是发版的前提，但不是时时成立：PR 的合并提交进了 master、还没合回 dev 的这段时间不成立，部署成功后工作流把 master 合回 dev 才恢复。部署失败（或合回卡住）时不会自动合回，要手动补（见下面「部署失败时」），不然下一次 `release.sh` 会因为「origin/master 有 origin/dev 没有的提交」拒绝。GitHub 默认分支仍是 master，提交里的 `Fixes #n` 在合进 master 时关掉 issue。
 - **版本号**：semver 0.x。minor（`0.Y.0`）= 有新功能，或 vault / `hebi8.yaml` / 密钥目录 / MCP 工具有变化；patch（`0.y.Z`）= 只有修复，热补丁总是 patch。版本号只写在 `package.json`：设置页底部、`/usage`、MCP 的 `serverInfo.version` 和页头「更新」的小圆点都读它。小圆点只为 minor 版本亮，记在浏览器的 localStorage 里，第一次来不亮。
 - **tag 和 Release**：每个版本一个带注释的 tag `vX.Y.Z`，打在部署上线的那个提交上（PR 的合并提交），一个 GitHub Release，正文是 `CHANGELOG.md` 的那一节。由工作流在部署成功后做，身份是 github-actions。
-- **issue 标签 `status:next-release`**：修复合进 dev 时巡检 bot 打上，并评论「已修复，下个版本上线」；发版部署成功后，工作流对**修复确实在这次发布里**的（从上一个 tag 到发布的提交，有提交信息写着 `Fixes #n` / `closes #n` 等）评论「已在 vX.Y.Z 上线」、还开着的关掉、去掉标签；Release PR 切出之后才合进 dev 的修复不在发布里，标签留着，日志里写一行 `kept #n`，等下一个版本。所以修复的提交信息里要有 `Fixes #n`（巡检的修复都有），只写在 PR 正文里不算。
-- **用谁的身份**：开 PR、PR 上的评论（包括审查结论）、合并 PR 都用用户自己的 gh；issue 的标签和评论用巡检 bot（GitHub App「hebi8/market triage」，只有 Issues 读写，不加 Contents / Pull requests 权限；工作流里用 Secrets 里的私钥现取 token，本机用 `~/.local/share/hebi8/triage-token.sh`）。部署工作流里的 tag、Release、合回 dev（含它开的 master → dev PR）用工作流自己的 `GITHUB_TOKEN`。
+- **issue 标签 `status:next-release`**：修复合进 dev 时用 triage bot 打上，并评论「已修复，下个版本上线」；发版部署成功后，工作流对**修复确实在这次发布里**的（从上一个 tag 到发布的提交，有提交信息写着 `Fixes #n` / `closes #n` 等）评论「已在 vX.Y.Z 上线」、还开着的关掉、去掉标签；Release PR 切出之后才合进 dev 的修复不在发布里，标签留着，日志里写一行 `kept #n`，等下一个版本。所以修 issue 的提交信息里都要写 `Fixes #n`，只写在 PR 正文里不算。
+- **用谁的身份**：开 PR、PR 上的评论（包括审查结论）、合并 PR 都用维护者自己的 gh；issue 的标签和评论用 triage bot（GitHub App「hebi8/market triage」，只有 Issues 读写，不加 Contents / Pull requests 权限；工作流里用 Secrets 里的私钥现取 token，本机用 `~/.local/share/hebi8/triage-token.sh`）。部署工作流里的 tag、Release、合回 dev（含它开的 master → dev PR）用工作流自己的 `GITHUB_TOKEN`。
 
 ### 部署工作流
 
@@ -63,18 +64,12 @@ fork 想把反馈收到自己的仓库：建自己的 App，设环境变量 `HEB
 
 ### 审查
 
-每个分支——issue 修复、手动协调的改动、热补丁分支——合进 dev 之前、开热补丁 PR 之前，都要过两份只读审查。Release PR 不用：它的内容都已经在 dev 上审过，只多了版本提交。
+每个分支——issue 修复、其他改动、热补丁分支——合进 dev 之前、开热补丁 PR 之前，都要过两份只读的代码审查，结论贴在 PR 评论里；两边都没有 blocking 再合。Release PR 不用：它的内容都已经在 dev 上审过，只多了版本提交。
 
-| 审查者 | Lody 里的配置 |
-|---|---|
-| Codex | agent config `b5021347-c361-4f9d-ba50-e3526aa4d3cd`，模型 `gpt-6.1-sol`，reasoning high，模式 `agent-auto-review` |
-| Argon | Google Antigravity，agent config `e641018b-df01-4323-a4d8-84c57d48acbe`，`model: gemini-4-argon-high`，`mode: yolo`（default 模式会卡在权限确认上，只读靠提示词：不改文件、不 commit、不 push、不跑部署脚本） |
-
-- **谁开**：每日巡检里由执行 session 开两个子会话（`useCurrentSessionAsParent`，共用它的 worktree）；自己协调的分支由协调者各开一个独立会话（`worktree: true`），两边用同一份审查提示词。
-- **审什么**：先 `git fetch origin`，审分支相对 `origin/dev` 的改动（热补丁相对 `origin/master`），按 blocking / suggestion 分级，结论原样交给协调者。
-- **怎么处理意见**：协调者把两份合在一起，筛掉只是「多加防御性检查」的意见；真问题修完后，由提出它的那个审查者复审，直到两边都没有 blocking。
-- **结论贴在 PR 上**：两份审查（最后一轮的结论，以及修过什么）作为 PR 评论贴上，用户的 gh 身份（`gh pr comment <n> --body-file …`）。
-- **谁合并**：进 dev 的 PR，两边都没有 blocking 后协调者 `gh pr merge <n> --merge --delete-branch`；用户也可以随时自己合。合并后 dev 实例约一分钟内自己拉到（加上构建的几分钟），到没到看 dev 实例那台上的 `journalctl --user -u hebi8-dev-poll`（见 [dev 实例](#dev-实例)）。热补丁 PR 和 Release PR 进 master，只由用户手动合并。
+- **审什么**：先 `git fetch origin`，审分支相对 `origin/dev` 的改动（热补丁相对 `origin/master`），意见分 blocking / suggestion 两级。两份各审各的，只读：不改文件、不提交、不推送、不跑部署脚本。
+- **怎么处理意见**：两份合在一起看，只是「多加防御性检查」的意见不采纳；真问题修完后，由提出它的那一份复审，直到两边都没有 blocking。
+- **结论贴在 PR 上**：两份审查最后一轮的结论，以及修过什么，作为 PR 评论贴上，维护者的 gh 身份（`gh pr comment <n> --body-file …`）。
+- **谁合并**：进 dev 的 PR，两边都没有 blocking 后 `gh pr merge <n> --merge --delete-branch`；维护者也可以随时自己合。合并后 dev 实例约一分钟内自己拉到（加上构建的几分钟），到没到看 dev 实例那台上的 `journalctl --user -u hebi8-dev-poll`（见 [dev 实例](#dev-实例)）。热补丁 PR 和 Release PR 进 master，只由维护者手动合并。
 
 ### 发版
 
@@ -98,7 +93,7 @@ scripts/release.sh 0.3.0    # 开 Release PR
 ```bash
 scripts/hotfix.sh start 0.3.1   # 在一个干净的 checkout 里：从 origin/master 切 hotfix/v0.3.1 并切过去
 # 在那里修，CHANGELOG.md 顶部加「## v0.3.1」一节（一行就够），提交
-# 先过 Codex + Argon 双审（见上面「审查」），没有 blocking 了再跑
+# 先过两份代码审查（见上面「审查」），没有 blocking 了再跑
 scripts/hotfix.sh 0.3.1         # 版本提交 chore(hotfix): v0.3.1，推分支，开 PR → master
 # 用 Create a merge commit 合并 → 同一个 Deploy 工作流
 ```
@@ -126,7 +121,7 @@ scripts/hotfix.sh 0.3.1         # 版本提交 chore(hotfix): v0.3.1，推分支
 
 ## 正式环境
 
-线上实例跑在一台 VPS 上（下面叫「线上机器」）：**https://market-hebi8.dreaife.tokyo**，经 Cloudflare Tunnel 进来。应用只听本机的 `127.0.0.1:8808`，不为它开任何入站端口；对外只有 SSH（只认 key），部署和维护都从这里进。实际的主机、地址、用户名不写进仓库：部署工作流从 `production` Environment 读，手动部署从仓库主目录的 `deploy.env` 读。以前它在开发机上（agent 在上面构建、会重启），后来在家里的小机上，2026-10-17 搬到了 VPS。
+线上实例跑在一台 VPS 上（下面叫「线上机器」）：**https://market-hebi8.dreaife.tokyo**，经 Cloudflare Tunnel 进来。应用只听本机的 `127.0.0.1:8808`，不为它开任何入站端口；对外只有 SSH（只认 key），部署和维护都从这里进。实际的主机、地址、用户名不写进仓库：部署工作流从 `production` Environment 读，手动部署从仓库主目录的 `deploy.env` 读。以前它在开发机上（开发时的构建和重启会碰到它），后来在家里的小机上，2026-10-17 搬到了 VPS。
 
 | 在哪（线上机器） | 是什么 |
 |---|---|

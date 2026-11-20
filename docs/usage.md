@@ -1,6 +1,6 @@
 # 使用说明
 
-hebi8/market 各项功能的完整操作说明。项目概览和快速开始见 [README](../README.md)，部署、vault 和多人共用见 [self-hosting.md](self-hosting.md)。
+hebi8/market 各项功能的完整操作说明。项目概览和快速开始见 [README](../README.cn.md)，部署、vault 和多人共用见 [self-hosting.md](self-hosting.md)。
 
 - [搜索](#搜索)
 - [总览](#总览)
@@ -97,7 +97,7 @@ hebi8/market 各项功能的完整操作说明。项目概览和快速开始见 
 
 ## 数据源与自定义数据集
 
-四种数据源的概览见 [README](../README.md#数据源)。`yahoo` 必须经 yahoo-finance2 拉取：直接请求 Yahoo 接口会返回 429。`tv` 是逆向的非官方接口，TradingView 改动协议后可能失效。各数据源的日线时间戳不同：美股记在开盘时刻，亚洲市场记在 01:30 UTC，外汇和 TVC 品种记在前一晚开盘时刻。入库前统一按交易所时区换算成交易日。
+四种数据源的概览见 [README](../README.cn.md#数据源)。`yahoo` 必须经 yahoo-finance2 拉取：直接请求 Yahoo 接口会返回 429。`tv` 是逆向的非官方接口，TradingView 改动协议后可能失效。各数据源的日线时间戳不同：美股记在开盘时刻，亚洲市场记在 01:30 UTC，外汇和 TVC 品种记在前一晚开盘时刻。入库前统一按交易所时区换算成交易日。
 
 ### 自定义数据集
 
@@ -292,7 +292,7 @@ KLineChart 内置的 MA、EMA、BOLL、VOL、MACD、RSI、KDJ、SAR、OBV 等指
 
 ## 帮助与反馈
 
-页头最右的「?」（或按 `?`）打开帮助抽屉。「使用」页签有三步引导的入口、快捷键表、项目文档（本仓库）和隐私说明的链接；「反馈」页签把问题直接提交成 GitHub issue，自动附带当前页面、图表状态和最近的前端错误。界面上只放用的时候要看的东西，项目介绍、配置和运维写在 [README](../README.md) 和 `docs/` 下的文档里。
+页头最右的「?」（或按 `?`）打开帮助抽屉。「使用」页签有三步引导的入口、快捷键表、项目文档（本仓库）和隐私说明的链接；「反馈」页签把问题直接提交成 GitHub issue，自动附带当前页面、图表状态和最近的前端错误。界面上只放用的时候要看的东西，项目介绍、配置和运维写在 [README](../README.cn.md) 和 `docs/` 下的文档里。
 
 `?` → 反馈：填好标题和描述，点「用 GitHub 登录」，抽屉里会显示一串代码，到 github.com/login/device 输入并授权，回来就能提交——issue 以**你自己的** GitHub 账号开在 `Hebi8/hebi8-market` 上。登录用的是公开 GitHub App「hebi8-market」的 device flow，只需要写在 `src/lib/app-info.ts` 里的 client id，任何人自己部署的 hebi8 都能用，不用配置任何密钥；登录会话存在服务器的 `~/.config/hebi8/market/sessions.json`（`HEBI8_SECRETS` 可改，权限 600）。实例配了[网页登录](self-hosting.md#网页登录可选)的入口上，「用 GitHub 登录」是跳到 GitHub 再回来，不用输代码。不想登录、或者 App 还没配置（「反馈未启用」）时，「在 GitHub 网页上提交」会在 github.com 打开预填好同样内容的新 issue。
 

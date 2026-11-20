@@ -3,10 +3,10 @@ import { ConfigErrorView } from "@/components/ConfigErrorView";
 import { Overview, type OverviewData, type OverviewRow } from "@/components/Overview";
 import { alertBadges, alertViews } from "@/lib/alert-view";
 import { benchLabel, nameOf } from "@/lib/names";
-import { liveStats } from "@/lib/quotes";
+import { overviewStats } from "@/lib/quotes";
 import { hasBars, listSymbols, maxSyncedAt } from "@/lib/store";
 import { isSynthetic, parseKey, tickerOf } from "@/lib/symbols";
-import { statsFor, syncAll } from "@/lib/sync";
+import { syncAll } from "@/lib/sync";
 import { listJournals, readConfigSafe } from "@/lib/vault";
 import { getViewer } from "@/lib/viewer";
 
@@ -21,9 +21,8 @@ export default async function Home() {
   if (!config) return <ConfigErrorView error={error} vaultPath={viewer.dir} />;
 
   const symbols = listSymbols();
-  const stats = statsFor(viewer.vault, config);
   // rows whose price comes from a quote show it, with their changes on today's live bar
-  const live = liveStats(viewer.vault, config, symbols);
+  const stats = overviewStats(viewer.vault, config, symbols);
   const firstRun = !hasBars();
   if (firstRun) void syncAll().catch(() => undefined);
   // alerts are personal like notes: a visitor sees none
@@ -39,11 +38,11 @@ export default async function Home() {
         yamlName: item.name,
         ticker: tickerOf(item.key),
         source: isSynthetic(item.key) ? "expr" : parseKey(item.key).source,
-        currency: row?.currency ?? stats[item.key]?.currency ?? null,
+        currency: row?.currency ?? null,
         bench: item.bench,
         benchLabel: item.bench ? benchLabel(config, item.bench, symbols[item.bench]?.name) : null,
-        stats: live[item.key]?.stats ?? stats[item.key] ?? null,
-        quote: live[item.key]?.status ?? null,
+        stats: stats[item.key]?.stats ?? null,
+        quote: stats[item.key]?.status ?? null,
         syncError: row?.syncError ?? null,
         badges: badges[item.key] ?? [],
       };

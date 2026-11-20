@@ -8,7 +8,7 @@ import { revalidatePath } from "next/cache";
 import { isMap, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { findItem, type Config } from "@/lib/config";
 import { getSymbol, readDaily } from "@/lib/store";
-import { recomputeStats, syncAll, syncOne } from "@/lib/sync";
+import { syncAll, syncOne } from "@/lib/sync";
 import { convertDrawings, importedIds, layoutId, sessionMinutes, tickOf, normalizeDrawing, type DrawingContext, type TvDrawing } from "@/lib/tv-drawings";
 import { isTvSymbol, parseTvList, planTvImport, tvIdentity, tvKey, watchedByIdentity, type ImportMode } from "@/lib/tv-import";
 import { fetchLayoutDrawings, fetchLayouts, type DrawingOrigin, type TvLayout } from "@/lib/tv-layout";
@@ -221,7 +221,7 @@ export interface DrawingsImported {
  * stay, and the TradingView ids are remembered so a second import adds nothing.
  */
 export async function importTvDrawings(input: DrawingsImportInput): Promise<TvResult<DrawingsImported>> {
-  return run(async ({ dir, vault }) => {
+  return run(async ({ dir }) => {
     const drawings = normalizeAll(input.drawings);
     const groups = bySymbol(drawings);
     const failed: DrawingsImported["failed"] = [];
@@ -241,10 +241,11 @@ export async function importTvDrawings(input: DrawingsImportInput): Promise<TvRe
       } else failed.push({ symbol, error: outcome.error ?? "拉取失败" });
     }
     if (adding.length) {
-      updateConfig(dir, (doc) => {
-        for (const [, key, group] of adding) seqOf(groupNode(doc, group), "symbols", doc).add(entryNode(doc, key));
+      // the yaml as it is after the fetches: what got watched meanwhile is not added twice
+      updateConfig(dir, (doc, current) => {
+        const now = watchedByIdentity(watchedGroups(current));
+        for (const [symbol, key, group] of adding) if (!now.has(tvIdentity(symbol))) seqOf(groupNode(doc, group), "symbols", doc).add(entryNode(doc, key));
       });
-      recomputeStats(vault, readConfig(dir));
     }
 
     const cfg = readConfig(dir);

@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
+import { isMap, isScalar, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { CHART_STYLES, USAGE_LIMITS, parseLineStyles, resolveKey, type ChartPrefs, type LineOverride, type FormulaDef, type UsageLimits } from "@/lib/config";
 import * as ops from "@/lib/ops";
 import type { AddSymbolInput, AlertInput } from "@/lib/ops";
@@ -11,24 +11,24 @@ import { translateDescription } from "@/lib/profiles";
 import type { Prices } from "@/lib/series";
 import { getSymbol } from "@/lib/store";
 import { isSynthetic, isTimeframe, isValidKey } from "@/lib/symbols";
-import { parseSynth } from "@/lib/synth";
-import { recomputeStats, syncAll, syncOne } from "@/lib/sync";
+import { operands } from "@/lib/synth";
+import { syncAll, syncOne } from "@/lib/sync";
 import {
   flowNode,
-  groupName,
-  groupNode,
   locateEntry,
+  readChartState,
   readConfig,
   setList,
-  seqOf,
   setScalar,
   updateConfig,
   writeChartState,
   writeJournal,
   writeNote,
-  type ChartState,
+  type CompareEntry,
+  type OverlaySpec,
 } from "@/lib/vault";
 import { getViewer, requireWriter, type Viewer } from "@/lib/viewer";
+import type { WatchlistOp } from "@/lib/watchlist";
 import { isWeekId } from "@/lib/week";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -38,10 +38,10 @@ export type ActionResult = { ok: true } | { ok: false; error: string };
  * reachable from here. The ones an agent can also reach through `/mcp` are shells around
  * `src/lib/ops.ts`: one implementation, the same checks.
  */
-async function attempt(fn: (viewer: Viewer) => Promise<void> | void): Promise<ActionResult> {
+async function attempt(fn: (viewer: Viewer) => Promise<void> | void, revalidate = true): Promise<ActionResult> {
   try {
     await fn(requireWriter(await getViewer()));
-    revalidatePath("/", "layout");
+    if (revalidate) revalidatePath("/", "layout");
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -60,30 +60,6 @@ function entryAsMap(doc: Document, symbols: YAMLSeq, index: number): YAMLMap {
   return node;
 }
 
-/**
- * The `groups` list and where the group shown as `name` sits in it. Unnamed groups then get the
- * name they are shown with written down (a number added if another group has it), because moving
- * or deleting a group would otherwise renumber them and the page would point at the wrong one.
- */
-function findGroup(doc: Document, name: string): { groups: YAMLSeq; index: number } {
-  const groups = doc.get("groups");
-  const index = isSeq(groups) ? groups.items.findIndex((g, i) => isMap(g) && groupName(g, i) === name) : -1;
-  if (index < 0) throw new Error(`没有「${name}」这个分组`);
-  const seq = groups as YAMLSeq;
-  const taken = new Set(seq.items.map((g) => (isMap(g) ? String(g.get("name") ?? "").trim() : "")).filter(Boolean));
-  seq.items.forEach((g, i) => {
-    if (!isMap(g) || String(g.get("name") ?? "").trim()) return;
-    let pinned = groupName(g, i);
-    for (let n = 2; taken.has(pinned); n++) pinned = `${groupName(g, i)} (${n})`;
-    taken.add(pinned);
-    g.items.unshift(doc.createPair("name", pinned));
-  });
-  return { groups: seq, index };
-}
-
-/** A drop position from the page, inside 0..length. */
-const position = (index: unknown, length: number) => (Number.isInteger(index) ? Math.min(Math.max(index as number, 0), length) : length);
-
 export async function refresh(): Promise<ActionResult> {
   return attempt(async () => {
     await syncAll(true);
@@ -101,8 +77,7 @@ export async function addSymbol(input: AddSymbolInput): Promise<ActionResult> {
 export async function loadSymbol(key: string): Promise<ActionResult> {
   return attempt(async ({ dir }) => {
     if (!isValidKey(key)) throw new Error(`无效的 key「${key}」`);
-    const keys = isSynthetic(key) ? parseSynth(key.slice(1), readConfig(dir).aliases).keys : [key];
-    for (const k of keys) {
+    for (const k of operands(key, readConfig(dir).aliases)) {
       const outcome = await syncOne(k);
       if (!outcome.ok) throw new Error(`拉取 ${k} 失败：${outcome.error}`);
     }
@@ -128,80 +103,16 @@ export async function translateProfile(key: string): Promise<({ ok: true } & Tra
   }
 }
 
-/** Into `group` (created when new) at `index`, counted without the moved entry; the end when omitted. */
-export async function moveSymbol(key: string, group: string, index?: number): Promise<ActionResult> {
-  return attempt(({ dir }) => {
-    const target = str(group);
-    if (!target) throw new Error("请选择分组");
-    updateConfig(dir, (doc) => {
-      const found = locateEntry(doc, key, readConfig(dir).aliases);
-      if (!found) throw new Error(`${key} 不在自选里`);
-      const [item] = found.symbols.items.splice(found.index, 1);
-      const symbols = seqOf(groupNode(doc, target), "symbols", doc);
-      // `[GOLD]` becomes a block list, so an entry with a comment stays on one line
-      symbols.flow = false;
-      symbols.items.splice(position(index, symbols.items.length), 0, item);
-    });
-  });
-}
-
-export async function moveGroup(name: string, index: number): Promise<ActionResult> {
-  return attempt(({ dir }) => {
-    updateConfig(dir, (doc) => {
-      const { groups, index: from } = findGroup(doc, str(name));
-      const [node] = groups.items.splice(from, 1);
-      groups.items.splice(position(index, groups.items.length), 0, node);
-    });
-  });
-}
-
-export async function addGroup(name: string): Promise<ActionResult> {
-  return attempt(({ dir }) => {
-    const next = str(name);
-    if (!next) throw new Error("分组名不能为空");
-    if (readConfig(dir).groups.some((g) => g.name === next)) throw new Error(`已经有「${next}」分组了`);
-    updateConfig(dir, (doc) => void groupNode(doc, next));
-  });
-}
-
-export async function renameGroup(name: string, next: string): Promise<ActionResult> {
-  return attempt(({ dir }) => {
-    const to = str(next);
-    if (!to) throw new Error("分组名不能为空");
-    if (to === str(name)) return;
-    if (readConfig(dir).groups.some((g) => g.name === to)) throw new Error(`已经有「${to}」分组了`);
-    updateConfig(dir, (doc) => {
-      const { index } = findGroup(doc, str(name));
-      setScalar(doc, ["groups", index, "name"], to);
-    });
-  });
-}
-
-/** Like removing a section in TradingView: the group goes, its symbols join the group above (the one below for the first). */
-export async function deleteGroup(name: string): Promise<ActionResult> {
-  return attempt(({ dir }) => {
-    updateConfig(dir, (doc) => {
-      const { groups, index } = findGroup(doc, str(name));
-      const symbols = (groups.items[index] as YAMLMap).get("symbols");
-      const moving = isSeq(symbols) ? symbols.items : [];
-      if (moving.length) {
-        const neighbour = groups.items[index - 1] ?? groups.items[index + 1];
-        if (!isMap(neighbour)) throw new Error("这是唯一的分组，先移除里面的标的");
-        const into = seqOf(neighbour, "symbols", doc);
-        into.flow = false;
-        if (index > 0) into.items.push(...moving);
-        else into.items.unshift(...moving);
-      }
-      groups.delete(index);
-    });
-  });
+/** One edit of the groups and their order, with the rules the page shows it by (`applyOp`); see `ops.editWatchlist`. */
+export async function editWatchlist(op: WatchlistOp): Promise<ActionResult> {
+  return attempt((viewer) => ops.editWatchlist(viewer, op));
 }
 
 export async function renameSymbol(key: string, name: string): Promise<ActionResult> {
   return attempt(({ dir }) => {
     const next = str(name);
-    updateConfig(dir, (doc) => {
-      const found = locateEntry(doc, key, readConfig(dir).aliases);
+    updateConfig(dir, (doc, current) => {
+      const found = locateEntry(doc, key, current.aliases);
       if (!found) throw new Error(`${key} 不在自选里`);
       const entry = entryAsMap(doc, found.symbols, found.index);
       if (next) entry.set("name", next);
@@ -211,7 +122,7 @@ export async function renameSymbol(key: string, name: string): Promise<ActionRes
 }
 
 export async function setBench(key: string, bench: string | null): Promise<ActionResult> {
-  return attempt(async ({ dir, vault }) => {
+  return attempt(async ({ dir }) => {
     const cfg = readConfig(dir);
     const benchRef = str(bench);
     const target = benchRef ? resolveKey(benchRef, cfg.aliases) : null;
@@ -223,19 +134,16 @@ export async function setBench(key: string, bench: string | null): Promise<Actio
         if (!outcome.ok) throw new Error(`拉取 ${target} 失败：${outcome.error}`);
       }
     }
-    updateConfig(dir, (doc) => {
-      const found = locateEntry(doc, key, cfg.aliases);
+    // the yaml as it is after the fetch
+    updateConfig(dir, (doc, current) => {
+      const found = locateEntry(doc, key, current.aliases);
       if (!found) throw new Error(`${key} 不在自选里`);
+      if (target) ops.changedWhileFetching(benchRef, target, current.aliases);
       const entry = entryAsMap(doc, found.symbols, found.index);
       if (benchRef) entry.set("bench", benchRef);
       else entry.delete("bench");
     });
-    recomputeStats(vault, readConfig(dir));
   });
-}
-
-export async function removeSymbol(key: string): Promise<ActionResult> {
-  return attempt((viewer) => ops.removeSymbol(viewer, key));
 }
 
 export async function saveNote(key: string, body: string): Promise<ActionResult> {
@@ -260,37 +168,56 @@ export async function deleteIndicator(id: string): Promise<ActionResult> {
   return attempt((viewer) => ops.deleteIndicator(viewer, id));
 }
 
-export async function saveChartState(key: string, state: ChartState): Promise<ActionResult> {
-  return attempt(async ({ dir }) => {
+/**
+ * One change to a chart's drawings and comparisons, applied to what the file has when it runs, so
+ * changes sent one after another (Server Actions run in order) each build on the one before,
+ * whatever the page had when it sent them. The page shows drawings and removals at once; an added
+ * comparison it shows as saved (`added`), and only that change re-renders the page, for the
+ * symbol's name after its first fetch. A removal goes by the key as saved, not through aliases.
+ */
+export type ChartChange = { overlays: OverlaySpec[] } | { addCompare: CompareEntry } | { removeCompare: string };
+
+export async function editChartState(key: string, change: ChartChange): Promise<ActionResult & { added?: CompareEntry }> {
+  const adding = "addCompare" in change;
+  let added: CompareEntry | undefined;
+  const result = await attempt(async ({ dir }) => {
     if (!isValidKey(key)) throw new Error("无效的 key");
-    const cfg = readConfig(dir);
-    const compare = (Array.isArray(state.compare) ? state.compare : []).flatMap((c) => {
-      const target = resolveKey(str(c.key), cfg.aliases);
-      if (!isValidKey(target) || target === key) return [];
-      return [{ key: target, mode: c.mode === "pane" ? ("pane" as const) : ("percent" as const), color: str(c.color) || "#e8891d" }];
-    });
-    const overlays = (Array.isArray(state.overlays) ? state.overlays : []).flatMap((o) => {
-      if (typeof o?.name !== "string" || !Array.isArray(o.points)) return [];
-      const points = o.points.filter((p) => Number.isFinite(p?.timestamp) && Number.isFinite(p?.value)).map((p) => ({ timestamp: p.timestamp, value: p.value }));
-      return [{ name: o.name, points, ...(o.styles ? { styles: o.styles } : {}), ...(o.lock ? { lock: true } : {}), ...(o.hidden ? { hidden: true } : {}), ...(o.extendData !== undefined ? { extendData: o.extendData } : {}), ...(typeof o.tvId === "string" ? { tvId: o.tvId } : {}), ...(o.scale === "log" || o.scale === "linear" ? { scale: o.scale } : {}) }];
-    });
-    // compare targets must be in the cache before the chart asks for them
-    for (const c of compare) {
-      if (isSynthetic(c.key)) continue;
-      if (!getSymbol(c.key)?.syncedAt) {
-        const outcome = await syncOne(c.key, true);
-        if (!outcome.ok) throw new Error(`拉取 ${c.key} 失败：${outcome.error}`);
-      }
+    if ("overlays" in change) {
+      const overlays = (Array.isArray(change.overlays) ? change.overlays : []).flatMap((o) => {
+        if (typeof o?.name !== "string" || !Array.isArray(o.points)) return [];
+        const points = o.points.filter((p) => Number.isFinite(p?.timestamp) && Number.isFinite(p?.value)).map((p) => ({ timestamp: p.timestamp, value: p.value }));
+        return [{ name: o.name, points, ...(o.styles ? { styles: o.styles } : {}), ...(o.lock ? { lock: true } : {}), ...(o.hidden ? { hidden: true } : {}), ...(o.extendData !== undefined ? { extendData: o.extendData } : {}), ...(typeof o.tvId === "string" ? { tvId: o.tvId } : {}), ...(o.scale === "log" || o.scale === "linear" ? { scale: o.scale } : {}) }];
+      });
+      writeChartState(dir, key, { ...readChartState(dir, key), overlays });
+      return;
     }
-    writeChartState(dir, key, { compare, overlays });
-  });
+    if ("removeCompare" in change) {
+      // the key as saved: the page shows what the file has, and an alias may point elsewhere by now
+      const state = readChartState(dir, key);
+      writeChartState(dir, key, { ...state, compare: state.compare.filter((c) => c.key !== change.removeCompare) });
+      return;
+    }
+    const target = resolveKey(str(change.addCompare?.key), readConfig(dir).aliases);
+    if (!isValidKey(target) || target === key) throw new Error(`无效的比较商品「${target}」`);
+    // a comparison must be in the cache before the chart asks for it
+    if (!isSynthetic(target) && !getSymbol(target)?.syncedAt) {
+      const outcome = await syncOne(target, true);
+      if (!outcome.ok) throw new Error(`拉取 ${target} 失败：${outcome.error}`);
+    }
+    // the file as it is after the fetch
+    const state = readChartState(dir, key);
+    added = state.compare.find((c) => c.key === target);
+    if (added) return;
+    added = { key: target, mode: change.addCompare.mode === "pane" ? "pane" : "percent", color: str(change.addCompare.color) || "#e8891d" };
+    writeChartState(dir, key, { ...state, compare: [...state.compare, added] });
+  }, adding);
+  return result.ok && added ? { ...result, added } : result;
 }
 
 export async function setChartPrefs(
   partial: Partial<Omit<ChartPrefs, "panes" | "styles">> & { prices?: Prices; panes?: Record<string, "main" | "sub" | null>; styles?: Record<string, LineOverride[] | null> },
 ): Promise<ActionResult> {
-  return attempt(({ dir, vault }) => {
-    const cfg = readConfig(dir);
+  return attempt(({ dir }) => {
     updateConfig(dir, (doc) => {
       if (partial.tf !== undefined) {
         if (!isTimeframe(partial.tf)) throw new Error("无效的周期");
@@ -335,7 +262,6 @@ export async function setChartPrefs(
         setScalar(doc, ["prices"], partial.prices);
       }
     });
-    if (partial.prices !== undefined && partial.prices !== cfg.prices) recomputeStats(vault, readConfig(dir));
   });
 }
 
