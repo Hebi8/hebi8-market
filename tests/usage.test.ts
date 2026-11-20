@@ -155,6 +155,18 @@ describe("request counting", () => {
     expect(other.n).toBe(10_001 - MAX_VISITORS);
   });
 
+  it("keeps the key of a synthetic benchmark's chart, which has no row of its own", async () => {
+    const { proxy } = await import("@/proxy");
+    const { flushUsage, topPaths, usageDay } = await import("@/lib/usage");
+    const { getDb } = await import("@/lib/db");
+    const bench = "=binance:BTCUSDT/binance:ETHUSDT";
+    fs.writeFileSync(yamlFile, ROOT_YAML.replace("binance:ETHUSDT]", `binance:ETHUSDT, { key: yahoo:SPY, bench: "${bench}" }]`));
+    getDb().exec("DELETE FROM stats");
+    proxy(tunnel(`/chart/${encodeURIComponent(bench)}`, "203.0.113.9"));
+    flushUsage();
+    expect(topPaths(usageDay())).toEqual([{ path: `/chart/${encodeURIComponent(bench)}`, kind: "page", requests: 1 }]);
+  });
+
   it("reads the sessions file once per flush, however many made-up cookies come in", async () => {
     const { proxy } = await import("@/proxy");
     const { flushUsage, topVisitors, usageDay } = await import("@/lib/usage");

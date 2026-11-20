@@ -8,13 +8,13 @@
  * checked and passed ones notified once per day. Nothing here limits or blocks anyone.
  */
 import { getDb } from "./db";
-import { USAGE_LIMITS, type UsageLimits } from "./config";
+import { USAGE_LIMITS, allItems, type UsageLimits } from "./config";
 import { channelNames, channelsFor, deliver } from "./notify";
 import { liveSessions } from "./secrets";
 import type { Source } from "./symbols";
 import { DAY, localDay } from "./time";
 import { ANY_CHART, OTHER, drainCounters, onBufferFull, restoreCounters, type Hit, type Kind, type Origin, type UpstreamHit } from "./traffic";
-import { readConfigSafe, vaultDir } from "./vault";
+import { loadVaults, readConfigSafe, vaultDir } from "./vault";
 
 export const FLUSH_MS = 30_000;
 export const KEEP_DAYS = 90;
@@ -135,7 +135,10 @@ export function flushUsage(): void {
     const sessions = hits.some((h) => h.session) ? liveSessions() : {};
     const loginOf = (session: string) => (session && Object.hasOwn(sessions, session) ? sessions[session].login.toLowerCase() : "");
     const db = getDb();
+    // a chart path keeps its key when the instance knows it: a symbol it has, a watched row with
+    // stats, or a benchmark some vault refers to (a synthetic one has no row of its own)
     const known = new Set((db.prepare("SELECT key FROM symbols UNION SELECT key FROM stats").all() as { key: string }[]).map((r) => r.key));
+    for (const v of loadVaults()) for (const item of allItems(v.config)) if (item.bench) known.add(item.bench);
     const isStored = db.prepare("SELECT 1 FROM visitors WHERE day = ? AND origin = ? AND visitor = ? LIMIT 1").pluck();
     const countStored = db.prepare("SELECT COUNT(DISTINCT visitor) FROM visitors WHERE day = ? AND origin = ? AND visitor != ?").pluck();
     const addPath = db.prepare(
