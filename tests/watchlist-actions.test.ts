@@ -175,6 +175,31 @@ saved: { group: *us, list: *w, title: *n }
     expect((await load()).saved).toEqual(before);
   });
 
+  it("a copy reads its own aliases where the original stood, not a later anchor of the same name", async () => {
+    const { readConfig } = await import("@/lib/vault");
+    fs.writeFileSync(
+      yamlFile,
+      `threshold: &limit 100
+groups:
+  - { name: A, symbols: [yahoo:SPY], rules: &rules [{ key: yahoo:SPY, cond: greater, value: *limit }] }
+  - { name: B, symbols: [yahoo:QQQ], other: &limit 1000 }
+alerts: *rules
+`,
+    );
+    expect(await renameGroup("A", "美股")).toEqual({ ok: true });
+    expect(readConfig(root).alerts.map((a) => a.condition?.value)).toEqual([100]);
+    // the same when a move writes out an alias that would come before its anchor
+    fs.writeFileSync(
+      yamlFile,
+      `groups:
+  - { name: A, symbols: [{ key: yahoo:SPY, name: &nm Correct }], keep: &entry { key: yahoo:QQQ, name: *nm } }
+  - { name: B, other: &nm Wrong, symbols: [*entry] }
+`,
+    );
+    expect(await moveGroup("B", 0)).toEqual({ ok: true });
+    expect(readConfig(root).groups.map((g) => g.symbols.map((x) => [x.key, x.name]))).toEqual([[["yahoo:QQQ", "Correct"]], [["yahoo:SPY", "Correct"]]]);
+  });
+
   it("writes out an alias that a move would put before its anchor", async () => {
     fs.writeFileSync(
       yamlFile,

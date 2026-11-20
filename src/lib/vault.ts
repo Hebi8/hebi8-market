@@ -240,14 +240,27 @@ export function locateEntry(doc: Document, key: string, aliases: Record<string, 
 
 const hasAnchor = (n: Node) => !isAlias(n) && n.anchor !== undefined;
 
-/** A node to stand where an alias to it stood: a copy without anchors, so nothing else reads it. */
-function copyOf(node: Node): Node {
+/** What an alias reads: where it stands now, or (after a move) what it read before. */
+type Reader = (alias: Alias) => Node | undefined;
+
+/**
+ * A node to stand where an alias to it stood: a copy without anchors, so nothing else reads it.
+ * An alias inside it becomes a copy of what it reads where the original stands, so a later anchor
+ * of the same name does not change the copy.
+ */
+function copyOf(node: Node, read: Reader): Node {
+  if (isAlias(node)) return copyOf(read(node)!, read);
   const copy = node.clone() as Node;
-  visit(copy, {
-    Node: (_, n) => {
-      if (!isAlias(n)) n.anchor = undefined;
-    },
-  });
+  if (!isAlias(copy)) copy.anchor = undefined;
+  if (isMap(node) && isMap(copy)) {
+    node.items.forEach((pair, i) => {
+      if (isNode(pair.value)) copy.items[i].value = copyOf(pair.value, read);
+    });
+  } else if (isSeq(node) && isSeq(copy)) {
+    node.items.forEach((item, i) => {
+      if (isNode(item)) copy.items[i] = copyOf(item, read);
+    });
+  }
   return copy;
 }
 
@@ -265,7 +278,7 @@ function unshare(doc: Document, node: Node, within: boolean): void {
   visit(doc, {
     Alias: (_, alias) => {
       const source = alias.resolve(doc);
-      if (source && anchored.has(source)) return copyOf(source);
+      if (source && anchored.has(source)) return copyOf(source, (a) => a.resolve(doc));
     },
   });
 }
@@ -274,7 +287,7 @@ function unshare(doc: Document, node: Node, within: boolean): void {
 function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number, within = true): unknown {
   let node: unknown = parent.get(key, true);
   if (isAlias(node)) {
-    node = copyOf(node.resolve(doc)!);
+    node = copyOf(node, (a) => a.resolve(doc));
     parent.set(key, node);
   }
   if (isNode(node)) unshare(doc, node, within);
@@ -400,7 +413,7 @@ export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<strin
   visit(doc, {
     Alias: (_, alias) => {
       const source = sources.get(alias);
-      if (source && alias.resolve(doc) !== source) return copyOf(source);
+      if (source && alias.resolve(doc) !== source) return copyOf(source, (a) => sources.get(a));
     },
   });
 }
