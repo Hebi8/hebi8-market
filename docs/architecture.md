@@ -39,6 +39,7 @@ What a symbol is: the chart's 商品详情 (symbol details) panel and MCP `get_p
 ## Indicators and formulas
 
 - Pure math in `src/indicators/calc.ts`, KLineChart templates in `custom.ts`, UI registration in `catalog.ts`; the formula engine in `formula.ts` serves chart indicators, overview conditions and comparisons.
+- A formula on one symbol's bars is evaluated by `runFormula()` in `src/lib/conditions.ts` only: alerts (`evalRule`), MCP `scan` and `test_formula` see the same bars and aligned references.
 
 ## Issues, branches and releases
 

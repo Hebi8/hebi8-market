@@ -4,12 +4,11 @@
  * fetched: a symbol without cached bars is reported, not synced. A formula with several
  * statements counts by its last one, as an alert's `when` does.
  */
-import { compile, evaluate, type Program } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
 import type { AlertCheck } from "./alert-conds";
-import { closedReader, loadRefs, loadSeries, tradesWeekends, type DailyReader } from "./bars";
-import { holds, toOhlcv } from "./conditions";
-import { findItem, type Config } from "./config";
+import { closedReader, type DailyReader } from "./bars";
+import { compileFor, holds, runFormula } from "./conditions";
+import type { Config } from "./config";
 import { fmtDate } from "./format";
 import { nameOf } from "./names";
 import { liveReader } from "./quotes";
@@ -29,21 +28,11 @@ export type ScanValue = number | "Infinity" | "-Infinity" | null;
 
 const shown = (v: number | undefined): ScanValue => (v === undefined || Number.isNaN(v) ? null : v === Infinity ? "Infinity" : v === -Infinity ? "-Infinity" : Number(v.toPrecision(10)));
 
-function checked(formula: string, cfg: Config, bench?: string | null): Program {
-  try {
-    return compile(formula, { aliases: cfg.aliases, bench });
-  } catch (err) {
-    throw new Error(describeError(err));
-  }
-}
-
-/** The formula's last line over all of `key`'s bars on `tf`. */
+/** `runFormula`, with a symbol without bars reported. */
 function run(key: string, formula: string, tf: Timeframe, cfg: Config, read: DailyReader): { bars: Bar[]; line: number[] } {
-  const program = checked(formula, cfg, findItem(cfg, key)?.bench ?? null);
-  const bars = loadSeries(key, tf, cfg.prices, cfg, read);
-  if (bars.length === 0) throw new Error(isSynthetic(key) ? "合成不出数据：操作数没有缓存的日线或日期不重叠" : "没有缓存的日线");
-  const refs = loadRefs(bars, tradesWeekends(key, cfg, read), program.refs, tf, cfg.prices, cfg, read);
-  return { bars, line: evaluate(program, { bars: toOhlcv(bars), refs }).at(-1)! };
+  const result = runFormula(key, formula, tf, cfg, read);
+  if (result.bars.length === 0) throw new Error(isSynthetic(key) ? "合成不出数据：操作数没有缓存的日线或日期不重叠" : "没有缓存的日线");
+  return result;
 }
 
 export interface ScanRow {
@@ -69,7 +58,7 @@ export interface ScanResult {
 /** One formula on each of `keys` (resolved keys); a formula that does not compile at all throws. */
 export function scan(cfg: Config, keys: string[], formula: string, tf: Timeframe, read: DailyReader): ScanResult {
   // `bench` is each symbol's own, so it is only checked per symbol
-  const program = checked(formula, cfg);
+  const program = compileFor(formula, cfg);
   const rows = keys.map((key): ScanRow => {
     const name = nameOf(cfg, key, getSymbol(key)?.name);
     try {
