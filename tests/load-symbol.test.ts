@@ -58,3 +58,29 @@ describe("loadSymbol", () => {
     expect(read()).toBe(YAML);
   });
 });
+
+describe("writes that wait for a fetch", () => {
+  it("adding the same symbol twice at once adds it once and says so", async () => {
+    const { addSymbol } = await import("@/app/actions");
+    const [a, b] = await Promise.all([addSymbol({ key: "yahoo:AAPL", group: "美股" }), addSymbol({ key: "yahoo:AAPL", group: "美股" })]);
+    expect([a, b]).toEqual([{ ok: true }, { ok: false, error: "yahoo:AAPL 已经在「美股」组里" }]);
+    expect(read().match(/yahoo:AAPL/g)).toHaveLength(1);
+  });
+
+  it("an alias written while a fetch was out stays", async () => {
+    const { addSymbol } = await import("@/app/actions");
+    const { readConfig } = await import("@/lib/vault");
+    await Promise.all([addSymbol({ key: "yahoo:0700.HK", group: "美股", alias: "腾讯" }), addSymbol({ key: "yahoo:TCEHY", group: "美股", alias: "腾讯" })]);
+    expect(readConfig(root).aliases["腾讯"]).toBe("yahoo:0700.HK");
+  });
+
+  it("a new indicator is saved and switched on in one write", async () => {
+    const { saveIndicator } = await import("@/app/actions");
+    const { readConfig } = await import("@/lib/vault");
+    const writes = vi.spyOn(fs, "renameSync");
+    expect(await saveIndicator({ id: "gap", label: "缺口", pane: "sub", formula: "open - ref(close, 1)" })).toEqual({ ok: true });
+    expect(writes).toHaveBeenCalledTimes(1);
+    writes.mockRestore();
+    expect(readConfig(root)).toMatchObject({ indicators: [{ id: "gap" }], chart: { indicators: ["MA", "VOL", "gap"] } });
+  });
+});

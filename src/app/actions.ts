@@ -110,8 +110,8 @@ export async function editWatchlist(op: WatchlistOp): Promise<ActionResult> {
 export async function renameSymbol(key: string, name: string): Promise<ActionResult> {
   return attempt(({ dir }) => {
     const next = str(name);
-    updateConfig(dir, (doc) => {
-      const found = locateEntry(doc, key, readConfig(dir).aliases);
+    updateConfig(dir, (doc, current) => {
+      const found = locateEntry(doc, key, current.aliases);
       if (!found) throw new Error(`${key} 不在自选里`);
       const entry = entryAsMap(doc, found.symbols, found.index);
       if (next) entry.set("name", next);
@@ -133,8 +133,9 @@ export async function setBench(key: string, bench: string | null): Promise<Actio
         if (!outcome.ok) throw new Error(`拉取 ${target} 失败：${outcome.error}`);
       }
     }
-    updateConfig(dir, (doc) => {
-      const found = locateEntry(doc, key, cfg.aliases);
+    // the yaml as it is after the fetch
+    updateConfig(dir, (doc, current) => {
+      const found = locateEntry(doc, key, current.aliases);
       if (!found) throw new Error(`${key} 不在自选里`);
       const entry = entryAsMap(doc, found.symbols, found.index);
       if (benchRef) entry.set("bench", benchRef);

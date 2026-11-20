@@ -60,10 +60,13 @@ export async function addSymbol({ dir }: Viewer, input: AddSymbolInput): Promise
   if (bench) await syncOne(bench);
 
   const name = str(input.name) || wellKnownName(key) || "";
-  // a Chinese search term that found this key is worth keeping as an alias
   const alias = str(input.alias);
-  const keepAlias = alias && isCJK(alias) && !alias.includes(":") && !cfg.aliases[alias] && alias !== name;
-  updateConfig(dir, (doc) => {
+  // the yaml as it is now: another add may have finished while this one fetched
+  updateConfig(dir, (doc, current) => {
+    const added = findItem(current, key);
+    if (added) throw new Error(`${key} 已经在「${added.group}」组里`);
+    // a Chinese search term that found this key is worth keeping as an alias
+    const keepAlias = alias && isCJK(alias) && !alias.includes(":") && !current.aliases[alias] && alias !== name;
     const symbols = seqOf(groupNode(doc, group), "symbols", doc);
     const entry: Record<string, string> = { key: ref };
     if (name) entry.name = name;
@@ -83,8 +86,7 @@ export async function addSymbol({ dir }: Viewer, input: AddSymbolInput): Promise
  * Keys are resolved by the caller; removing one that is not there leaves the list alone.
  */
 export function editWatchlist({ dir }: Viewer, op: WatchlistOp): void {
-  const aliases = readConfig(dir).aliases;
-  updateConfig(dir, (doc) => editGroups(doc, op, aliases));
+  updateConfig(dir, (doc, current) => editGroups(doc, op, current.aliases));
 }
 
 // ---------------------------------------------------------------------------- notes and journal
@@ -131,20 +133,15 @@ function checkFormula(dir: string, def: { id: unknown; label: unknown; formula: 
 export function saveIndicator({ dir }: Viewer, def: FormulaDef): void {
   const { id, label, formula } = checkFormula(dir, def);
   const pane = def.pane === "main" ? "main" : "sub";
-  const isNew = !readConfig(dir).indicators.some((d) => d.id === id);
-  updateConfig(dir, (doc) => {
+  updateConfig(dir, (doc, current) => {
     const seq = seqOf(doc.contents as YAMLMap, "indicators", doc);
     const index = seq.items.findIndex((item) => isMap(item) && item.get("id") === id);
     const node = flowNode(doc, { id, label, pane, formula });
     if (index >= 0) seq.items[index] = node;
     else seq.add(node);
+    const enabled = current.chart.indicators;
+    if (!current.indicators.some((d) => d.id === id) && !enabled.includes(id)) setList(doc, ["chart", "indicators"], [...enabled, id]);
   });
-  if (isNew) {
-    updateConfig(dir, (doc) => {
-      const enabled = readConfig(dir).chart.indicators;
-      if (!enabled.includes(id)) setList(doc, ["chart", "indicators"], [...enabled, id]);
-    });
-  }
 }
 
 export function deleteIndicator({ dir }: Viewer, id: string): void {

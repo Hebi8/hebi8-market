@@ -241,8 +241,10 @@ export async function importTvDrawings(input: DrawingsImportInput): Promise<TvRe
       } else failed.push({ symbol, error: outcome.error ?? "拉取失败" });
     }
     if (adding.length) {
-      updateConfig(dir, (doc) => {
-        for (const [, key, group] of adding) seqOf(groupNode(doc, group), "symbols", doc).add(entryNode(doc, key));
+      // the yaml as it is after the fetches: what got watched meanwhile is not added twice
+      updateConfig(dir, (doc, current) => {
+        const now = watchedByIdentity(watchedGroups(current));
+        for (const [symbol, key, group] of adding) if (!now.has(tvIdentity(symbol))) seqOf(groupNode(doc, group), "symbols", doc).add(entryNode(doc, key));
       });
     }
 

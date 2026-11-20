@@ -114,7 +114,7 @@ chart:                         # 全局图表偏好（UI 改动会写回这里�
 - 标的引用（groups、bench、公式里的 `close(X)`、合成表达式、对比列表）一律先查 `aliases`，查不到就当完整 key `source:ticker`。
 - `key` 格式：`yahoo:AAPL`、`yahoo:0700.HK`、`yahoo:^GSPC`、`binance:BTCUSDT`、`tv:TVC:US10Y`、`tv:FX_IDC:USDCNH`、`data:gpu/4090-xianyu`，或 `=表达式`。`data:` 的 key 区分大小写，在合成表达式和 `close(...)` 里要用别名或带引号（§3.3）。
 - 一个标的只出现在一个组里；`groups` 只有一份，就是唯一的自选列表，组是列表里的分区（TV 的 section）。显示名：`name` > 内置字典（`src/lib/wellknown.ts`）的中文名 > 数据源返回的名字。
-- yaml 由 UI 写回时必须保留注释和顺序：用 `yaml` 包的 `parseDocument` 修改后 `toString()`，原子写入（写临时文件再 rename）。
+- yaml 由 UI 写回时必须保留注释和顺序：用 `yaml` 包的 `parseDocument` 修改后 `toString()`，原子写入（写临时文件再 rename）。所有改动都经 `updateConfig(dir, (doc, current) => …)`：回调拿到的 `current` 和 `doc` 来自同一次读取，「是不是已经在自选里」「别名指向谁」这类检查都按它做。加自选、改基准、TV 导入这些要先等拉数据的写，等完再在回调里按当时的 yaml 检查，所以同时加同一个标的只会加一次（另一次报「已经在 X 组里」），等待期间别人写进的别名也不会被盖掉；一次保存只写一次盘。
 - yaml 解析失败时页面显示错误（含行号），服务不崩。
 - **旧的 `conditions`**（`{ id, label, formula, tf, notify }`，以前的示例配置给每个人都预置了一组）照样能读，读成对全部自选的警报：`formula` 当 `when`，`tf` 缺省 W，`label` 缺省是 id，没标 `notify: true` 的读成 `notify: false`。id 沿用原来的；`alerts` 里已经有同名 id 时改成 `cond-<id>`（现有警报的 id 不变）；不是字母数字下划线横线的 id 去掉，改用哈希。
   - **状态跟着走**：旧状态行是 `cond:<id>`，`Config.conditionRules` 记着它们各自变成哪条警报。每次判断（含盘中轮询）、总览读徽标、界面改警报之前，先把这个 vault 的 `cond:<id>` 行改名过去（`adoptConditionState`，`state`、`fired_bar`、`fired_at` 原样保留，改过一次就是空操作），所以本周已触发的仍显示「本周新触发」，升级前为假、升级后为真照样推送。

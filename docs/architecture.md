@@ -6,7 +6,7 @@ A map of the code and the conventions it follows, for anyone changing hebi8/mark
 
 - `vault/` is the user's content (`hebi8.yaml`, notes, journal, chart state; gitignored, `HEBI8_VAULT`); `data/hebi8.db` is a cache that is rebuilt by syncing. Read [design.md](design.md) before changing either layout.
 - On a shared instance (`owner` in the root yaml) each GitHub login has its own vault under `vault/users/<login>/`. Every page, route and Server Action resolves the viewer (`src/lib/viewer.ts`) first and reads and writes only `viewer.dir`; vault functions take the directory explicitly. `stats` and `alert_state` rows are keyed by `vault` ('' = root).
-- `hebi8.yaml` is edited through `src/lib/vault.ts` with the `yaml` package's `parseDocument` so comments and order survive; writes are atomic. `src/lib/config.ts` is the typed, validated view of it.
+- `hebi8.yaml` is edited through `src/lib/vault.ts` with the `yaml` package's `parseDocument` so comments and order survive; writes are atomic. Every edit goes through `updateConfig(dir, (doc, current) => …)`, where `current` is the config of the same read: check against it, not against a config read before an `await`. `src/lib/config.ts` is the typed, validated view of it.
 
 ## Bars, sources and quotes
 

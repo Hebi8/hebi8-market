@@ -18,7 +18,7 @@ import type { ConditionResult } from "./stats";
 import { listSymbols, readDaily } from "./store";
 import { isSynthetic, isTimeframe, type Timeframe } from "./symbols";
 import { parseSynth } from "./synth";
-import { readConfig, updateConfig, type VaultRef } from "./vault";
+import { updateConfig, type VaultRef } from "./vault";
 
 export interface StateRow {
   /** 0/1 for formulas and states; an event's position (-1, 0, 1, see `observe`) */
@@ -240,9 +240,8 @@ export function adoptConditionState(vault: string, cfg: Config): void {
 }
 
 /** Every UI edit of the alerts goes through here, so the old conditions become editable alerts first. */
-export function editAlerts(dir: string, mutate: (doc: Document, alerts: YAMLSeq) => void): Config {
-  const cfg = readConfig(dir);
-  return updateConfig(dir, (doc) => {
+export function editAlerts(dir: string, mutate: (doc: Document, alerts: YAMLSeq, current: Config) => void): Config {
+  return updateConfig(dir, (doc, current) => {
     let alerts = doc.get("alerts");
     if (!isSeq(alerts)) {
       alerts = doc.createNode([]);
@@ -251,17 +250,16 @@ export function editAlerts(dir: string, mutate: (doc: Document, alerts: YAMLSeq)
     const seq = alerts as YAMLSeq;
     // `alerts: []` from the example becomes a block list once it has entries
     seq.flow = false;
-    if (doc.has("conditions")) adoptConditions(doc, seq, cfg);
-    mutate(doc, seq);
+    if (doc.has("conditions")) adoptConditions(doc, seq, current);
+    mutate(doc, seq, current);
   });
 }
 
 /** Switch alerts on or off in a vault's yaml, keeping comments. */
 export function setAlertsEnabled(dir: string, ids: string[], enabled: boolean): void {
-  const aliases = readConfig(dir).aliases;
-  editAlerts(dir, (doc) => {
+  editAlerts(dir, (doc, _, current) => {
     for (const alertId of ids) {
-      const i = alertIndex(doc, alertId, aliases);
+      const i = alertIndex(doc, alertId, current.aliases);
       if (i < 0) continue;
       // `enabled: true` is the default, so switching back on just drops the key
       if (enabled) doc.deleteIn(["alerts", i, "enabled"]);

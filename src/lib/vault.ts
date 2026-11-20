@@ -163,12 +163,17 @@ export function readConfigSafe(dir: string): { config: Config | null; error: str
   }
 }
 
-/** Edit the yaml in place; the result is validated before it is written. */
-export function updateConfig(dir: string, mutate: (doc: Document) => void): Config {
+/**
+ * Edit the yaml in place; the result is validated before it is written. `mutate` gets the document
+ * and the config it reads as, from the same read, so what an edit checks (is the symbol there
+ * already, what an alias stands for) is what it changes, however long the caller waited before.
+ */
+export function updateConfig(dir: string, mutate: (doc: Document, current: Config) => void): Config {
   const file = yamlPath(dir);
   const doc = parseYaml(fs.readFileSync(file, "utf8"));
-  mutate(doc);
-  const config = normalizeIn(doc.toJS(), isRoot(dir) ? null : readConfig(vaultDir()));
+  const root = isRoot(dir) ? null : readConfig(vaultDir());
+  mutate(doc, normalizeIn(doc.toJS(), root));
+  const config = normalizeIn(doc.toJS(), root);
   // Comments and order survive; the library re-spaces inline comments, which is as close as it gets.
   atomicWrite(file, doc.toString({ lineWidth: 0 }));
   cache.delete(file);
