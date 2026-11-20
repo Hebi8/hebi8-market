@@ -3,13 +3,13 @@ import dns from "node:dns/promises";
 import type { LookupAddress } from "node:dns";
 import fs from "node:fs";
 import http from "node:http";
-import https from "node:https";
-import type { AddressInfo, LookupFunction } from "node:net";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { isPublicAddress, publicPost, requirePublicUrl } from "@/lib/public-address";
+import { localTransport } from "./local-transport";
 
 // Narrow the overload used by the address policy.
 const resolver = dns as { lookup: (host: string, options: { all: true }) => Promise<LookupAddress[]> };
@@ -133,31 +133,9 @@ describe("saving notification addresses", () => {
   });
 });
 
-/** Exercise the real HTTP transport locally, mapping only the checked answers to our test server. */
-function localTransport(all: boolean) {
-  const original = http.request;
-  const checked: unknown[] = [];
-  const optionsSeen: http.RequestOptions[] = [];
-  const transport = (url: URL, options: http.RequestOptions, cb: (res: http.IncomingMessage) => void) => {
-    optionsSeen.push(options);
-    const lookup: LookupFunction = (host, _options, callback) => {
-      options.lookup!(host, { all }, (error, address, family) => {
-        if (error) return callback(error, "", 0);
-        checked.push(address);
-        if (all) callback(null, (address as { address: string; family: number }[]).map(() => ({ address: "127.0.0.1", family: 4 })));
-        else callback(null, "127.0.0.1", family);
-      });
-    };
-    return original({ ...options, hostname: url.hostname, port, path: url.pathname, lookup, family: all ? 0 : 4 }, cb);
-  };
-  vi.spyOn(http, "request").mockImplementation(transport as typeof http.request);
-  vi.spyOn(https, "request").mockImplementation(transport as typeof https.request);
-  return { checked, optionsSeen };
-}
-
 describe("delivery uses checked addresses", () => {
   it.each([false, true])("passes checked DNS results into the connection (all=%s)", async (all) => {
-    const { checked, optionsSeen } = localTransport(all);
+    const { checked, optionsSeen } = localTransport(port, all);
     expect(await publicPost("http://notify.example/200", { "content-type": "text/plain" }, "hello", AbortSignal.timeout(1000))).toBe(200);
     expect(checked).toEqual(all ? [[{ address: "8.8.8.8", family: 4 }]] : ["8.8.8.8"]);
     expect(optionsSeen[0].agent).toBe(false);
@@ -168,19 +146,19 @@ describe("delivery uses checked addresses", () => {
   it("refuses a changed or mixed DNS result after a successful save-time check", async () => {
     await requirePublicUrl("https://notify.example/path", "webhook 地址");
     vi.mocked(resolver.lookup).mockResolvedValue([{ address: "8.8.8.8", family: 4 }, { address: "127.0.0.1", family: 4 }]);
-    localTransport(true);
+    localTransport(port);
     await expect(publicPost("https://notify.example/200", {}, "hello", AbortSignal.timeout(1000))).rejects.toThrow("必须是公网地址");
     expect(hits).toEqual([]);
     expect(dns.lookup).toHaveBeenCalledTimes(2);
   });
   it.each(["127.0.0.1", "[::1]", "[::ffff:7f00:1]"])("checks literal %s before Node can skip lookup", async (host) => {
-    localTransport(true);
+    localTransport(port);
     await expect(publicPost(`http://${host}/200`, {}, "hello", AbortSignal.timeout(1000))).rejects.toThrow("必须是公网地址");
     expect(http.request).not.toHaveBeenCalled();
     expect(hits).toEqual([]);
   });
   it.each([301, 302, 307, 308, 500])("treats %s as failure without following redirects or exposing the response body", async (status) => {
-    localTransport(true);
+    localTransport(port);
     const { addPushDevice, channelsFor, deliver, setUserChannel } = await import("@/lib/notify");
     setUserChannel("alice", "webhook", { url: `http://notify.example/${status}`, format: "json" });
     addPushDevice("alice", { endpoint: `https://notify.example/${status}`, keys: keys(), label: "phone", added: 1 });
@@ -190,7 +168,7 @@ describe("delivery uses checked addresses", () => {
     expect(JSON.parse(hits.find((hit) => hit.body.startsWith("{"))!.body)).toEqual({ title: "title", text: "text", events: [] });
   });
   it("sends ordinary users' public webhooks and encrypted push notifications", async () => {
-    localTransport(true);
+    localTransport(port);
     const { addPushDevice, channelsFor, deliver, setUserChannel } = await import("@/lib/notify");
     setUserChannel("alice", "webhook", { url: "https://notify.example/201", format: "text" });
     addPushDevice("alice", { endpoint: "https://notify.example/201", keys: keys(), label: "phone", added: 1 });
@@ -212,5 +190,63 @@ describe("delivery uses checked addresses", () => {
     } finally {
       fs.rmSync(path.join(dir, "secrets", "notify.json"));
     }
+  });
+});
+
+// Documentation ranges the policy treats as public, standing in for a VPS's own public addresses.
+const LOCAL_V4 = "203.0.113.7";
+const LOCAL_V6 = "2001:db8:1::7";
+/** Pretend this machine has these addresses on eth0, besides loopback. */
+const onThisMachine = (...addresses: string[]) => vi.spyOn(os, "networkInterfaces").mockReturnValue({
+  lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: "127.0.0.1/8" }],
+  eth0: addresses.map((address) => address.includes(":")
+    ? { address, netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "02:00:00:00:00:01", internal: false, cidr: `${address}/64`, scopeid: 0 }
+    : { address, netmask: "255.255.255.0", family: "IPv4", mac: "02:00:00:00:00:01", internal: false, cidr: `${address}/24` }),
+});
+
+describe("addresses of this machine", () => {
+  beforeEach(() => onThisMachine(LOCAL_V4, LOCAL_V6));
+
+  it.each([LOCAL_V4, `::ffff:${LOCAL_V4}`, "::ffff:cb00:7107", "0:0:0:0:0:ffff:cb00:7107", LOCAL_V6, "2001:0db8:0001:0000:0000:0000:0000:0007", "2001:DB8:1::7", `${LOCAL_V6}%eth0`])("refuses %s", (address) => {
+    expect(isPublicAddress(address)).toBe(false);
+  });
+  it.each(["203.0.113.6", "203.0.113.8", "::ffff:203.0.113.8", "2001:db8:1::8", "2001:db8:1::8%eth0"])("accepts the neighbour %s", (address) => {
+    expect(isPublicAddress(address)).toBe(true);
+  });
+  it("reads the interfaces on every check", () => {
+    onThisMachine();
+    expect(isPublicAddress(LOCAL_V4)).toBe(true);
+    expect(isPublicAddress(LOCAL_V6)).toBe(true);
+    onThisMachine(LOCAL_V4);
+    expect(isPublicAddress(LOCAL_V4)).toBe(false);
+  });
+  it("refuses every address the real machine reports", () => {
+    vi.mocked(os.networkInterfaces).mockRestore();
+    for (const { address } of Object.values(os.networkInterfaces()).flat().filter((info) => info !== undefined)) {
+      expect(isPublicAddress(address)).toBe(false);
+    }
+  });
+
+  it("are refused when saving, whether written as an IP or resolved from a name", async () => {
+    const webhook = await import("@/app/api/notify/webhook/route");
+    const push = await import("@/app/api/notify/push/route");
+    for (const url of [`http://${LOCAL_V4}:9100/metrics`, `http://[::ffff:${LOCAL_V4}]/hook`, `https://[${LOCAL_V6}]/hook`]) {
+      expect(await (await webhook.PUT(req("webhook", sessions.alice, { url }))).json()).toEqual({ error: "webhook 地址必须是公网地址" });
+    }
+    expect((await push.PUT(req("push", sessions.alice, { endpoint: `https://[${LOCAL_V6}]/push`, keys: keys() }))).status).toBe(400);
+    expect(dns.lookup).not.toHaveBeenCalled();
+    vi.mocked(resolver.lookup).mockResolvedValue([{ address: LOCAL_V6, family: 6 }]);
+    expect((await push.PUT(req("push", sessions.alice, { endpoint: "https://notify.example/push", keys: keys() }))).status).toBe(400);
+    expect(fs.existsSync(path.join(dir, "secrets", "notify-users.json"))).toBe(false);
+  });
+
+  it("are refused at delivery, as an IP literal or as a DNS answer that changed after saving", async () => {
+    localTransport(port);
+    await expect(publicPost(`http://[${LOCAL_V6}]/200`, {}, "hello", AbortSignal.timeout(1000))).rejects.toThrow("必须是公网地址");
+    expect(http.request).not.toHaveBeenCalled();
+    await requirePublicUrl("https://notify.example/path", "webhook 地址");
+    vi.mocked(resolver.lookup).mockResolvedValue([{ address: LOCAL_V4, family: 4 }]);
+    await expect(publicPost("https://notify.example/200", {}, "hello", AbortSignal.timeout(1000))).rejects.toThrow("必须是公网地址");
+    expect(hits).toEqual([]);
   });
 });

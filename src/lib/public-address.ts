@@ -2,6 +2,7 @@ import dns from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
 import { BlockList, isIP, type LookupFunction } from "node:net";
+import os from "node:os";
 
 const blocked = new BlockList();
 for (const [address, prefix] of [
@@ -15,10 +16,24 @@ blocked.addSubnet("fc00::", 7, "ipv6");
 blocked.addSubnet("fe80::", 10, "ipv6");
 blocked.addSubnet("ff00::", 8, "ipv6");
 
-/** BlockList also checks IPv4-mapped IPv6 against its IPv4 rules. */
+/**
+ * Addresses assigned to this machine, read on every check since they can change. A public one
+ * still reaches services listening on all interfaces, so it is not a public address either.
+ */
+function localAddresses(): BlockList {
+  const local = new BlockList();
+  for (const info of Object.values(os.networkInterfaces()).flat()) {
+    if (info) local.addAddress(info.address, info.family === "IPv4" ? "ipv4" : "ipv6");
+  }
+  return local;
+}
+
+/** BlockList also checks IPv4-mapped IPv6 against its IPv4 rules, and ignores an IPv6 zone id. */
 export function isPublicAddress(address: string): boolean {
   const family = isIP(address);
-  return family !== 0 && !blocked.check(address, family === 4 ? "ipv4" : "ipv6");
+  if (family === 0) return false;
+  const type = family === 4 ? "ipv4" : "ipv6";
+  return !blocked.check(address, type) && !localAddresses().check(address, type);
 }
 
 const hostname = (url: URL) => url.hostname.replace(/^\[|\]$/g, "");
