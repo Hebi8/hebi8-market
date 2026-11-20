@@ -218,8 +218,8 @@ npm run notify:test
 **[共用实例](self-hosting.md#共用一台实例)**：`notify.json` 是实例的设置——bot 的 `token`、`api` 和 `link`；其中的 `chat` 和 `webhook` 是 owner（根 vault）的通道，可以不写。其他人登录后在页头菜单的「通知设置」里设置自己的通道，存在 `~/.config/hebi8/market/notify-users.json`（页面写入，权限 600，不用手改）：
 
 - **绑定 Telegram**：点「绑定 Telegram」，打开链接在 Telegram 里点 Start，几秒后自动绑好，bot 会回一句「已绑定 hebi8：<login>」。链接里的一次性码 10 分钟有效。owner 也可以这样绑定，会替代 `notify.json` 里的 `chat`。
-- **webhook**：填地址和格式（text / json）保存，同样替代 `notify.json` 里的 `webhook`。
-- **推送**：勾上「在此设备上接收推送」，这台手机或浏览器就会收到系统通知，点开是对应的图表；每台设备各开一次，下面列着开过的设备，可以移除。只能在 HTTPS 地址上开（局域网、Tailscale 的 http 不行）；iPhone / iPad 要先在 Safari 里「分享 → 添加到主屏幕」，从主屏幕打开再开（iOS 16.4 及以上）。
+- **webhook**：填地址和格式（text / json）保存，同样替代 `notify.json` 里的 `webhook`。owner 以外的人只能填公网地址：局域网、Tailscale 和本机的地址（包括实例所在机器自己的公网 IP）保存不了，以前存下的也不再发送；发送时不跟随重定向。对方回了错误状态时只显示状态码（比如「webhook 500」），不显示回应内容；请求没发成（地址被拒、连不上、超时）时显示「webhook 请求失败」和错误类型。
+- **推送**：勾上「在此设备上接收推送」，这台手机或浏览器就会收到系统通知，点开是对应的图表；每台设备各开一次，下面列着开过的设备，可以移除。只能在 HTTPS 地址上开（局域网、Tailscale 的 http 不行）；iPhone / iPad 要先在 Safari 里「分享 → 添加到主屏幕」，从主屏幕打开再开（iOS 16.4 及以上）。除了页面要从 HTTPS 地址打开，推送订阅的地址（浏览器的推送服务给的 endpoint）本身也必须是 https；owner 以外的人的推送还和 webhook 一样只发往公网地址。浏览器自带的推送服务这两条都满足，不用管。
 - 「发测试消息」往自己的每个通道发一条，「解除绑定」「删除」去掉页面上设置的通道。
 - 绑定时 hebi8 用 `getUpdates` 读 bot 收到的消息（只在有待绑定的码时，只往外连）；`api` 有几个地址时每个都读，因为 bot 同时用着云端和自建服务时 Telegram 不保证收到全部消息（都读也不能保证收齐，没读到时重新点一次绑定）。等待绑定时改了 `notify.json`，下一轮轮询就跟上：新加的地址开始读，去掉的地址不再读，换了 token 则已发出的绑定链接作废（文件一时读不出来不算，等它恢复）。所以这个 bot 要给 hebi8 专用：同一个 token 被别的程序 `getUpdates` 时两边会抢消息。
 
