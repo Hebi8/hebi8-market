@@ -217,6 +217,17 @@ alerts: *rules
     expect(read()).toContain("watch: &watch [ yahoo:SPY ]");
   });
 
+  it("an alias elsewhere that becomes a copy keeps the comment on its line", async () => {
+    const yaml = `groups:\n  - { name: &desk A, symbols: [yahoo:SPY] }\n  - name: B\n    symbols:\n      - key: yahoo:QQQ\n        name: *desk # Local label note\n`;
+    fs.writeFileSync(yamlFile, yaml);
+    expect(await renameGroup("A", "US")).toEqual({ ok: true });
+    expect(read()).toContain("name: A # Local label note");
+    // and when a move writes it out
+    fs.writeFileSync(yamlFile, yaml);
+    expect(await moveGroup("B", 0)).toEqual({ ok: true });
+    expect(read()).toContain("name: A # Local label note");
+  });
+
   it("a copy reads an alias used as a key where the original stood too", async () => {
     const { readConfig } = await import("@/lib/vault");
     fs.writeFileSync(

@@ -244,12 +244,20 @@ export function locateEntry(doc: Document, key: string, aliases: Record<string, 
 /** A node holding `value`, written the way `like` is (flow or block), with no anchors another place can read. */
 const copyOf = (doc: Document, value: unknown, like: unknown) => doc.createNode(value, { flow: (isMap(like) || isSeq(like)) && like.flow }) as Node;
 
+/** The copy that stands where `alias` stood, with the comments written on the alias. */
+function instead(doc: Document, alias: Alias, value: unknown, like: unknown): Node {
+  const copy = copyOf(doc, value, like);
+  copy.commentBefore = alias.commentBefore;
+  copy.comment = alias.comment;
+  return copy;
+}
+
 /** Aliases anywhere that read `node` become copies of what it reads now, so it can change alone. */
 function unshare(doc: Document, node: Node): void {
   if (isAlias(node) || node.anchor === undefined) return;
   const value = node.toJS(doc);
   visit(doc, {
-    Alias: (_, alias) => (alias.resolve(doc) === node ? copyOf(doc, value, node) : undefined),
+    Alias: (_, alias) => (alias.resolve(doc) === node ? instead(doc, alias, value, node) : undefined),
   });
 }
 
@@ -258,11 +266,7 @@ function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number): un
   let node: unknown = parent.get(key, true);
   if (isAlias(node)) {
     const source = node.resolve(doc)!;
-    const copy = copyOf(doc, source.toJS(doc), source);
-    // the comments written on the alias stay where it stood
-    copy.commentBefore = node.commentBefore;
-    copy.comment = node.comment;
-    node = copy;
+    node = instead(doc, node, source.toJS(doc), source);
     parent.set(key, node);
   } else if (isNode(node)) unshare(doc, node);
   return node;
@@ -392,7 +396,7 @@ export function editGroups(doc: Document, op: WatchlistOp, aliases: Record<strin
   visit(doc, {
     Alias: (_, alias) => {
       const source = sources.get(alias);
-      if (source?.node && alias.resolve(doc) !== source.node) return copyOf(doc, source.value, source.node);
+      if (source?.node && alias.resolve(doc) !== source.node) return instead(doc, alias, source.value, source.node);
     },
   });
 }
