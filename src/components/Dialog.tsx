@@ -4,19 +4,77 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { IconClose } from "./chart-icons";
 import { useScrollLock } from "./use-scroll-lock";
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+function focusables(root: HTMLElement): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => {
+    if (el.closest("[hidden], [inert]")) return false;
+    const style = getComputedStyle(el);
+    return style.display !== "none" && style.visibility !== "hidden";
+  });
+}
+
 /**
  * TradingView-style modal: title bar with ×, closes on backdrop click (Esc is handled by the page). The title bar
  * stays put and the body scrolls on a short screen (a body with its own scrolling list keeps its header too); the
- * page behind does not scroll while it is open.
+ * page behind does not scroll while it is open, and Tab focus stays inside until it closes.
  */
 export function Dialog({ title, onClose, children, className = "max-w-[560px]" }: { title: string; onClose: () => void; children: ReactNode; className?: string }) {
   useScrollLock();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // capture the trigger before React commits any child `autoFocus` inside the dialog
+  const [previous] = useState<HTMLElement | null>(() => (typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null));
+
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (!el) return;
+    if (!el.contains(document.activeElement)) el.focus({ preventScroll: true });
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const list = focusables(el);
+      if (list.length === 0) {
+        e.preventDefault();
+        el.focus({ preventScroll: true });
+        return;
+      }
+      const first = list[0];
+      const last = list[list.length - 1];
+      const active = document.activeElement;
+      if (!el.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      } else if (e.shiftKey && (active === first || active === el)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      if (previous?.isConnected && !el.contains(previous)) previous.focus({ preventScroll: true });
+    };
+  }, [previous]);
+
+  // if an inner view switch unmounts the focused control, keep focus inside the dialog
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
+  }, [title]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/30 px-3 pt-[8dvh]" onMouseDown={onClose}>
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
         aria-label={title}
-        className={`flex max-h-[84dvh] w-full flex-col overflow-hidden rounded-lg border border-line bg-card shadow-xl ${className}`}
+        tabIndex={-1}
+        className={`flex max-h-[84dvh] w-full flex-col overflow-hidden rounded-lg border border-line bg-card shadow-xl focus:outline-none ${className}`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex h-11 shrink-0 items-center justify-between border-b border-line pr-2 pl-4">

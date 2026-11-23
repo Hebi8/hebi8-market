@@ -12,27 +12,39 @@ export function fmtPct(value: number | null | undefined, digits = 1): string {
   return `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${Math.abs(pct).toFixed(digits)}%`;
 }
 
-/** Format a custom overview formula column's latest value (`pct` expects percentage points, e.g. `roc()`). */
+const ZERO_FMT = /^0(?:\.0+)?$/;
+
+/**
+ * Format a custom overview formula column's latest value (`pct` expects percentage points, e.g. `roc()`).
+ * Formats `Math.abs(value)` before adding the sign so positive/negative half-steps stay symmetric
+ * and large finite values never overflow.
+ */
 export function fmtColumnValue(value: number | null | undefined, format: ColumnFormat): string {
   if (value == null || !Number.isFinite(value)) return "—";
   const abs = Math.abs(value);
   if (format === "pct") {
-    const rounded = Math.round(value * 10) / 10;
-    const sign = rounded > 0 ? "+" : rounded < 0 ? "−" : "";
-    return `${sign}${Math.abs(rounded).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+    const body = abs.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    const sign = ZERO_FMT.test(body) ? "" : value > 0 ? "+" : "−";
+    return `${sign}${body}%`;
   }
   if (format === "ratio") {
     const digits = abs >= 100 ? 1 : 2;
-    const factor = 10 ** digits;
-    const rounded = Math.round(value * factor) / factor;
-    const sign = rounded < 0 ? "−" : "";
-    return `${sign}${Math.abs(rounded).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}x`;
+    const body = abs.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    const sign = ZERO_FMT.test(body) || value >= 0 ? "" : "−";
+    return `${sign}${body}x`;
   }
   const digits = abs >= 10000 ? 0 : abs >= 1000 ? 1 : abs === 0 || abs >= 0.01 ? 2 : 4;
-  const factor = 10 ** digits;
-  const rounded = Math.round(value * factor) / factor;
-  const sign = rounded < 0 ? "−" : "";
-  return `${sign}${Math.abs(rounded).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+  const body = abs.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const sign = ZERO_FMT.test(body) || value >= 0 ? "" : "−";
+  return `${sign}${body}`;
+}
+
+/** Text color for a formatted overview column value: signed up/down for non-zero pct, neutral otherwise. */
+export function columnColor(value: number | null | undefined, format: ColumnFormat): string {
+  if (value == null || !Number.isFinite(value)) return "text-muted";
+  if (format !== "pct") return "text-fg";
+  if (fmtColumnValue(value, "pct") === "0.0%") return "text-muted";
+  return changeColor(value);
 }
 
 export function fmtDate(unixSeconds: number): string {

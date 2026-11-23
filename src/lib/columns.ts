@@ -16,6 +16,11 @@ export const MAX_COLUMNS = 6;
 /** Letters, digits, underscores and hyphens; matches explicit alert ids. */
 export const COLUMN_ID = /^[A-Za-z0-9_-]+$/;
 
+/** Prototype property names that must not be used as column ids. */
+export const RESERVED_COLUMN_IDS = new Set(["__proto__", "constructor", "prototype"]);
+
+export const isValidColumnId = (id: string) => COLUMN_ID.test(id) && !RESERVED_COLUMN_IDS.has(id);
+
 export function isColumnFormat(value: unknown): value is ColumnFormat {
   return value === "number" || value === "pct" || value === "ratio";
 }
@@ -69,8 +74,9 @@ export interface SortableOverviewRow {
 
 export function sortOverviewValue(row: SortableOverviewRow, key: OverviewSortKey): number | null {
   if (key.startsWith("col:")) {
-    const v = row.columns[key.slice(4)];
-    return v != null && Number.isFinite(v) ? v : null;
+    const id = key.slice(4);
+    const v = Object.hasOwn(row.columns, id) ? row.columns[id] : null;
+    return typeof v === "number" && Number.isFinite(v) ? v : null;
   }
   const s = row.stats;
   if (!s) return null;

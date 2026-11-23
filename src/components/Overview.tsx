@@ -8,7 +8,7 @@ import type { AlertBadge, AlertView } from "@/lib/alert-view";
 import type { SymbolStatus } from "@/lib/api-types";
 import { columnSortKey, nextSort, sortOverviewRows, type OverviewSort, type OverviewSortKey } from "@/lib/columns";
 import type { UpDown } from "@/lib/config";
-import { SESSION_LABELS, changeColor, fmtAgo, fmtColumnValue, fmtPct, fmtPrice } from "@/lib/format";
+import { SESSION_LABELS, changeColor, columnColor, fmtAgo, fmtColumnValue, fmtPct, fmtPrice } from "@/lib/format";
 import { CHANGE_PERIODS, MAX_PERIODS, type ChangePeriod } from "@/lib/periods";
 import { pricePrecision, type Stats } from "@/lib/stats";
 import { SOURCE_LABELS, TF_LABELS, type Source } from "@/lib/symbols";
@@ -167,11 +167,14 @@ function Th({
     </>,
   );
   return (
-    <th {...card.hover} style={width ? { width } : undefined} aria-sort={sorted} className={`p-0 text-[11px] font-normal ${error ? "text-down" : "text-muted"} ${className}`}>
+    <th {...card.hover} style={width ? { width } : undefined} aria-sort={sorted} className={`p-0 text-[11px] font-normal ${error ? "text-[var(--red)]" : "text-muted"} ${className}`}>
       {sortKey ? (
         <button
           {...card.trigger}
-          onClick={() => onSort(sortKey)}
+          onClick={() => {
+            card.dismiss();
+            onSort(sortKey);
+          }}
           className={`flex h-7 w-full items-center gap-1 px-2 hover:text-fg ${className.includes("text-right") ? "justify-end" : ""} ${active ? "text-fg" : ""}`}
         >
           <span className={`${HINT_LABEL} truncate`}>{label}</span>
@@ -511,12 +514,11 @@ export function Overview({ data }: { data: OverviewData }) {
                         {data.columns.length > 0 && (
                           <div className="mt-0.5 flex flex-wrap gap-x-3 font-mono text-[11px]">
                             {data.columns.map((c) => {
-                              const v = row.columns[c.id] ?? null;
-                              const color = c.format === "pct" ? changeColor(v) : v == null ? "text-muted" : "text-fg";
+                              const v = Object.hasOwn(row.columns, c.id) ? row.columns[c.id] : null;
                               return (
                                 <span key={c.id} className="tabular">
                                   <span className="text-muted">{c.label}</span>{" "}
-                                  <span className={color}>{fmtColumnValue(v, c.format)}</span>
+                                  <span className={columnColor(v, c.format)}>{fmtColumnValue(v, c.format)}</span>
                                 </span>
                               );
                             })}
@@ -672,13 +674,12 @@ function GroupRows({
                 </td>
               ))}
               {columns.map((c) => {
-                const v = row.columns[c.id] ?? null;
-                const color = c.format === "pct" ? changeColor(v) : v == null ? "text-muted" : "text-fg";
+                const v = Object.hasOwn(row.columns, c.id) ? row.columns[c.id] : null;
                 return (
                   <td
                     key={c.id}
-                    className={`font-mono tabular ${cell} text-right ${color}`}
-                    title={v != null ? String(Number(v.toPrecision(8))) : (c.error ?? undefined)}
+                    className={`font-mono tabular ${cell} text-right ${columnColor(v, c.format)}`}
+                    title={v != null && Number.isFinite(v) ? String(Number(v.toPrecision(8))) : (c.error ?? undefined)}
                   >
                     {fmtColumnValue(v, c.format)}
                   </td>

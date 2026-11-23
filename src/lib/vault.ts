@@ -253,7 +253,7 @@ function instead(doc: Document, alias: Alias, value: unknown, like: unknown): No
 }
 
 /** Aliases anywhere that read `node` become copies of what it reads now, so it can change alone. */
-function unshare(doc: Document, node: Node): void {
+export function unshare(doc: Document, node: Node): void {
   if (isAlias(node) || node.anchor === undefined) return;
   const value = node.toJS(doc);
   visit(doc, {
@@ -262,7 +262,7 @@ function unshare(doc: Document, node: Node): void {
 }
 
 /** The node at `key` of `parent` made its own (see above), so it can change in place. */
-function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number): unknown {
+export function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number): unknown {
   let node: unknown = parent.get(key, true);
   if (isAlias(node)) {
     const source = node.resolve(doc)!;

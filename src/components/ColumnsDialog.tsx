@@ -142,7 +142,7 @@ export function ColumnsDialog({ columns, aliases, onSaved, onDeleted, onClose }:
                   <div className="truncate font-mono text-[11px] text-muted" title={col.formula}>
                     {col.formula}
                   </div>
-                  {col.error && <div className="mt-0.5 text-[11px] text-down">{col.error}</div>}
+                  {col.error && <div className="mt-0.5 text-[11px] text-[var(--red)]">{col.error}</div>}
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5">
                   <button
@@ -168,7 +168,7 @@ export function ColumnsDialog({ columns, aliases, onSaved, onDeleted, onClose }:
                   <button type="button" className="btn h-6 px-1.5" disabled={busy} onClick={() => setEditing(col)}>
                     编辑
                   </button>
-                  <button type="button" className="btn h-6 px-1.5 text-down" disabled={busy} onClick={() => void remove(col)}>
+                  <button type="button" className="btn h-6 px-1.5 text-[var(--red)]" disabled={busy} onClick={() => void remove(col)}>
                     删除
                   </button>
                 </div>
@@ -176,7 +176,7 @@ export function ColumnsDialog({ columns, aliases, onSaved, onDeleted, onClose }:
             ))}
           </ul>
         )}
-        {error && <p className="text-down">{error}</p>}
+        {error && <p className="text-[var(--red)]">{error}</p>}
         <div className="-mx-4 -mb-4 flex items-center gap-2 border-t border-line px-4 py-3">
           <span className="mr-auto text-[11px] text-muted">
             {columns.length} / {MAX_COLUMNS} 列
@@ -305,9 +305,9 @@ function ColumnEditor({
             {compiled === null ? (
               <span className="text-muted">多行公式取最后一行最新值；支持 bench、跨标的 close(DXY)、yearopen 等</span>
             ) : compiled.error !== null ? (
-              <span className="text-down">{compiled.error}</span>
+              <span className="text-[var(--red)]">{compiled.error}</span>
             ) : (
-              <span className="text-up">
+              <span className="text-[#0f7640] dark:text-[var(--green)]">
                 ✓ 公式有效{compiled.program.outputs.length > 1 ? `（取最后一行：${compiled.program.outputs.at(-1)}）` : ""}
               </span>
             )}
@@ -368,11 +368,11 @@ function ColumnEditor({
       <p className="text-[11px] text-muted">
         {format === "pct" ? "百分比格式直接给公式结果加 %（如 roc(close, 20) 或 (close / sma(close, 200) - 1) * 100），不额外乘 100。" : "缺少基准、历史不足或计算无效的标的显示 —，排序时排在末尾。"}
       </p>
-      {serverError && <p className="text-down">{serverError}</p>}
+      {serverError && <p className="text-[var(--red)]">{serverError}</p>}
 
       <div className="-mx-4 -mb-4 flex items-center gap-2 border-t border-line px-4 py-3">
         {onDelete && (
-          <button type="button" className="btn text-down" disabled={busy} onClick={() => void run(onDelete)}>
+          <button type="button" className="btn text-[var(--red)]" disabled={busy} onClick={() => void run(onDelete)}>
             删除
           </button>
         )}

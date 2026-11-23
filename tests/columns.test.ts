@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { columnSortKey, MAX_COLUMNS, nextSort, sortOverviewRows, type SortableOverviewRow } from "@/lib/columns";
 import { ConfigError, INSTANCE_KEYS, normalizeConfig, normalizeUserConfig, syncKeys } from "@/lib/config";
-import { fmtColumnValue } from "@/lib/format";
+import { columnColor, fmtColumnValue } from "@/lib/format";
 import type { Bar } from "@/lib/series";
 
 const request = vi.hoisted(() => ({ session: undefined as string | undefined }));
@@ -76,6 +76,9 @@ describe("columns config parsing & validation", () => {
     [{ columns: [{ id: "a", label: "价格" }] }, "需要 formula"],
     [{ columns: [{ id: "bad id!", label: "坏id", formula: "close" }] }, "只能用字母、数字、下划线、横线"],
     [{ columns: [{ id: "", label: "空id", formula: "close" }] }, "只能用字母、数字、下划线、横线"],
+    [{ columns: [{ id: "__proto__", label: "原型", formula: "close" }] }, "保留名称"],
+    [{ columns: [{ id: "constructor", label: "构造", formula: "close" }] }, "保留名称"],
+    [{ columns: [{ id: "prototype", label: "原型2", formula: "close" }] }, "保留名称"],
     [{ columns: [{ id: "a", label: "错周期", formula: "close", tf: "5m" }] }, "无效的周期"],
     [{ columns: [{ id: "a", label: "错格式", formula: "close", format: "currency" }] }, "format 应为"],
     [
@@ -129,19 +132,35 @@ describe("formatting and 3-state sorting", () => {
     expect(fmtColumnValue(NaN, "ratio")).toBe("—");
     expect(fmtColumnValue(Infinity, "number")).toBe("—");
 
-    // pct: direct percentage points, signed, no -0.0%
+    // pct: direct percentage points, signed, symmetric rounding, no -0.0% or +∞%
     expect(fmtColumnValue(15.44, "pct")).toBe("+15.4%");
     expect(fmtColumnValue(-8.26, "pct")).toBe("−8.3%");
+    expect(fmtColumnValue(1.25, "pct")).toBe("+1.3%");
+    expect(fmtColumnValue(-1.25, "pct")).toBe("−1.3%");
     expect(fmtColumnValue(0, "pct")).toBe("0.0%");
-    expect(fmtColumnValue(-0.02, "pct")).toBe("0.0%");
+    expect(fmtColumnValue(-0.04, "pct")).toBe("0.0%");
+    expect(fmtColumnValue(0.04, "pct")).toBe("0.0%");
     expect(fmtColumnValue(1234.56, "pct")).toBe("+1,234.6%");
+    expect(fmtColumnValue(1e308, "pct")).not.toContain("∞");
 
-    // ratio
+    // columnColor: neutral when pct rounds to 0.0%, signed otherwise
+    expect(columnColor(null, "pct")).toBe("text-muted");
+    expect(columnColor(-0.04, "pct")).toBe("text-muted");
+    expect(columnColor(0.04, "pct")).toBe("text-muted");
+    expect(columnColor(0.05, "pct")).toBe("text-up");
+    expect(columnColor(-0.05, "pct")).toBe("text-down");
+    expect(columnColor(10, "number")).toBe("text-fg");
+    expect(columnColor(2, "ratio")).toBe("text-fg");
+
+    // ratio: symmetric rounding, no overflow
     expect(fmtColumnValue(2.354, "ratio")).toBe("2.35x");
+    expect(fmtColumnValue(1.255, "ratio")).toBe("1.26x");
+    expect(fmtColumnValue(-1.255, "ratio")).toBe("−1.26x");
     expect(fmtColumnValue(0.8, "ratio")).toBe("0.80x");
     expect(fmtColumnValue(-1.2, "ratio")).toBe("−1.20x");
     expect(fmtColumnValue(-0.001, "ratio")).toBe("0.00x");
     expect(fmtColumnValue(120.54, "ratio")).toBe("120.5x");
+    expect(fmtColumnValue(1e308, "ratio")).not.toContain("∞");
 
     // number: adaptive precision
     expect(fmtColumnValue(64.238, "number")).toBe("64.24");
@@ -175,6 +194,9 @@ describe("formatting and 3-state sorting", () => {
     expect(sortOverviewRows(rows, null).map((r) => r.key)).toEqual(["A", "B", "C", "D"]);
     // column named "last" does not collide with built-in "last" sort key
     expect(sortOverviewRows(rows, { key: columnSortKey("last"), dir: -1 }).map((r) => r.key)).toEqual(["A", "C", "B", "D"]);
+    // prototype property names never read Object.prototype methods
+    expect(sortOverviewRows(rows, { key: columnSortKey("toString"), dir: -1 }).map((r) => r.key)).toEqual(["A", "B", "C", "D"]);
+    expect(sortOverviewRows(rows, { key: columnSortKey("__proto__"), dir: -1 }).map((r) => r.key)).toEqual(["A", "B", "C", "D"]);
   });
 });
 
@@ -386,33 +408,147 @@ alerts: []
     expect(text.indexOf("groups:")).toBeLessThan(text.indexOf("columns:"));
     expect(text.indexOf("columns:")).toBeLessThan(text.indexOf("alerts:"));
 
-    // Validation errors refuse write
+    // Validation errors refuse write (including compile-time window & key checks)
     expect(() => ops.saveColumn(viewer, { label: "坏", formula: "close(" })).toThrow();
     expect(() => ops.saveColumn(viewer, { label: "未知", formula: "close(NOPE)" })).toThrow("未知别名");
+    expect(() => ops.saveColumn(viewer, { label: "零窗口", formula: "sma(close, 0)" })).toThrow("n 必须是正整数");
+    expect(() => ops.saveColumn(viewer, { label: "错源", formula: 'close("yaho:SPY")' })).toThrow("无效的标的 key");
     expect(() => ops.saveColumn(viewer, { label: "", formula: "close" })).toThrow("请填写列标题");
+    expect(() => ops.saveColumn(viewer, { id: "__proto__", label: "原型", formula: "close" })).toThrow("保留名称");
+
+    // Editing a deleted / missing column throws instead of resurrecting it
+    expect(() => ops.saveColumn(viewer, { id: "already_deleted", label: "复活", formula: "close" })).toThrow("已经不在 hebi8.yaml 里了");
 
     // Enforces MAX_COLUMNS when creating, still allows editing existing
-    ops.saveColumn(viewer, { id: "c4", label: "四", formula: "close" });
-    ops.saveColumn(viewer, { id: "c5", label: "五", formula: "close" });
-    ops.saveColumn(viewer, { id: "c6", label: "六", formula: "close" });
+    const c4 = ops.saveColumn(viewer, { label: "四", formula: "close" });
+    const c5 = ops.saveColumn(viewer, { label: "五", formula: "close" });
+    const c6 = ops.saveColumn(viewer, { label: "六", formula: "close" });
     expect(readConfig(root).columns).toHaveLength(MAX_COLUMNS);
     expect(() => ops.saveColumn(viewer, { label: "七", formula: "close" })).toThrow(`最多保留 ${MAX_COLUMNS} 个公式列`);
-    expect(ops.saveColumn(viewer, { id: "c6", label: "六改", formula: "open" }).label).toBe("六改");
+    expect(ops.saveColumn(viewer, { id: c6.id, label: "六改", formula: "open" }).label).toBe("六改");
+    expect([c4.id, c5.id, c6.id].every((id) => /^c[a-z0-9]+$/.test(id))).toBe(true);
 
-    // Delete column
+    // Delete column, then stale edit must fail instead of re-adding
     ops.deleteColumn(viewer, "vs_b");
     expect(readConfig(root).columns.map((c) => c.id)).not.toContain("vs_b");
+    expect(() => ops.saveColumn(viewer, { id: "vs_b", label: "旧弹窗保存", formula: "close" })).toThrow("已经不在 hebi8.yaml 里了");
 
     // Works when `columns:` is absent or `columns: []`, and round-trips multi-line formulas
     fs.writeFileSync(yamlFile, BASE_YAML.replace(/# 公式列说明注释\ncolumns:[\s\S]*?(?=alerts:)/, ""));
-    const ml = ops.saveColumn(viewer, { id: "macd_h", label: "MACD柱", formula: "d = macd(close, 5, 10)\nd - ema(d, 3)", tf: "D", format: "number" });
+    const ml = ops.saveColumn(viewer, { label: "MACD柱", formula: "d = macd(close, 5, 10)\nd - ema(d, 3)", tf: "D", format: "number" });
     expect(readConfig(root).columns).toEqual([ml]);
     expect(readConfig(root).columns[0].formula).toBe("d = macd(close, 5, 10)\nd - ema(d, 3)");
 
     fs.writeFileSync(yamlFile, BASE_YAML.replace(/columns:[\s\S]*?(?=alerts:)/, "columns: []\n"));
-    ops.saveColumn(viewer, { id: "r14", label: "RSI", formula: "rsi(close, 14)", tf: "D", format: "number" });
+    const r14 = ops.saveColumn(viewer, { label: "RSI", formula: "rsi(close, 14)", tf: "D", format: "number" });
     expect(readYaml()).toContain("columns:\n  - {");
-    expect(readConfig(root).columns.map((c) => c.id)).toEqual(["r14"]);
+    expect(readConfig(root).columns.map((c) => c.id)).toEqual([r14.id]);
+
+    // Editing a hand-written column without explicit `id` persists its matched id in yaml
+    fs.writeFileSync(
+      yamlFile,
+      BASE_YAML.replace(/columns:[\s\S]*?(?=alerts:)/, 'columns:\n  - { label: 手写列, formula: "close / open", tf: D } # 行注释\n'),
+    );
+    const derivedId = readConfig(root).columns[0].id;
+    expect(derivedId).toMatch(/^c_[0-9a-f]{6}$/);
+    const updatedNoId = ops.saveColumn(viewer, { id: derivedId, label: "手写改名", formula: "close / open", tf: "W", format: "ratio" });
+    expect(updatedNoId.id).toBe(derivedId);
+    expect(readYaml()).toContain(`id: ${derivedId}`);
+    expect(readYaml()).toContain("# 行注释");
+    // Second edit with the same id still matches cleanly
+    expect(ops.saveColumn(viewer, { id: derivedId, label: "手写再改", formula: "close", tf: "M", format: "number" }).id).toBe(derivedId);
+  });
+
+  it("handles YAML alias/anchor column lists safely and keeps overflow tail entries untouched on reorder", async () => {
+    const ops = await import("@/lib/ops");
+    const { readConfig } = await import("@/lib/vault");
+    const { parse } = await import("yaml");
+    const viewer = { vault: "", dir: root, login: "dreaife", avatarUrl: null, canWrite: true, isOwner: true, shared: true, owner: "Dreaife" };
+
+    // 1) `columns: *preset` — add, edit, reorder, delete must materialize and preserve preset anchor
+    const aliasYaml = `owner: Dreaife
+aliases:
+  BTC: ${BTC}
+groups:
+  - { name: 加密, symbols: [BTC] }
+x-preset: &preset
+  - { id: a, label: 列A, formula: close, tf: D, format: number }
+  - { id: b, label: 列B, formula: open, tf: D, format: number }
+columns: *preset
+`;
+    fs.writeFileSync(yamlFile, aliasYaml);
+    const added = ops.saveColumn(viewer, { label: "列C", formula: "high", tf: "W", format: "number" });
+    expect(readConfig(root).columns.map((c) => c.id)).toEqual(["a", "b", added.id]);
+    expect((parse(readYaml()) as { "x-preset": { id: string }[] })["x-preset"].map((c) => c.id)).toEqual(["a", "b"]);
+
+    fs.writeFileSync(yamlFile, aliasYaml);
+    ops.reorderColumns(viewer, ["b", "a"]);
+    expect(readConfig(root).columns.map((c) => c.id)).toEqual(["b", "a"]);
+    expect((parse(readYaml()) as { "x-preset": { id: string }[] })["x-preset"].map((c) => c.id)).toEqual(["a", "b"]);
+
+    fs.writeFileSync(yamlFile, aliasYaml);
+    ops.deleteColumn(viewer, "a");
+    expect(readConfig(root).columns.map((c) => c.id)).toEqual(["b"]);
+    expect((parse(readYaml()) as { "x-preset": { id: string }[] })["x-preset"].map((c) => c.id)).toEqual(["a", "b"]);
+
+    // 2) `columns` with > MAX_COLUMNS entries: reorder only rearranges the active head, keeping overflow tail intact
+    const overflowYaml = `owner: Dreaife
+aliases:
+  BTC: ${BTC}
+groups:
+  - { name: 加密, symbols: [BTC] }
+columns:
+  - { id: c1, label: L1, formula: close }
+  - { id: c2, label: L2, formula: close }
+  - { id: c3, label: L3, formula: close }
+  - { id: c4, label: L4, formula: close }
+  - { id: c5, label: L5, formula: close }
+  - { id: c6, label: L6, formula: close }
+  - { id: c7, label: L7, formula: close }
+  - { id: c8, label: L8, formula: close }
+`;
+    fs.writeFileSync(yamlFile, overflowYaml);
+    ops.reorderColumns(viewer, ["c6", "c5", "c4", "c3", "c2", "c1"]);
+    const rawCols = (parse(readYaml()) as { columns: { id: string }[] }).columns;
+    expect(rawCols.map((c) => c.id)).toEqual(["c6", "c5", "c4", "c3", "c2", "c1", "c7", "c8"]);
+  });
+
+  it("rejects nested synthetic aliases consistently across compile, save, syncKeys, quoteKeys and overview", async () => {
+    const ops = await import("@/lib/ops");
+    const { quoteKeys, overviewStats } = await import("@/lib/quotes");
+    const { callTool } = await import("@/lib/mcp/tools");
+    const { createToken } = await import("@/lib/secrets");
+    const { tokenViewer } = await import("@/lib/viewer");
+    const viewer = { vault: "", dir: root, login: "dreaife", avatarUrl: null, canWrite: true, isOwner: true, shared: true, owner: "Dreaife" };
+
+    const nestedYaml = `owner: Dreaife
+aliases:
+  BTC: ${BTC}
+  ETH: ${ETH}
+  DXY: ${DXY}
+  INNER: "=BTC/ETH"
+  OUTER: "=INNER/DXY"
+groups:
+  - { name: 加密, symbols: [BTC] }
+columns:
+  - { id: bad_nest, label: 嵌套合成, formula: "close(OUTER)", tf: D, format: number }
+`;
+    fs.writeFileSync(yamlFile, nestedYaml);
+    expect(() => ops.saveColumn(viewer, { label: "再加嵌套", formula: "close(OUTER)" })).toThrow("不能嵌套合成标的");
+
+    const cfg = normalizeConfig({
+      aliases: { BTC, ETH, DXY, INNER: "=BTC/ETH", OUTER: "=INNER/DXY" },
+      groups: [{ name: "加密", symbols: ["BTC"] }],
+      columns: [{ id: "bad_nest", label: "嵌套合成", formula: "close(OUTER)", tf: "D", format: "number" }],
+    });
+    expect(syncKeys(cfg)).toEqual([BTC]);
+    expect(quoteKeys([cfg])).toEqual([BTC]);
+    expect(overviewStats("", cfg)[BTC].stats.columns!.bad_nest).toBeNull();
+
+    const mcpViewer = tokenViewer(createToken({ name: "ro", login: "dreaife", write: false }))!;
+    const ov = JSON.parse((await callTool(mcpViewer, "overview", {})).content[0].text);
+    expect(ov.columns[0].error).toContain("不能嵌套合成标的");
+    expect(ov.groups[0].symbols[0].columns.bad_nest).toBeNull();
   });
 
   it("evaluates rsi, macd and corr formulas accurately in overviewStats", async () => {
@@ -501,15 +637,15 @@ alerts: []
     expect(await reorderColumns(["vs_b", "dev3"])).toEqual({ ok: false, error: "请先登录" });
     expect(readYaml()).toBe(before);
 
-    // Logged-in owner can write to root vault
+    // Logged-in owner can write to root vault (create without id, then edit with id)
     request.session = sessions.owner;
-    expect(await saveColumn({ id: "vol", label: "量比", formula: "volume / sma(volume, 5)", tf: "D", format: "ratio" })).toEqual({ ok: true });
-    expect(readYaml()).toContain("id: vol");
+    expect(await saveColumn({ label: "量比", formula: "volume / sma(volume, 5)", tf: "D", format: "ratio" })).toEqual({ ok: true });
+    expect(readConfig(root).columns.map((c) => c.label)).toContain("量比");
 
     // Logged-in non-owner writes only to their own vault
     request.session = sessions.alice;
-    expect(await saveColumn({ id: "alice_only", label: "爱丽丝", formula: "close", tf: "D", format: "number" })).toEqual({ ok: true });
-    expect(readConfig(root).columns.map((c) => c.id)).not.toContain("alice_only");
-    expect(readConfig(path.join(root, "users", "alice")).columns.map((c) => c.id)).toContain("alice_only");
+    expect(await saveColumn({ label: "爱丽丝", formula: "close", tf: "D", format: "number" })).toEqual({ ok: true });
+    expect(readConfig(root).columns.map((c) => c.label)).not.toContain("爱丽丝");
+    expect(readConfig(path.join(root, "users", "alice")).columns.map((c) => c.label)).toContain("爱丽丝");
   });
 });

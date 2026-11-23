@@ -99,7 +99,12 @@ export const TOOLS: Tool[] = [
             const quote = stats[item.key]?.status;
             const holding = (badges[item.key] ?? []).filter((b) => b.state === "fresh" || b.state === "on");
             const colValues = cfg.columns.length
-              ? Object.fromEntries(cfg.columns.map((c) => [c.id, s?.columns?.[c.id] != null ? num(s.columns[c.id]!) : null]))
+              ? Object.fromEntries(
+                  cfg.columns.map((c) => {
+                    const raw = s?.columns && Object.hasOwn(s.columns, c.id) ? s.columns[c.id] : null;
+                    return [c.id, typeof raw === "number" && Number.isFinite(raw) ? num(raw) : null];
+                  }),
+                )
               : undefined;
             return {
               key: item.key,

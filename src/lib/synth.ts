@@ -84,12 +84,14 @@ export function lexSynth(src: string): SynthToken[] {
   return tokens;
 }
 
-/** An alias, else a full key (`source:` prefix or quoted). */
+/** An alias, else a full key (`source:` prefix or quoted). Synthetic keys cannot nest. */
 function refKey(t: RefToken, aliases: Record<string, string>): string {
-  if (!t.quoted && aliases[t.text]) return aliases[t.text];
-  if (!t.quoted && !t.text.includes(":")) throw new Error(`未知别名「${t.text}」`);
-  if (isSynthetic(t.text) || !isValidKey(t.text)) throw new Error(`无效的标的 key「${t.text}」`);
-  return t.text;
+  const hasAlias = !t.quoted && Object.hasOwn(aliases, t.text);
+  if (!hasAlias && !t.quoted && !t.text.includes(":")) throw new Error(`未知别名「${t.text}」`);
+  const key = hasAlias ? aliases[t.text] : t.text;
+  if (isSynthetic(key)) throw new Error(`合成表达式不能嵌套合成标的「${t.text}」`);
+  if (!isValidKey(key)) throw new Error(`无效的标的 key「${key}」`);
+  return key;
 }
 
 type Token = { type: "num"; value: number } | { type: "sym"; key: string } | { type: "op"; value: string };

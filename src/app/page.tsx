@@ -49,7 +49,12 @@ export default async function Home() {
         bench: item.bench,
         benchLabel: item.bench ? benchLabel(config, item.bench, symbols[item.bench]?.name) : null,
         stats: itemStats,
-        columns: Object.fromEntries(config.columns.map((c) => [c.id, itemStats?.columns?.[c.id] ?? null])),
+        columns: Object.fromEntries(
+          config.columns.map((c) => {
+            const raw = itemStats?.columns && Object.hasOwn(itemStats.columns, c.id) ? itemStats.columns[c.id] : null;
+            return [c.id, typeof raw === "number" && Number.isFinite(raw) ? raw : null];
+          }),
+        ),
         quote: stats[item.key]?.status ?? null,
         syncError: row?.syncError ?? null,
         badges: badges[item.key] ?? [],

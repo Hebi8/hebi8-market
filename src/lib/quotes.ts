@@ -387,11 +387,9 @@ export function overviewStats(vault: string, cfg: Config, symbols = listSymbols(
       if (!stats) continue;
       if (cfg.columns.length > 0) {
         const seriesCache: SeriesCache = new Map();
-        const columns: Record<string, number | null> = {};
-        for (const col of cfg.columns) {
-          columns[col.id] = brokenCols.has(col.id) ? null : evalColumn(key, col.formula, col.tf, cfg, seriesCache, read);
-        }
-        stats.columns = columns;
+        stats.columns = Object.fromEntries(
+          cfg.columns.map((col) => [col.id, brokenCols.has(col.id) ? null : evalColumn(key, col.formula, col.tf, cfg, seriesCache, read)]),
+        );
       }
       cache.rows[key] = { stats, quotedAt: quotedAt(lastInputs(key, bars, cfg.aliases, read), quotes, (k) => symbols[k]) };
     }

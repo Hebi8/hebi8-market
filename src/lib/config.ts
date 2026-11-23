@@ -2,7 +2,7 @@
 import type { LineDash } from "@/components/drawing-style";
 import { compile } from "@/indicators/formula";
 import { ALERT_CHECKS, ALERT_CONDS, defaultCheck, describeCondition, parseCondition, type AlertCheck, type AlertCondition, type AlertTrigger } from "./alert-conds";
-import { COLUMN_ID, MAX_COLUMNS, isColumnFormat, type ColumnDef, type ColumnFormat } from "./columns";
+import { COLUMN_ID, MAX_COLUMNS, RESERVED_COLUMN_IDS, isColumnFormat, type ColumnDef, type ColumnFormat } from "./columns";
 import { CHANGE_PERIODS, DEFAULT_PERIODS, MAX_PERIODS, type ChangePeriod } from "./periods";
 
 export type { ColumnDef, ColumnFormat };
@@ -154,7 +154,7 @@ const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ?
 /** Aliases first, otherwise the reference is taken as a full key. */
 export function resolveKey(ref: string, aliases: Record<string, string>): string {
   const r = ref.trim();
-  return aliases[r] ?? r;
+  return Object.hasOwn(aliases, r) ? aliases[r] : r;
 }
 
 function checkKey(key: string, aliases: Record<string, string>, where: string): void {
@@ -429,6 +429,7 @@ export function parseColumn(raw: unknown, i: number): ColumnDef {
   } else {
     const own = text(d.id);
     if (!own || !COLUMN_ID.test(own)) throw new ConfigError(`${where}：id「${String(d.id)}」只能用字母、数字、下划线、横线`);
+    if (RESERVED_COLUMN_IDS.has(own)) throw new ConfigError(`${where}：id「${own}」为保留名称，请换一个`);
     id = own;
   }
   return { id, label, formula, tf, format };
