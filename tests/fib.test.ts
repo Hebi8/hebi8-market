@@ -182,5 +182,9 @@ describe("custom fibonacci levels and templates", () => {
       dash: "dashed",
     });
     expect(applyFibTemplate(tpl)).toEqual(settings);
+
+    // Explicit solid dash is preserved so a solid template resets a dashed Fib drawing back to solid
+    const solidTpl = fibTemplateFrom("实线模板", settings, { color: "#2962ff", size: 1, dash: "solid" });
+    expect(solidTpl.dash).toBe("solid");
   });
 });

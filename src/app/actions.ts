@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
+import { isMap, isScalar, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { normalizeTimeframes } from "@/components/drawing-spec";
 import { isPresetFibTemplate, type FibTemplate } from "@/components/fib";
 import { CHART_STYLES, USAGE_LIMITS, parseFibTemplate, parseLineStyles, resolveKey, type ChartPrefs, type LineOverride, type FormulaDef, type UsageLimits } from "@/lib/config";
@@ -20,9 +20,11 @@ import {
   locateEntry,
   readChartState,
   readConfig,
+  removeFibTemplate,
   setList,
   setScalar,
   updateConfig,
+  upsertFibTemplate,
   writeChartState,
   writeJournal,
   writeNote,
@@ -287,29 +289,7 @@ export async function saveFibTemplate(input: FibTemplate): Promise<ActionResult>
     const tpl = parseFibTemplate(input);
     if (!tpl) throw new Error("模板名称不能为空（最多 40 字），且至少启用 1 个档位");
     if (isPresetFibTemplate(tpl.name)) throw new Error(`「${tpl.name}」是内置预设，请换一个名称`);
-    updateConfig(dir, (doc) => {
-      const entry = doc.createNode({
-        name: tpl.name,
-        levels: tpl.levels.map((l) => flowNode(doc, l)),
-        ...(tpl.background !== undefined ? { background: tpl.background } : {}),
-        ...(tpl.transparency !== undefined ? { transparency: tpl.transparency } : {}),
-        ...(tpl.extendLeft !== undefined ? { extendLeft: tpl.extendLeft } : {}),
-        ...(tpl.extendRight !== undefined ? { extendRight: tpl.extendRight } : {}),
-        ...(tpl.oneColor !== undefined ? { oneColor: tpl.oneColor } : {}),
-        ...(tpl.reverse !== undefined ? { reverse: tpl.reverse } : {}),
-        ...(tpl.color !== undefined ? { color: tpl.color } : {}),
-        ...(tpl.size !== undefined ? { size: tpl.size } : {}),
-        ...(tpl.dash !== undefined ? { dash: tpl.dash } : {}),
-      });
-      const existing = doc.getIn(["chart", "fibTemplates"]);
-      if (isSeq(existing)) {
-        const i = existing.items.findIndex((item) => isMap(item) && String(item.get("name") ?? "").trim() === tpl.name);
-        if (i >= 0) existing.items[i] = entry;
-        else existing.add(entry);
-      } else {
-        doc.setIn(["chart", "fibTemplates"], [entry]);
-      }
-    });
+    updateConfig(dir, (doc) => upsertFibTemplate(doc, tpl));
   });
 }
 
@@ -318,12 +298,7 @@ export async function deleteFibTemplate(name: string): Promise<ActionResult> {
   return attempt(({ dir }) => {
     const target = str(name);
     if (!target) throw new Error("缺少模板名称");
-    updateConfig(dir, (doc) => {
-      const existing = doc.getIn(["chart", "fibTemplates"]);
-      if (!isSeq(existing)) return;
-      existing.items = existing.items.filter((item) => !(isMap(item) && String(item.get("name") ?? "").trim() === target));
-      if (existing.items.length === 0) doc.deleteIn(["chart", "fibTemplates"]);
-    });
+    updateConfig(dir, (doc) => removeFibTemplate(doc, target));
   });
 }
 

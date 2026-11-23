@@ -1,6 +1,6 @@
 /** Typed view of `vault/hebi8.yaml`; pure so it can be tested without a file system. */
 import type { LineDash } from "@/components/drawing-style";
-import { normalizeFibLevels, normalizeHex, type FibTemplate } from "@/components/fib";
+import { isPresetFibTemplate, normalizeFibLevels, normalizeHex, type FibTemplate } from "@/components/fib";
 import { compile } from "@/indicators/formula";
 import { ALERT_CHECKS, ALERT_CONDS, defaultCheck, describeCondition, parseCondition, type AlertCheck, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { CHANGE_PERIODS, DEFAULT_PERIODS, MAX_PERIODS, type ChangePeriod } from "./periods";
@@ -263,13 +263,13 @@ export function parseFibTemplate(raw: unknown): FibTemplate | null {
   };
 }
 
-/** Parse `chart.fibTemplates`, dropping invalid entries and keeping the first of duplicate names. */
+/** Parse `chart.fibTemplates`, dropping invalid, preset-colliding and duplicate-named entries. */
 export function parseFibTemplates(raw: unknown): FibTemplate[] {
   const seen = new Set<string>();
   const out: FibTemplate[] = [];
   for (const item of list(raw)) {
     const tpl = parseFibTemplate(item);
-    if (!tpl || seen.has(tpl.name)) continue;
+    if (!tpl || isPresetFibTemplate(tpl.name) || seen.has(tpl.name)) continue;
     seen.add(tpl.name);
     out.push(tpl);
   }

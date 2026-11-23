@@ -2,11 +2,14 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { Chart, Overlay } from "klinecharts";
 import {
   cloneSpec,
+  countParkedOverlays,
   drawingOf,
+  hasValidDrawingPoints,
   isPaneAvailable,
   isVisibleOnTimeframe,
   mergeSlots,
   normalizeTimeframes,
+  patchHorizontalPoints,
   shouldRenderOverlay,
   specOf,
   type DrawingFlags,
@@ -206,6 +209,38 @@ describe("timeframe visibility and sub-pane preservation", () => {
     // All timeframes selected collapses to omitted `timeframes`
     flags.set(o.id, { pane: "RSI", timeframes: ["D", "3D", "W", "M", "Q", "Y"] });
     expect("timeframes" in specOf(o, flags)!).toBe(false);
+  });
+
+  it("backfills timestamp for horizontalStraightLine clicked on a sub-pane y-axis, and rejects invalid points on other tools", () => {
+    const h = make("horizontalStraightLine");
+    h.override({ points: [{ value: 70 }] });
+    const flags = new Map<string, DrawingFlags>([[h.id, { pane: "RSI" }]]);
+    // Without fallback timestamp it has no timestamp; with fallback it persists cleanly
+    expect(specOf(h, flags)).toBeNull();
+    expect(patchHorizontalPoints("horizontalStraightLine", [{ value: 70 }], 1700000000000)).toEqual([{ value: 70, timestamp: 1700000000000 }]);
+    expect(specOf(h, flags, 1700000000000)).toEqual({
+      name: "horizontalStraightLine",
+      points: [{ timestamp: 1700000000000, value: 70 }],
+      pane: "RSI",
+    });
+
+    // Other tools clicked on a y-axis (missing timestamp) are not silently patched
+    expect(patchHorizontalPoints("segment", [{ value: 70 }], 1700000000000)).toBeNull();
+    expect(hasValidDrawingPoints([{ value: 70 }])).toBe(false);
+    expect(hasValidDrawingPoints([{ timestamp: 1700000000000, value: 70 }])).toBe(true);
+  });
+
+  it("counts parked overlays hidden by timeframe or closed sub-panes", () => {
+    const overlays = [
+      line(100), // visible everywhere
+      line(200, { timeframes: ["W", "M"] }), // parked on D
+      line(70, { pane: "RSI" }), // parked when RSI closed
+      line(400, { pane: "yahoo:QQQ", timeframes: ["D"] }), // visible on D when QQQ pane open
+    ];
+    expect(countParkedOverlays(overlays, "D", new Set(["yahoo:QQQ"]))).toBe(2);
+    expect(countParkedOverlays(overlays, "W", new Set(["RSI", "yahoo:QQQ"]))).toBe(1);
+    expect(countParkedOverlays(overlays, "D", new Set(["RSI", "yahoo:QQQ"]))).toBe(1);
+    expect(countParkedOverlays([line(100)], "D", new Set())).toBe(0);
   });
 
   it("drags sub-pane drawings linearly (including negative values) even when main pane is log scale", () => {

@@ -327,7 +327,7 @@ describe("convertDrawing: styles", () => {
     const defRes = convertDrawing(drawing("LineToolFibRetracement", points, fullDefault), US);
     expect(defRes.ok && "extendData" in defRes.overlay).toBe(false);
 
-    // Custom Rule of 7 levels serialized via level1..level6 (plus hidden slots), normalized through normalizeDrawing
+    // Custom Rule of 7 levels serialized via level1..level6 visible + level7..level11 hidden, normalized through normalizeDrawing
     const rawRule7 = {
       id: "r7",
       symbol: "NASDAQ:NVDA",
@@ -342,7 +342,11 @@ describe("convertDrawing: styles", () => {
           level4: { coeff: 2.333, color: "#089981", visible: true },
           level5: { coeff: 3.5, color: "#FF9800", visible: true },
           level6: { coeff: 7, color: "#F23645", visible: true },
-          level7: { coeff: 0.5, color: "#4CAF50", visible: false },
+          level7: { visible: false },
+          level8: { visible: false },
+          level9: { visible: false },
+          level10: { visible: false },
+          level11: { visible: false },
         },
       },
     };
@@ -358,6 +362,29 @@ describe("convertDrawing: styles", () => {
         { level: 7, color: "#f23645" },
       ],
     });
+
+    // Sparse edit touching only 2 default slots must keep the remaining 9 default visible levels intact
+    const sparse2 = convertDrawing(
+      drawing("LineToolFibRetracement", points, {
+        level1: { coeff: 0 },
+        level3: { coeff: 0.35 },
+      }),
+      US,
+    );
+    expect(sparse2.ok).toBe(true);
+    const sparse2Levels = (sparse2.ok ? (sparse2.overlay.extendData as { levels: { level: number }[] }).levels : []).map((l) => l.level);
+    expect(sparse2Levels).toEqual([0, 0.236, 0.35, 0.5, 0.618, 0.786, 1, 1.618, 2.618, 3.618, 4.236]);
+
+    // Enabling hidden slot level24 without sending coeff uses TradingView's standard default coeff (4.764)
+    const lv24 = convertDrawing(drawing("LineToolFibRetracement", points, { level24: { visible: true } }), US);
+    expect(lv24.ok).toBe(true);
+    const lv24Levels = (lv24.ok ? (lv24.overlay.extendData as { levels: { level: number }[] }).levels : []).map((l) => l.level);
+    expect(lv24Levels).toHaveLength(12);
+    expect(lv24Levels[11]).toBe(4.764);
+
+    // Turning off every visible slot skips the drawing with a clear reason instead of falling back to 11 default levels
+    const allHidden = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`level${i + 1}`, { visible: false }]));
+    expect(convertDrawing(drawing("LineToolFibRetracement", points, allHidden), US)).toEqual({ ok: false, reason: "无可见斐波档位" });
 
     // Trend-based Fib extension with sparse diff (hide 0.236, add -0.272)
     const extRes = convertDrawing(
@@ -375,20 +402,29 @@ describe("convertDrawing: styles", () => {
     expect(extLevels).toContain(0.618);
   });
 
-  it("maps TradingView intervalsVisibilities to timeframe visibility and omits when all visible", () => {
+  it("maps TradingView intervalsVisibilities to timeframe visibility and skips intraday-only drawings", () => {
     expect(timeframesFromTv(undefined)).toBeUndefined();
     expect(timeframesFromTv({ days: true, weeks: true, months: true })).toBeUndefined();
     expect(timeframesFromTv({ days: false, weeks: true, months: true })).toEqual(["W", "M", "Q", "Y"]);
     expect(timeframesFromTv({ days: true, daysFrom: 1, daysTo: 1, weeks: false, months: false })).toEqual(["D"]);
     expect(timeframesFromTv({ days: true, daysFrom: 2, daysTo: 5, weeks: false, months: false })).toEqual(["3D"]);
     expect(timeframesFromTv({ days: false, weeks: true, months: true, monthsFrom: 3, monthsTo: 12 })).toEqual(["W", "Q", "Y"]);
-    // Intraday-only drawing: none of D..Y match, so omit instead of making an unreachable hidden drawing
-    expect(timeframesFromTv({ days: false, weeks: false, months: false })).toBeUndefined();
+    // Intraday-only or out-of-range visibility yields [] (never inverted to all timeframes!)
+    expect(timeframesFromTv({ days: false, weeks: false, months: false })).toEqual([]);
+    expect(timeframesFromTv({ days: true, daysFrom: 10, daysTo: 20, weeks: false, months: false })).toEqual([]);
 
     const weekly = convertDrawing(drawing("LineToolHorzLine", [pt("2026-09-01", 100)], { intervalsVisibilities: { days: false, weeks: true, months: true } }), US);
     expect(weekly.ok && weekly.overlay.timeframes).toEqual(["W", "M", "Q", "Y"]);
     const all = convertDrawing(drawing("LineToolHorzLine", [pt("2026-09-01", 100)], { intervalsVisibilities: { days: true } }), US);
     expect(all.ok && "timeframes" in all.overlay).toBe(false);
+
+    // Intraday-only drawing is skipped in convertDrawing and counted in convertDrawings.skipped
+    const intraday = drawing("LineToolHorzLine", [pt("2026-09-01", 100)], { intervalsVisibilities: { hours: true, days: false, weeks: false, months: false } }, "h1");
+    expect(convertDrawing(intraday, US)).toEqual({ ok: false, reason: "仅日内周期可见" });
+    expect(convertDrawings([intraday], US, new Set()).skipped).toEqual({ 仅日内周期可见: 1 });
+    expect(
+      convertDrawing(drawing("LineToolHorzLine", [pt("2026-09-01", 100)], { intervalsVisibilities: { days: true, daysFrom: 10, daysTo: 20, weeks: false, months: false } }), US),
+    ).toEqual({ ok: false, reason: "不在支持的周期范围内" });
   });
 });
 

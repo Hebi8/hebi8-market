@@ -142,6 +142,98 @@ describe("saveFibTemplate / deleteFibTemplate", () => {
     expect(await saveFibTemplate(bobTpl)).toEqual({ ok: true });
     expect(readConfig(userVaultDir("bob")).chart.fibTemplates.map((t) => t.name)).toEqual(["Bob专属"]);
     expect(readConfig(root).chart.fibTemplates.map((t) => t.name)).toEqual(["我的扩展"]);
+
+    // Anonymous visitor on ChartPage does not receive owner's personal fibTemplates
+    const { default: ChartPage } = await import("@/app/chart/[key]/page");
+    request.session = undefined;
+    const guestEl = await ChartPage({ params: Promise.resolve({ key: "yahoo%3ASPY" }) });
+    expect((guestEl as { props: { prefs: { fibTemplates: unknown[] } } }).props.prefs.fibTemplates).toEqual([]);
+    request.session = aliceSession;
+    const ownerEl = await ChartPage({ params: Promise.resolve({ key: "yahoo%3ASPY" }) });
+    expect((ownerEl as { props: { prefs: { fibTemplates: { name: string }[] } } }).props.prefs.fibTemplates.map((t) => t.name)).toEqual(["我的扩展"]);
+  });
+
+  it("handles YAML aliases in ensureUserVault, saveFibTemplate, deleteFibTemplate and keeps inline comments on overwrite", async () => {
+    const { deleteFibTemplate, saveFibTemplate } = await import("@/app/actions");
+    const { ensureUserVault, readConfig } = await import("@/lib/vault");
+
+    // 1. ensureUserVault expands `chart: *prefs` alias before stripping fibTemplates
+    fs.writeFileSync(
+      yamlFile,
+      `owner: alice
+x-prefs: &prefs
+  tf: D
+  fibTemplates:
+    - name: 私密模板
+      levels:
+        - { level: 0.5, color: "#4caf50" }
+chart: *prefs
+`,
+    );
+    const carolDir = ensureUserVault("carol");
+    const carolCfg = readConfig(carolDir);
+    expect(carolCfg.chart.tf).toBe("D");
+    expect(carolCfg.chart.fibTemplates).toEqual([]);
+
+    // 2. saveFibTemplate and deleteFibTemplate expand `chart.fibTemplates: *myList` alias without losing entries or fake-deleting
+    fs.writeFileSync(
+      yamlFile,
+      `x-tpls: &myList
+  - name: 已有模板 # 保留行内注释
+    levels: # 常用档位
+      - { level: 0, color: "#787b86" }
+    extendRight: true # 默认延长
+chart:
+  tf: W
+  fibTemplates: *myList
+`,
+    );
+    expect(await saveFibTemplate({ name: "新增模板", levels: [{ level: 0.618, color: "#089981" }], dash: "solid" })).toEqual({ ok: true });
+    expect(readConfig(root).chart.fibTemplates.map((t) => t.name)).toEqual(["已有模板", "新增模板"]);
+    expect(readConfig(root).chart.fibTemplates[1].dash).toBe("solid");
+
+    // Delete works on aliased origin and drops the remaining one cleanly
+    expect(await deleteFibTemplate("已有模板")).toEqual({ ok: true });
+    expect(readConfig(root).chart.fibTemplates.map((t) => t.name)).toEqual(["新增模板"]);
+    expect(await deleteFibTemplate("新增模板")).toEqual({ ok: true });
+    expect(readConfig(root).chart.fibTemplates).toEqual([]);
+
+    // Direct delete on an untouched YAML alias must expand and truly remove it (not fake-succeed)
+    fs.writeFileSync(
+      yamlFile,
+      `x-tpls: &onlyList
+  - name: 别名模板
+    levels:
+      - { level: 0.5, color: "#4caf50" }
+chart:
+  tf: W
+  fibTemplates: *onlyList
+`,
+    );
+    expect(await deleteFibTemplate("别名模板")).toEqual({ ok: true });
+    expect(readConfig(root).chart.fibTemplates).toEqual([]);
+    expect(read()).toContain("x-tpls: &onlyList");
+
+    // 3. Same-name overwrite updates in place, keeping inline comments
+    fs.writeFileSync(
+      yamlFile,
+      `chart:
+  tf: W
+  fibTemplates:
+    - name: 主力模板 # 我的主力
+      levels: # 档位表
+        - { level: 0, color: "#787b86" }
+      extendRight: true # 向右延长
+`,
+    );
+    expect(await saveFibTemplate({ name: "主力模板", levels: [{ level: 0.618, color: "#089981" }], extendRight: false, reverse: true })).toEqual({ ok: true });
+    const text = read();
+    expect(text).toContain("# 我的主力");
+    expect(text).toContain("# 档位表");
+    expect(text).toContain("# 向右延长");
+    expect(readConfig(root).chart.fibTemplates).toEqual([
+      { name: "主力模板", levels: [{ level: 0.618, color: "#089981" }], extendRight: false, reverse: true },
+    ]);
   });
 });
 

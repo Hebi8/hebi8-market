@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isAlias, isMap, isNode, isScalar, isSeq, parse, parseDocument, visit, type Alias, type Document, type Node, type YAMLMap, type YAMLSeq } from "yaml";
+import type { FibTemplate } from "@/components/fib";
 import { ConfigError, INSTANCE_KEYS, isLogin, normalizeConfig, normalizeUserConfig, resolveKey, writtenGroupName, type Config } from "./config";
 import { fileKey, hash6, isValidKey, type Timeframe } from "./symbols";
 import { applyOp, groupNames, opError, type WatchlistOp } from "./watchlist";
@@ -56,12 +57,22 @@ export function ensureUserVault(login: string): string {
   if (isScalar(first) && first.commentBefore && drop.includes(String(first.value))) {
     doc.commentBefore = [doc.commentBefore, first.commentBefore].filter(Boolean).join("\n");
   }
-  for (const key of drop) doc.delete(key);
-  const chart = doc.get("chart");
-  if (isMap(chart)) {
-    chart.delete("fibTemplates");
-    if (!chart.items.length) doc.delete("chart");
+  // strip owner's personal Fibonacci templates (expanding YAML aliases like `chart: *prefs` first)
+  if (isMap(doc.contents)) {
+    const resolvedChart = resolved(doc, doc.contents.get("chart", true));
+    if (isMap(resolvedChart) && resolvedChart.has("fibTemplates")) {
+      const chart = own(doc, doc.contents, "chart");
+      if (isMap(chart)) {
+        unshareSubtree(doc, chart.get("fibTemplates", true));
+        chart.delete("fibTemplates");
+        if (!chart.items.length) {
+          unshareSubtree(doc, chart);
+          doc.delete("chart");
+        }
+      }
+    }
   }
+  for (const key of drop) doc.delete(key);
   leadGroups(doc);
   atomicWrite(yamlPath(dir), doc.toString({ lineWidth: 0 }));
   return dir;
@@ -266,15 +277,131 @@ function unshare(doc: Document, node: Node): void {
   });
 }
 
+/** Materialize any alias elsewhere in `doc` that points into `node` before `node` is dropped. */
+function unshareSubtree(doc: Document, node: unknown): void {
+  if (!isNode(node) || isAlias(node)) return;
+  visit(node, {
+    Node: (_, n) => {
+      if (!isAlias(n) && n.anchor !== undefined) unshare(doc, n);
+    },
+  });
+}
+
 /** The node at `key` of `parent` made its own (see above), so it can change in place. */
 function own(doc: Document, parent: YAMLMap | YAMLSeq, key: string | number): unknown {
   let node: unknown = parent.get(key, true);
   if (isAlias(node)) {
-    const source = node.resolve(doc)!;
+    const source = node.resolve(doc);
+    if (!source) return undefined;
     node = instead(doc, node, source.toJS(doc), source);
     parent.set(key, node);
   } else if (isNode(node)) unshare(doc, node);
   return node;
+}
+
+const FIB_TEMPLATE_SCALARS = ["background", "transparency", "extendLeft", "extendRight", "oneColor", "reverse", "color", "size", "dash"] as const;
+
+function fibTemplateItemName(doc: Document, item: unknown): string {
+  const map = resolved(doc, item);
+  if (!isMap(map)) return "";
+  const raw = (map.toJS(doc) as { name?: unknown }).name;
+  return typeof raw === "string" ? raw.trim() : "";
+}
+
+function makeFibTemplateNode(doc: Document, tpl: FibTemplate): Node {
+  return doc.createNode({
+    name: tpl.name,
+    levels: tpl.levels.map((l) => flowNode(doc, l)),
+    ...(tpl.background !== undefined ? { background: tpl.background } : {}),
+    ...(tpl.transparency !== undefined ? { transparency: tpl.transparency } : {}),
+    ...(tpl.extendLeft !== undefined ? { extendLeft: tpl.extendLeft } : {}),
+    ...(tpl.extendRight !== undefined ? { extendRight: tpl.extendRight } : {}),
+    ...(tpl.oneColor !== undefined ? { oneColor: tpl.oneColor } : {}),
+    ...(tpl.reverse !== undefined ? { reverse: tpl.reverse } : {}),
+    ...(tpl.color !== undefined ? { color: tpl.color } : {}),
+    ...(tpl.size !== undefined ? { size: tpl.size } : {}),
+    ...(tpl.dash !== undefined ? { dash: tpl.dash } : {}),
+  }) as Node;
+}
+
+/**
+ * Save or update a personal Fibonacci template under `chart.fibTemplates`, expanding YAML aliases
+ * before editing and updating matching entries in place so inline comments survive.
+ */
+export function upsertFibTemplate(doc: Document, tpl: FibTemplate): void {
+  if (!isMap(doc.contents)) doc.contents = doc.createNode({}) as YAMLMap;
+  const root = doc.contents;
+  let chart = own(doc, root, "chart");
+  if (!isMap(chart)) {
+    chart = doc.createNode({}) as YAMLMap;
+    root.set("chart", chart);
+  }
+  let seq = own(doc, chart as YAMLMap, "fibTemplates");
+  if (!isSeq(seq)) {
+    seq = doc.createNode([]) as YAMLSeq;
+    (chart as YAMLMap).set("fibTemplates", seq);
+  }
+  const list = seq as YAMLSeq;
+  const i = list.items.findIndex((item) => fibTemplateItemName(doc, item) === tpl.name);
+  if (i >= 0) {
+    const existing = own(doc, list, i);
+    if (isMap(existing)) {
+      const nameNode = own(doc, existing, "name");
+      if (isScalar(nameNode)) nameNode.value = tpl.name;
+      else existing.set("name", tpl.name);
+      const levels = tpl.levels.map((l) => flowNode(doc, l));
+      const levelsNode = own(doc, existing, "levels");
+      if (isSeq(levelsNode)) {
+        levelsNode.flow = false;
+        levelsNode.items = levels;
+      } else {
+        existing.set("levels", doc.createNode(levels));
+      }
+      for (const k of FIB_TEMPLATE_SCALARS) {
+        const val = tpl[k];
+        if (val !== undefined) {
+          const cur = own(doc, existing, k);
+          if (isScalar(cur)) cur.value = val;
+          else existing.set(k, val);
+        } else if (existing.has(k)) {
+          unshareSubtree(doc, existing.get(k, true));
+          existing.delete(k);
+        }
+      }
+      return;
+    }
+    list.items[i] = makeFibTemplateNode(doc, tpl);
+    return;
+  }
+  list.flow = false;
+  list.add(makeFibTemplateNode(doc, tpl));
+}
+
+/**
+ * Remove a personal Fibonacci template from `chart.fibTemplates`, expanding YAML aliases first and
+ * dropping `chart.fibTemplates` when the list becomes empty.
+ */
+export function removeFibTemplate(doc: Document, name: string): void {
+  if (!isMap(doc.contents)) return;
+  const resolvedChart = resolved(doc, doc.contents.get("chart", true));
+  if (!isMap(resolvedChart)) return;
+  const resolvedSeq = resolved(doc, resolvedChart.get("fibTemplates", true));
+  if (!isSeq(resolvedSeq)) return;
+  if (!resolvedSeq.items.some((item) => fibTemplateItemName(doc, item) === name)) return;
+  const chart = own(doc, doc.contents, "chart");
+  if (!isMap(chart)) return;
+  const seq = own(doc, chart, "fibTemplates");
+  if (!isSeq(seq)) return;
+  const kept: unknown[] = [];
+  for (const item of seq.items) {
+    if (fibTemplateItemName(doc, item) === name) unshareSubtree(doc, item);
+    else kept.push(item);
+  }
+  seq.items = kept;
+  if (seq.items.length === 0) {
+    unshareSubtree(doc, seq);
+    chart.delete("fibTemplates");
+  }
 }
 
 /** The `groups` list as its own node (the groups in it are not touched), created empty when missing. */

@@ -107,6 +107,9 @@ describe("normalizeConfig", () => {
             dash: "dashed",
           },
           { name: "我的目标", levels: [{ level: 0.5, color: "#4caf50" }] }, // duplicate name
+          { name: "Rule of 7", levels: [{ level: 0.5, color: "#4caf50" }] }, // built-in preset name collision
+          { name: "默认", levels: [{ level: 0.5, color: "#4caf50" }] }, // built-in preset name collision
+          { name: "精简回撤", levels: [{ level: 0.5, color: "#4caf50" }] }, // built-in preset name collision
           { name: "空档位", levels: [{ level: 0.5, color: "#4caf50", enabled: false }] }, // 0 enabled
           { name: "   ", levels: [{ level: 0.5, color: "#4caf50" }] }, // empty name
         ],

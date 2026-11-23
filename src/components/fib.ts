@@ -209,7 +209,7 @@ export function fibTemplateFrom(
     ...(clean.reverse !== FIB_DEFAULTS.reverse ? { reverse: clean.reverse } : {}),
     ...(color ? { color } : {}),
     ...(style?.size !== undefined ? { size: style.size } : {}),
-    ...(style?.dash !== undefined && style.dash !== "solid" ? { dash: style.dash } : {}),
+    ...(style?.dash !== undefined ? { dash: style.dash } : {}),
   };
 }
 

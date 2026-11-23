@@ -322,6 +322,13 @@ interface LevelRow {
   enabled: boolean;
 }
 
+export interface DrawingPreview {
+  color: string;
+  size?: number;
+  dash?: LineDash;
+  fib?: FibSettings;
+}
+
 /** The 设置 dialog of a drawing: style, text, trend extension, Fibonacci levels & templates, timeframe visibility, price scale and coordinates. */
 export function DrawingSettings({
   info,
@@ -331,6 +338,7 @@ export function DrawingSettings({
   readOnly,
   onSaveFibTemplate,
   onDeleteFibTemplate,
+  onPreview,
   onApply,
   onClose,
 }: {
@@ -341,6 +349,7 @@ export function DrawingSettings({
   readOnly: boolean;
   onSaveFibTemplate: (tpl: FibTemplate) => Promise<string | null>;
   onDeleteFibTemplate: (name: string) => Promise<string | null>;
+  onPreview?: (preview: DrawingPreview) => void;
   onApply: (change: DrawingChange) => void;
   onClose: () => void;
 }) {
@@ -371,6 +380,36 @@ export function DrawingSettings({
   const [tplName, setTplName] = useState("");
   const [tplBusy, setTplBusy] = useState(false);
   const [tplError, setTplError] = useState<string | null>(null);
+
+  const previewRef = useRef(onPreview);
+  useEffect(() => {
+    previewRef.current = onPreview;
+  }, [onPreview]);
+
+  // Live canvas preview on style / Fibonacci preset / level edits without persisting or touching undo history
+  const previewReady = useRef(false);
+  useEffect(() => {
+    if (!previewReady.current) {
+      previewReady.current = true;
+      return;
+    }
+    const emit = previewRef.current;
+    if (!emit) return;
+    if (fib) {
+      const levels: FibLevelItem[] = [];
+      for (const r of levelRows) {
+        const trimmed = r.text.trim();
+        if (!trimmed) continue;
+        const num = Number(trimmed);
+        if (!Number.isFinite(num)) continue;
+        levels.push(r.enabled ? { level: num, color: r.color } : { level: num, color: r.color, enabled: false });
+      }
+      if (!levels.some((l) => l.enabled !== false)) return;
+      emit({ color, size, dash, fib: cleanFibSettings({ ...fib, levels }) });
+    } else if (!isText) {
+      emit({ color, size, dash });
+    }
+  }, [fib, levelRows, color, size, dash, isText]);
 
   const enabledCount = levelRows.filter((r) => r.enabled).length;
   const parseRows = (): { levels: FibLevelItem[]; error: string | null } => {
@@ -456,7 +495,7 @@ export function DrawingSettings({
   return (
     <Dialog title={toolLabel(info.name)} onClose={onClose} className={fib ? "max-w-[440px]" : "max-w-[400px]"}>
       <form
-        className="flex flex-col gap-3 overflow-y-auto p-4 text-sm"
+        className="flex min-h-0 flex-1 flex-col text-sm"
         onSubmit={(e) => {
           e.preventDefault();
           let nextFib: FibSettings | undefined;
@@ -486,8 +525,9 @@ export function DrawingSettings({
           });
         }}
       >
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain p-4">
         {fib && (
-          <div className="flex flex-col gap-1.5 border-b border-line pb-3">
+          <div className="flex min-w-0 flex-col gap-1.5 border-b border-line pb-3">
             <div className="flex items-center justify-between gap-2">
               <span className="text-muted">模板</span>
               {!readOnly ? (
@@ -507,15 +547,15 @@ export function DrawingSettings({
                 </span>
               )}
             </div>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex min-w-0 flex-wrap gap-1">
               {FIB_PRESETS.map((tpl) => (
                 <button key={tpl.name} type="button" className="btn btn-secondary h-7 px-2 text-xs" onClick={() => applyTpl(tpl)}>
                   {tpl.name}
                 </button>
               ))}
               {fibTemplates.map((tpl) => (
-                <span key={tpl.name} className="inline-flex items-center rounded border border-line bg-bg/50">
-                  <button type="button" className="h-7 px-2 text-xs hover:bg-fg/10" onClick={() => applyTpl(tpl)}>
+                <span key={tpl.name} className="inline-flex max-w-full min-w-0 items-center rounded border border-line bg-bg/50">
+                  <button type="button" title={tpl.name} className="h-7 min-w-0 flex-1 truncate px-2 text-xs hover:bg-fg/10" onClick={() => applyTpl(tpl)}>
                     {tpl.name}
                   </button>
                   {!readOnly && (
@@ -524,7 +564,7 @@ export function DrawingSettings({
                       disabled={tplBusy}
                       aria-label={`删除模板 ${tpl.name}`}
                       title={`删除模板「${tpl.name}」`}
-                      className="flex h-7 w-6 items-center justify-center border-l border-line text-muted hover:bg-fg/10 hover:text-down"
+                      className="flex h-7 w-6 shrink-0 items-center justify-center border-l border-line text-muted hover:bg-fg/10 hover:text-down"
                       onClick={() => void removeTpl(tpl.name)}
                     >
                       <IconClose size={12} />
@@ -783,7 +823,8 @@ export function DrawingSettings({
             ))}
           </fieldset>
         )}
-        <div className="-mx-4 mt-1 flex justify-end gap-2 border-t border-line px-4 pt-3">
+        </div>
+        <div className="flex shrink-0 justify-end gap-2 border-t border-line bg-card px-4 py-3">
           <button type="button" className="btn" onClick={onClose}>
             取消
           </button>

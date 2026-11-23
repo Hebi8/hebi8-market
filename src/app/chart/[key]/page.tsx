@@ -70,8 +70,9 @@ export default async function ChartPage({ params }: { params: Promise<{ key: str
     })),
   }));
 
-  // alerts are personal like notes: a visitor sees none
+  // alerts and personal Fibonacci templates stay private like notes: a visitor sees none
   const alerts = viewer.canWrite ? alertViews(viewer.vault, config, symbols) : [];
+  const chartPrefs = viewer.canWrite ? config.chart : { ...config.chart, fibTemplates: [] };
 
   return (
     <ChartView
@@ -79,7 +80,7 @@ export default async function ChartPage({ params }: { params: Promise<{ key: str
       key={`${viewer.vault}:${viewer.canWrite ? "w" : "r"}:${key}`}
       vault={viewer.vault}
       symbolKey={key}
-      prefs={config.chart}
+      prefs={chartPrefs}
       prices={config.prices}
       formulas={config.indicators}
       aliases={config.aliases}

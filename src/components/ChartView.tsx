@@ -49,6 +49,7 @@ import {
 } from "./chart-icons";
 import { renderSnapshot, snapshotFileName } from "./chart-snapshot";
 import { COMPARE_COLORS, DRAW_GROUPS, DRAW_TOOLS, MEASURE_TOOL, OPEN_DRAWINGS, RANGES, SUBPANE_DRAWINGS, type ChartControl, type IndicatorSpec } from "./chart-types";
+import { countParkedOverlays } from "./drawing-spec";
 import type { FibTemplate } from "./fib";
 import { DrawToolGroups, GroupMenuItems } from "./DrawToolGroups";
 import { AlertDialog, AlertLoginDialog } from "./AlertDialog";
@@ -1297,19 +1298,29 @@ export function ChartView({
             onClose={() => setDialog(null)}
           />
         ))}
-      {dialog?.kind === "clear" && (
-        <Dialog title="删除所有绘图" onClose={() => setDialog(null)} className="max-w-[360px]">
-          <div className="p-4 text-sm">删除这个标的的全部 {chartState.overlays.length} 个绘图？</div>
-          <div className="flex justify-end gap-2 border-t border-line px-4 py-3">
-            <button type="button" className="btn" onClick={() => setDialog(null)}>
-              取消
-            </button>
-            <button type="button" className="btn btn-primary" autoFocus onClick={confirmClearDrawings}>
-              删除
-            </button>
-          </div>
-        </Dialog>
-      )}
+      {dialog?.kind === "clear" && (() => {
+        const openSubPanes = new Set<string>([
+          ...specs.filter((s) => s.pane === "sub").map((s) => s.name),
+          ...chartState.compare.slice(0, COMPARE_COLORS.length).filter((c) => c.mode === "pane" && Boolean(data?.refs[c.key]?.c)).map((c) => c.key),
+        ]);
+        const parkedCount = countParkedOverlays(chartState.overlays, dataTf, openSubPanes);
+        return (
+          <Dialog title="删除所有绘图" onClose={() => setDialog(null)} className="max-w-[360px]">
+            <div className="p-4 text-sm">
+              删除这个标的的全部 {chartState.overlays.length} 个绘图？
+              {parkedCount > 0 && <span className="text-muted">（含其他周期或已关闭副图上的 {parkedCount} 条）</span>}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-line px-4 py-3">
+              <button type="button" className="btn" onClick={() => setDialog(null)}>
+                取消
+              </button>
+              <button type="button" className="btn btn-primary" autoFocus onClick={confirmClearDrawings}>
+                删除
+              </button>
+            </div>
+          </Dialog>
+        );
+      })()}
     </main>
   );
 }

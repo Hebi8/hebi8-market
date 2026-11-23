@@ -30,6 +30,7 @@ import type { RefSeries } from "@/indicators/formula";
 import type { BarsTail, ChartBar } from "@/lib/api-types";
 import type { ChartStyle, LineOverride } from "@/lib/config";
 import { barCloseAt, fmtCountdown, type SessionClock } from "@/lib/session";
+import { pricePrecision as calcPricePrecision } from "@/lib/stats";
 import type { Timeframe } from "@/lib/symbols";
 import type { CompareEntry, OverlaySpec } from "@/lib/vault";
 import { ChartLegend, createLegendStore, type ChartLegendProps } from "./ChartLegend";
@@ -39,11 +40,23 @@ import { timeAxisBarSpace } from "./chart-gestures";
 import { registerDrawingTemplates, setOverlayChart, setOverlayTheme, snapToBar, textOf, textSizeOf } from "./chart-overlays";
 import { LOG_AXIS } from "./log-axis";
 import { extensionOf, historyOf, record, redo, TREND_LINES, undo, withExtension, type History } from "./drawing-edit";
-import { cloneSpec, drawingOf, isVisibleOnTimeframe, mergeSlots, normalizeTimeframes, shouldRenderOverlay, specOf, type DrawingFlags, type DrawingSlot } from "./drawing-spec";
+import {
+  cloneSpec,
+  drawingOf,
+  hasValidDrawingPoints,
+  isVisibleOnTimeframe,
+  mergeSlots,
+  normalizeTimeframes,
+  patchHorizontalPoints,
+  shouldRenderOverlay,
+  specOf,
+  type DrawingFlags,
+  type DrawingSlot,
+} from "./drawing-spec";
 import { dashOf, drawingStyles, lineOf, withAlpha } from "./drawing-style";
 import { FIB_DRAWINGS, cleanFibSettings, fibSettingsOf, type FibTemplate } from "./fib";
 import { COMPARE_COLORS, DRAW_DONE, MEASURE_TOOL, MONO, OPEN_DRAWINGS, SANS, SCALED_DRAWINGS, SUBPANE_DRAWINGS, TEXT_DRAWINGS, type ChartControl, type IndicatorLine, type IndicatorSpec, type LegendValue } from "./chart-types";
-import { DrawingSettings, DrawingToolbar, TextEditor, type DrawingChange, type DrawingInfo } from "./DrawingToolbar";
+import { DrawingSettings, DrawingToolbar, TextEditor, type DrawingChange, type DrawingInfo, type DrawingPreview } from "./DrawingToolbar";
 
 export interface DrawingModes {
   magnet: boolean;
@@ -356,11 +369,11 @@ function distinctPoints(points: Partial<Point>[]): Partial<Point>[] {
 }
 
 /** Finished drawings currently mounted on any pane, keyed by overlay id; `except` is one being removed right now. */
-function liveSpecsMap(chart: Chart, flags: Map<string, DrawingFlags>, except?: string): Map<string, OverlaySpec> {
+function liveSpecsMap(chart: Chart, flags: Map<string, DrawingFlags>, except?: string, fallbackTimestamp?: number): Map<string, OverlaySpec> {
   const out = new Map<string, OverlaySpec>();
   for (const o of chart.getOverlays()) {
     if (o.id === except || !isDrawing(o) || o.currentStep !== DRAW_DONE) continue;
-    const spec = specOf(o, flags);
+    const spec = specOf(o, flags, fallbackTimestamp);
     if (spec) out.set(o.id, spec);
   }
   return out;
@@ -493,7 +506,7 @@ export function KChart({
   /** The saved drawings, for undo and redo on this page (another symbol mounts a new chart) */
   const historyRef = useRef<History<OverlaySpec[]>>(historyOf([]));
   const selectedRef = useRef<string | null>(null);
-  const drawingRef = useRef<{ tool: string; id: string; overlay: Overlay | null; extendData?: unknown } | null>(null);
+  const drawingRef = useRef<{ tool: string; id: string; overlay: Overlay | null; extendData?: unknown; paneKey?: string } | null>(null);
   /** The ruler of 测量 while it is on the chart (the live object: its step tells whether it is still following the pointer) */
   const measureRef = useRef<Overlay | null>(null);
   const onOverlaysChangeRef = useRef(onOverlaysChange);
@@ -507,8 +520,13 @@ export function KChart({
   const menuRef = useRef(menu);
   /** The selected drawing, for its floating toolbar (with its pane-anchored vertical position) */
   const [selected, setSelected] = useState<{ id: string; info: DrawingInfo; top: number; flipUp: boolean } | null>(null);
-  /** The 设置 dialog of a drawing */
-  const [settings, setSettings] = useState<{ id: string; info: DrawingInfo; precision: number } | null>(null);
+  /** The 设置 dialog of a drawing, plus its original styles/extendData for reverting live previews on Cancel / Esc */
+  const [settings, setSettings] = useState<{
+    id: string;
+    info: DrawingInfo;
+    precision: number;
+    original: { styles: Overlay["styles"]; extendData: unknown };
+  } | null>(null);
   const settingsRef = useRef(settings);
   const settingsOpenRef = useRef(false);
   /** A text drawing being typed in place (absolute px in the chart box) */
@@ -637,10 +655,40 @@ export function KChart({
     return { top, flipUp: totalHeight - top < 220 };
   };
 
+  /** Price precision inferred from the latest finite close of a compare series slot. */
+  const comparePrecision = (slot: number): number | undefined => {
+    const series = compareSeries[slot];
+    if (!series) return undefined;
+    for (let i = series.length - 1; i >= 0; i--) {
+      const v = series[i];
+      if (typeof v === "number" && Number.isFinite(v)) return calcPricePrecision(v);
+    }
+    return undefined;
+  };
+
   const precisionForPane = (chart: Chart, paneId: string): number => {
     if (paneId === CANDLE_PANE) return precisionRef.current;
     const ind = chart.getIndicators({ paneId })[0];
-    return ind && !isCompare(ind.name) ? ind.precision : 2;
+    if (!ind) return 2;
+    if (isCompare(ind.name)) return comparePrecision(Number(ind.name.slice(3))) ?? ind.precision;
+    return ind.precision;
+  };
+
+  const lastBarTimestamp = () => barsRef.current.at(-1)?.timestamp;
+
+  /** Fill missing timestamp on a horizontalStraightLine (e.g. Y-axis click/drag) and check that all points are valid. */
+  const ensureDrawingPoints = (chart: Chart, o: Overlay): boolean => {
+    const patched = patchHorizontalPoints(o.name, o.points, lastBarTimestamp());
+    if (patched) chart.overrideOverlay({ id: o.id, points: patched });
+    return hasValidDrawingPoints(patched ?? o.points);
+  };
+
+  /** Record which pane (by stable key) the active drawing's first point landed on, so a compare-pane shift cancels it. */
+  const lockDrawingPane = (chart: Chart, o: Overlay) => {
+    const d = drawingRef.current;
+    if (d && d.id === o.id && d.paneKey === undefined) {
+      d.paneKey = paneKeyOf(chart, o.paneId) ?? CANDLE_PANE;
+    }
   };
 
   const flagsFromSpec = (spec: OverlaySpec): DrawingFlags | null => {
@@ -658,7 +706,7 @@ export function KChart({
 
   /** Full list of drawings (mounted + parked on other timeframes or closed sub-panes). */
   const serializeOverlays = (chart: Chart, except?: string, updateSlots = false): OverlaySpec[] => {
-    const live = liveSpecsMap(chart, flagsRef.current, except);
+    const live = liveSpecsMap(chart, flagsRef.current, except, lastBarTimestamp());
     const merged = mergeSlots(slotsRef.current, live);
     if (updateSlots) slotsRef.current = merged.slots;
     return merged.specs;
@@ -766,9 +814,14 @@ export function KChart({
         if (slot.mounted) {
           const o = liveOverlays.get(slot.id);
           if (!o) continue;
-          const spec = specOf(o, flagsRef.current);
+          const openForThis = settingsRef.current?.id === o.id;
+          let spec = specOf(o, flagsRef.current, lastBarTimestamp());
           if (!spec) continue;
           if (!shouldRenderOverlay(spec, currentTf, paneMap)) {
+            if (openForThis) {
+              restoreSettingsPreview();
+              spec = specOf(o, flagsRef.current, lastBarTimestamp()) ?? spec;
+            }
             chart.removeOverlay({ id: o.id });
             flagsRef.current.delete(o.id);
             unmountedIds.add(o.id);
@@ -777,6 +830,11 @@ export function KChart({
           }
           const targetPaneId = spec.pane ? paneMap.get(spec.pane)! : CANDLE_PANE;
           if (o.paneId !== targetPaneId) {
+            if (openForThis) {
+              restoreSettingsPreview();
+              spec = specOf(o, flagsRef.current, lastBarTimestamp()) ?? spec;
+              unmountedIds.add(o.id);
+            }
             const wasSelected = selectedRef.current === o.id;
             chart.removeOverlay({ id: o.id });
             flagsRef.current.delete(o.id);
@@ -825,9 +883,14 @@ export function KChart({
     if (menuRef.current?.kind === "overlay" && unmountedIds.has(menuRef.current.id)) setMenu(null);
     if (editorRef.current && unmountedIds.has(editorRef.current.id)) setEditor(null);
     const active = drawingRef.current;
-    if (active?.overlay && active.overlay.paneId !== CANDLE_PANE && !paneKeyOf(chart, active.overlay.paneId)) {
-      cancelDrawing();
-      onDrawDoneRef.current();
+    if (active?.overlay) {
+      const currentPaneKey = active.overlay.paneId === CANDLE_PANE ? CANDLE_PANE : paneKeyOf(chart, active.overlay.paneId);
+      const paneGone = active.overlay.paneId !== CANDLE_PANE && !currentPaneKey;
+      const paneSwapped = active.paneKey !== undefined && currentPaneKey !== active.paneKey;
+      if (paneGone || paneSwapped) {
+        cancelDrawing();
+        onDrawDoneRef.current();
+      }
     }
   };
 
@@ -837,13 +900,36 @@ export function KChart({
   };
 
   const overlayHandlers = (): Partial<OverlayCreate> => ({
+    onDrawing: (e) => {
+      const d = drawingRef.current;
+      if (!d || d.id !== e.overlay.id || d.paneKey !== undefined) return;
+      const progress = (e.chart as unknown as { getChartStore?: () => { getProgressOverlayInfo?: () => { appointPaneFlag?: boolean } | null } })
+        .getChartStore?.()
+        .getProgressOverlayInfo?.();
+      if (e.overlay.currentStep > 1 || (SUBPANE_DRAWINGS.has(d.tool) && progress?.appointPaneFlag)) {
+        lockDrawingPane(e.chart, e.overlay);
+      }
+    },
     onDrawEnd: (e) => {
       if (!isAllowedPane(e.chart, e.overlay.name, e.overlay.paneId)) {
         // main-pane-only tool clicked on a sub pane (or axis): discard it, the click listener below restarts the tool
         e.chart.removeOverlay({ id: e.overlay.id });
         return;
       }
+      const active = drawingRef.current;
       const pane = paneKeyOf(e.chart, e.overlay.paneId);
+      if (active?.id === e.overlay.id && active.paneKey !== undefined && (pane ?? CANDLE_PANE) !== active.paneKey) {
+        // compare sub-pane shifted to another symbol mid-draw: drop the stale half-finished drawing
+        e.chart.removeOverlay({ id: e.overlay.id });
+        drawingRef.current = null;
+        onDrawDoneRef.current();
+        return;
+      }
+      if (!ensureDrawingPoints(e.chart, e.overlay)) {
+        // point landed on an axis without a valid timestamp/value: discard it, the click listener restarts the tool
+        e.chart.removeOverlay({ id: e.overlay.id });
+        return;
+      }
       if (pane) flagsRef.current.set(e.overlay.id, { ...flagsRef.current.get(e.overlay.id), pane });
       else keepScale(e.overlay.id, e.overlay.name);
       // drawn while "lock all" is on: lock it like the rest once it is finished
@@ -867,7 +953,10 @@ export function KChart({
       if (TEXT_DRAWINGS.has(e.overlay.name) && !e.overlay.lock) openEditor(e.overlay, false);
       else openSettings(e.overlay.id);
     },
-    onPressedMoveEnd: () => persistOverlays(),
+    onPressedMoveEnd: (e) => {
+      ensureDrawingPoints(e.chart, e.overlay);
+      persistOverlays();
+    },
     // KLineChart calls this before the overlay leaves its list, so it is excluded by id
     onRemoved: (e) => {
       if (selectedRef.current === e.overlay.id) select(null);
@@ -877,7 +966,9 @@ export function KChart({
     onSelected: (e) => select(e.overlay.currentStep === DRAW_DONE ? e.overlay : null),
     // KLineChart only reports a selection when it moves to another drawing, so a drawing hidden while
     // selected and shown again would not get its toolbar back: every click on a drawing selects it
-    onClick: (e) => select(e.overlay),
+    onClick: (e) => {
+      if (e.overlay.currentStep === DRAW_DONE) select(e.overlay);
+    },
     onDeselected: (e) => {
       if (selectedRef.current === e.overlay.id) select(null);
     },
@@ -915,9 +1006,10 @@ export function KChart({
   const overlayById = (id: string) => chartRef.current?.getOverlays({ id })[0];
 
   const select = (o: Overlay | null) => {
-    selectedRef.current = o?.id ?? null;
     const chart = chartRef.current;
-    setSelected(o && chart ? { id: o.id, info: infoOf(chart, o), ...toolbarPos(chart, o.paneId) } : null);
+    const alive = o && chart ? chart.getOverlays({ id: o.id })[0] : undefined;
+    selectedRef.current = alive?.id ?? null;
+    setSelected(alive && chart ? { id: alive.id, info: infoOf(chart, alive), ...toolbarPos(chart, alive.paneId) } : null);
   };
   /** Re-read the selected drawing after the toolbar changed it. */
   const refreshSelected = (id: string) => {
@@ -928,7 +1020,49 @@ export function KChart({
   const openSettings = (id: string) => {
     const chart = chartRef.current;
     const o = overlayById(id);
-    if (chart && o) setSettings({ id, info: infoOf(chart, o), precision: precisionForPane(chart, o.paneId) });
+    if (chart && o) {
+      setSettings({
+        id,
+        info: infoOf(chart, o),
+        precision: precisionForPane(chart, o.paneId),
+        original: { styles: structuredClone(o.styles), extendData: structuredClone(o.extendData) },
+      });
+    }
+  };
+
+  const restoreSettingsPreview = () => {
+    const s = settingsRef.current;
+    const chart = chartRef.current;
+    if (!s || !chart) return;
+    const o = chart.getOverlays({ id: s.id })[0];
+    if (!o) return;
+    o.extendData = undefined;
+    chart.overrideOverlay({
+      id: s.id,
+      styles: structuredClone(s.original.styles),
+      extendData: structuredClone(s.original.extendData),
+    });
+  };
+
+  const cancelSettings = () => {
+    restoreSettingsPreview();
+    setSettings(null);
+  };
+
+  /** Preview style / Fibonacci edits on canvas without persisting or pushing to undo history. */
+  const previewDrawing = (id: string, preview: DrawingPreview) => {
+    const chart = chartRef.current;
+    const o = overlayById(id);
+    if (!chart || !o) return;
+    const line = lineOf(chart, o);
+    const styles = drawingStyles(preview.color ?? line.color, preview.size ?? line.size, preview.dash ?? dashOf(line));
+    if (TEXT_DRAWINGS.has(o.name)) styles.text = { ...styles.text, size: textSizeOf(o) };
+    if (preview.fib && FIB_DRAWINGS.has(o.name)) {
+      o.extendData = undefined;
+      chart.overrideOverlay({ id, styles, extendData: structuredClone(cleanFibSettings(preview.fib)) });
+    } else {
+      chart.overrideOverlay({ id, styles });
+    }
   };
 
   /** Style, text, point prices and dates, a trend line's extension, timeframe visibility and a Fibonacci drawing's settings. */
@@ -942,7 +1076,7 @@ export function KChart({
     // a colour picked on the toolbar is the one colour of a Fibonacci drawing's levels (TradingView's 使用单一颜色)
     const was = FIB_DRAWINGS.has(o.name) ? fibSettingsOf(o.extendData) : null;
     const fib = was && cleanFibSettings(change.fib ?? (change.color ? { ...was, oneColor: true } : was));
-    const extendData = change.text ?? (fib && JSON.stringify(fib) !== JSON.stringify(was) ? fib : undefined);
+    const extendData = change.text ?? (change.fib ? fib : fib && JSON.stringify(fib) !== JSON.stringify(was) ? fib : undefined);
     // update flags before redraw or visibility check
     const prevFlags = flagsRef.current.get(id);
     const nextFlags: DrawingFlags = { ...prevFlags };
@@ -965,7 +1099,7 @@ export function KChart({
 
     // If this edit hid the drawing on the current timeframe, park it off-chart right away (saved and undoable)
     if (!isVisibleOnTimeframe({ timeframes: nextFlags.timeframes }, tfRef.current)) {
-      const base = specOf(o, flagsRef.current);
+      const base = specOf(o, flagsRef.current, lastBarTimestamp());
       if (!base) return;
       const parked: OverlaySpec = {
         ...base,
@@ -998,7 +1132,7 @@ export function KChart({
     }
     // another tool (趋势线, 射线, 延长线): KLineChart cannot rename an overlay, so it is drawn again
     // on the same pane, keeping its flags (scale, tvId, lock, hidden, pane, timeframes) and slot order
-    const spec = specOf(o, flagsRef.current);
+    const spec = specOf(o, flagsRef.current, lastBarTimestamp());
     if (!spec) return;
     const wasSelected = selectedRef.current === id;
     const slotIdx = slotsRef.current.findIndex((s) => s.mounted && s.id === id);
@@ -1308,7 +1442,13 @@ export function KChart({
     const onClick = () =>
       setTimeout(() => {
         const d = drawingRef.current;
-        if (d?.overlay && !isAllowedPane(chart, d.tool, d.overlay.paneId)) restartDrawing();
+        if (d?.overlay) {
+          const live = chart.getOverlays({ id: d.id })[0];
+          const committed = d.overlay.currentStep > 1 && d.overlay.currentStep !== DRAW_DONE ? d.overlay.points.slice(0, d.overlay.currentStep - 1) : [];
+          const badPoint = committed.length > 0 && !hasValidDrawingPoints(committed);
+          if (!live || !isAllowedPane(chart, d.tool, d.overlay.paneId) || badPoint) restartDrawing();
+          else if (d.overlay.currentStep > 1) lockDrawingPane(chart, d.overlay);
+        }
         const m = measureRef.current;
         if (m && m.currentStep !== DRAW_DONE && m.paneId !== CANDLE_PANE) startMeasure();
       }, 0);
@@ -1520,7 +1660,7 @@ export function KChart({
       undo: () => applyHistory(undo(historyRef.current)),
       redo: () => applyHistory(redo(historyRef.current)),
       dialogOpen: () => settingsOpenRef.current,
-      closeDialog: () => setSettings(null),
+      closeDialog: () => cancelSettings(),
       deleteSelected: () => {
         const id = selectedRef.current;
         if (!id || !chartRef.current) return false;
@@ -1642,6 +1782,7 @@ export function KChart({
       compareSeries[slot] = refs[c.key]?.c;
       if (!compareSeries[slot]) return;
       const pane = c.mode === "percent";
+      const cmpPrec = !pane ? comparePrecision(slot) : undefined;
       chart.createIndicator(
         {
           name: compareName(slot),
@@ -1649,6 +1790,7 @@ export function KChart({
           series: pane ? "price" : "normal",
           shortName: c.key,
           calcParams: [0, pane ? 0 : 1],
+          ...(cmpPrec !== undefined ? { precision: cmpPrec } : {}),
           visible: !c.hidden,
           styles: { lines: [{ color: c.color, size: 2 }] },
         },
@@ -1722,7 +1864,7 @@ export function KChart({
     const specs = overlaysRef.current;
     if (JSON.stringify(serializeOverlays(chart)) === JSON.stringify(specs)) return;
     const typing = editorRef.current ? chart.getOverlays({ id: editorRef.current.id })[0] : undefined;
-    let typed = typing ? JSON.stringify(specOf(typing, flagsRef.current)) : null;
+    let typed = typing ? JSON.stringify(specOf(typing, flagsRef.current, lastBarTimestamp())) : null;
     restoringRef.current = true;
     setMenu(null);
     setSettings(null);
@@ -1875,11 +2017,12 @@ export function KChart({
           readOnly={readOnly}
           onSaveFibTemplate={onSaveFibTemplate}
           onDeleteFibTemplate={onDeleteFibTemplate}
+          onPreview={(preview) => previewDrawing(settings.id, preview)}
           onApply={(change) => {
             changeDrawing(settings.id, change);
             setSettings(null);
           }}
-          onClose={() => setSettings(null)}
+          onClose={cancelSettings}
         />
       )}
       {menu && (

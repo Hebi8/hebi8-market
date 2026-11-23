@@ -58,6 +58,44 @@ export function shouldRenderOverlay(
   return isVisibleOnTimeframe(spec, tf) && isPaneAvailable(spec, activePanes);
 }
 
+/** How many saved drawings are currently parked off-chart (hidden on another timeframe or a closed sub-pane). */
+export function countParkedOverlays(
+  overlays: readonly Pick<OverlaySpec, "pane" | "timeframes">[],
+  tf: Timeframe,
+  activePanes: ReadonlyMap<string, string> | ReadonlySet<string>,
+): number {
+  return overlays.filter((o) => !shouldRenderOverlay(o, tf, activePanes)).length;
+}
+
+/**
+ * Fill missing `timestamp` on a `horizontalStraightLine` (which KLineChart leaves undefined when a
+ * user clicks or drags on the right Y-axis) with `fallbackTimestamp`. Returns null when no change is needed.
+ */
+export function patchHorizontalPoints<T extends { timestamp?: number; value?: number }>(
+  name: string,
+  points: readonly T[],
+  fallbackTimestamp: number | undefined,
+): T[] | null {
+  if (name !== "horizontalStraightLine" || typeof fallbackTimestamp !== "number" || !Number.isFinite(fallbackTimestamp)) return null;
+  let changed = false;
+  const next = points.map((p) => {
+    if ((typeof p.timestamp !== "number" || !Number.isFinite(p.timestamp)) && typeof p.value === "number" && Number.isFinite(p.value)) {
+      changed = true;
+      return { ...p, timestamp: fallbackTimestamp };
+    }
+    return p;
+  });
+  return changed ? next : null;
+}
+
+/** Whether every point in `points` has a finite numeric timestamp and value (and there is at least one). */
+export function hasValidDrawingPoints(points: readonly { timestamp?: number; value?: number }[]): boolean {
+  return (
+    points.length > 0 &&
+    points.every((p) => typeof p.timestamp === "number" && Number.isFinite(p.timestamp) && typeof p.value === "number" && Number.isFinite(p.value))
+  );
+}
+
 /** Deep copy of a saved spec so mutations never leak into undo history or parked entries. */
 export function cloneSpec(spec: OverlaySpec): OverlaySpec {
   const timeframes = normalizeTimeframes(spec.timeframes);
@@ -115,10 +153,15 @@ export function mergeSlots(
   return { specs, slots: nextSlots };
 }
 
-/** A finished drawing as saved; null for one without points. */
-export function specOf(o: Pick<Overlay, "id" | "name" | "points" | "styles" | "extendData">, flags: Map<string, DrawingFlags>): OverlaySpec | null {
-  const points = o.points
-    .filter((p) => typeof p.timestamp === "number" && typeof p.value === "number")
+/** A finished drawing as saved; null for one without valid points. */
+export function specOf(
+  o: Pick<Overlay, "id" | "name" | "points" | "styles" | "extendData">,
+  flags: Map<string, DrawingFlags>,
+  fallbackTimestamp?: number,
+): OverlaySpec | null {
+  const source = patchHorizontalPoints(o.name, o.points, fallbackTimestamp) ?? o.points;
+  const points = source
+    .filter((p) => typeof p.timestamp === "number" && Number.isFinite(p.timestamp) && typeof p.value === "number" && Number.isFinite(p.value))
     .map((p) => ({ timestamp: p.timestamp!, value: p.value! }));
   if (points.length === 0) return null;
   const spec: OverlaySpec = { name: o.name, points };
