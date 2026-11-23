@@ -33,6 +33,9 @@ export function Dialog({ title, onClose, children, className = "max-w-[560px]" }
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Tab") return;
+      // only the topmost dialog traps Tab (e.g. a login Drawer stacked over AlertLoginDialog)
+      const dialogs = document.querySelectorAll('[role="dialog"]');
+      if (dialogs[dialogs.length - 1] !== el) return;
       const list = focusables(el);
       if (list.length === 0) {
         e.preventDefault();
@@ -63,7 +66,8 @@ export function Dialog({ title, onClose, children, className = "max-w-[560px]" }
   // if an inner view switch unmounts the focused control, keep focus inside the dialog
   useEffect(() => {
     const el = dialogRef.current;
-    if (el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    if (el && dialogs[dialogs.length - 1] === el && !el.contains(document.activeElement)) el.focus({ preventScroll: true });
   }, [title]);
 
   return (

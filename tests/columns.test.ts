@@ -141,7 +141,7 @@ describe("formatting and 3-state sorting", () => {
     expect(fmtColumnValue(-0.04, "pct")).toBe("0.0%");
     expect(fmtColumnValue(0.04, "pct")).toBe("0.0%");
     expect(fmtColumnValue(1234.56, "pct")).toBe("+1,234.6%");
-    expect(fmtColumnValue(1e308, "pct")).not.toContain("∞");
+    expect(fmtColumnValue(1e308, "pct")).toBe("+1.00e+308%");
 
     // columnColor: neutral when pct rounds to 0.0%, signed otherwise
     expect(columnColor(null, "pct")).toBe("text-muted");
@@ -152,7 +152,7 @@ describe("formatting and 3-state sorting", () => {
     expect(columnColor(10, "number")).toBe("text-fg");
     expect(columnColor(2, "ratio")).toBe("text-fg");
 
-    // ratio: symmetric rounding, no overflow
+    // ratio: symmetric rounding, compact exponential for huge finite values
     expect(fmtColumnValue(2.354, "ratio")).toBe("2.35x");
     expect(fmtColumnValue(1.255, "ratio")).toBe("1.26x");
     expect(fmtColumnValue(-1.255, "ratio")).toBe("−1.26x");
@@ -160,15 +160,16 @@ describe("formatting and 3-state sorting", () => {
     expect(fmtColumnValue(-1.2, "ratio")).toBe("−1.20x");
     expect(fmtColumnValue(-0.001, "ratio")).toBe("0.00x");
     expect(fmtColumnValue(120.54, "ratio")).toBe("120.5x");
-    expect(fmtColumnValue(1e308, "ratio")).not.toContain("∞");
+    expect(fmtColumnValue(1e308, "ratio")).toBe("1.00e+308x");
 
-    // number: adaptive precision
+    // number: adaptive precision & compact exponential for >= 1e9
     expect(fmtColumnValue(64.238, "number")).toBe("64.24");
     expect(fmtColumnValue(-0.724, "number")).toBe("−0.72");
     expect(fmtColumnValue(0, "number")).toBe("0.00");
     expect(fmtColumnValue(0.0042, "number")).toBe("0.0042");
     expect(fmtColumnValue(1234.56, "number")).toBe("1,234.6");
     expect(fmtColumnValue(12345.6, "number")).toBe("12,346");
+    expect(fmtColumnValue(-3.456e9, "number")).toBe("−3.46e+9");
   });
 
   it("cycles sort desc → asc → default and always puts null last", () => {
@@ -457,6 +458,16 @@ alerts: []
     expect(readYaml()).toContain("# 行注释");
     // Second edit with the same id still matches cleanly
     expect(ops.saveColumn(viewer, { id: derivedId, label: "手写再改", formula: "close", tf: "M", format: "number" }).id).toBe(derivedId);
+
+    // Editing a column with explicit `id: null` persists matched id in place without duplicating key
+    fs.writeFileSync(
+      yamlFile,
+      BASE_YAML.replace(/columns:[\s\S]*?(?=alerts:)/, 'columns:\n  - { id: null, label: 空id列, formula: close }\n'),
+    );
+    const nullDerivedId = readConfig(root).columns[0].id;
+    expect(ops.saveColumn(viewer, { id: nullDerivedId, label: "空id改名", formula: "open", tf: "D", format: "number" }).id).toBe(nullDerivedId);
+    expect(readConfig(root).columns[0]).toMatchObject({ id: nullDerivedId, label: "空id改名", formula: "open" });
+    expect(readYaml().match(new RegExp(`id:\\s*${nullDerivedId}`, "g"))).toHaveLength(1);
   });
 
   it("handles YAML alias/anchor column lists safely and keeps overflow tail entries untouched on reorder", async () => {
@@ -511,6 +522,23 @@ columns:
     ops.reorderColumns(viewer, ["c6", "c5", "c4", "c3", "c2", "c1"]);
     const rawCols = (parse(readYaml()) as { columns: { id: string }[] }).columns;
     expect(rawCols.map((c) => c.id)).toEqual(["c6", "c5", "c4", "c3", "c2", "c1", "c7", "c8"]);
+
+    // 3) Editing an anchored scalar field (`formula: &rule ...`) unshares aliases (e.g. `alerts[].when: *rule`)
+    const sharedScalarYaml = `owner: Dreaife
+aliases:
+  BTC: ${BTC}
+groups:
+  - { name: 加密, symbols: [BTC] }
+columns:
+  - { id: shared_c, label: 共享列, formula: &rule "close > 100", tf: D, format: number }
+alerts:
+  - { key: BTC, label: 共享警报, when: *rule }
+`;
+    fs.writeFileSync(yamlFile, sharedScalarYaml);
+    ops.saveColumn(viewer, { id: "shared_c", label: "共享列", formula: "close > 200", tf: "D", format: "number" });
+    const afterShared = readConfig(root);
+    expect(afterShared.columns[0].formula).toBe("close > 200");
+    expect(afterShared.alerts[0].when).toBe("close > 100");
   });
 
   it("rejects nested synthetic aliases consistently across compile, save, syncKeys, quoteKeys and overview", async () => {

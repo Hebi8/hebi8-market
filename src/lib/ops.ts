@@ -247,6 +247,7 @@ export function saveColumn({ dir }: Viewer, input: ColumnInput): ColumnDef {
       const node = own(doc, seq, index);
       if (isMap(node)) {
         if (!node.has("id")) node.items.unshift(doc.createPair("id", rawId));
+        else if (str((node.toJS(doc) as { id?: unknown }).id) !== rawId) setField(doc, node, "id", rawId);
         setField(doc, node, "label", label);
         setField(doc, node, "formula", formula);
         setField(doc, node, "tf", tf);
@@ -347,15 +348,15 @@ export type AlertOrigin = "page" | "agent";
 
 const AGENT_EDITS_WATCHLIST = "这条对全部自选的警报不是草稿，agent 不能改：不带 id 另存一条新的（会存成草稿），旧的继续生效，用户确认新的之后再删旧的";
 
-/** Set one field of a yaml map; a scalar is changed in place so the comment on its line stays. */
+/** Set one field of a yaml map; unshares anchors/aliases first, and updates a scalar in place to keep its comment. */
 function setField(doc: Document, map: YAMLMap, field: string, value: unknown): void {
-  const old = map.get(field, true);
+  const old = own(doc, map, field);
   if (isScalar(old) && (value === null || typeof value !== "object")) {
     old.value = value;
     return;
   }
   const node = flowNode(doc, value);
-  if (old && typeof old === "object" && "comment" in old) node.comment = old.comment;
+  if (isNode(old)) node.comment = old.comment;
   map.set(field, node);
 }
 
