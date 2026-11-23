@@ -10,6 +10,7 @@ import {
   mergeSlots,
   normalizeTimeframes,
   patchHorizontalPoints,
+  restoreOverlaySnapshot,
   shouldRenderOverlay,
   specOf,
   type DrawingFlags,
@@ -28,12 +29,14 @@ type Live = Overlay & {
 let make: (name?: string) => Live;
 let registerDrawingTemplates: () => void;
 let setOverlayChart: (chart: Chart | null, scales?: (id: string) => "log" | "linear" | undefined) => void;
+let annotationLayout: typeof import("@/components/chart-overlays").annotationLayout;
 beforeAll(async () => {
   vi.stubGlobal("window", globalThis);
   const { getOverlayClass } = await import("klinecharts");
   const overlaysMod = await import("@/components/chart-overlays");
   registerDrawingTemplates = overlaysMod.registerDrawingTemplates;
   setOverlayChart = overlaysMod.setOverlayChart;
+  annotationLayout = overlaysMod.annotationLayout;
   registerDrawingTemplates();
   make = (name = "segment") => {
     const Clazz = getOverlayClass(name)!;
@@ -270,5 +273,60 @@ describe("timeframe visibility and sub-pane preservation", () => {
     } finally {
       setOverlayChart(null);
     }
+  });
+
+  it("restores pre-preview styles and extendData cleanly even when originally null/undefined", () => {
+    const o = make("fibonacciLine");
+    o.override({
+      id: "fib_preview",
+      points: [
+        { timestamp: 1, value: 100 },
+        { timestamp: 2, value: 200 },
+      ],
+    });
+    const original = { styles: structuredClone(o.styles), extendData: structuredClone(o.extendData) };
+    expect(original.styles).toBeNull();
+    expect(original.extendData).toBeUndefined();
+
+    // Simulate KLineChart's overrideOverlay with real shouldUpdate() repaint check
+    let repaints = 0;
+    const mockChart = {
+      overrideOverlay: (patch: Record<string, unknown>) => {
+        o.override(patch);
+        const { draw } = (o as unknown as { shouldUpdate: () => { draw: boolean } }).shouldUpdate();
+        if (draw) repaints++;
+        return draw;
+      },
+    } as unknown as Pick<Chart, "overrideOverlay">;
+
+    // Live preview sets styles and Rule of 7 levels
+    o.override({ styles: { line: { color: "#f23645", size: 3 } }, extendData: applyFibTemplate(FIB_PRESETS[2]) });
+    expect(specOf(o, new Map())?.styles).toBeDefined();
+    expect(specOf(o, new Map())?.extendData).toBeDefined();
+
+    // Cancelling preview clears both styles and extendData and still triggers a canvas repaint
+    repaints = 0;
+    restoreOverlaySnapshot(mockChart, o, original);
+    expect(o.styles).toBeNull();
+    expect(o.extendData).toBeUndefined();
+    expect(o.zLevel).toBe(0);
+    expect(repaints).toBeGreaterThan(0);
+    const saved = specOf(o, new Map())!;
+    expect("styles" in saved).toBe(false);
+    expect("extendData" in saved).toBe(false);
+  });
+
+  it("clamps simpleAnnotation layout inside sub-panes without clipping or drifting above", () => {
+    // Tall main pane: standard 61px upward offset
+    expect(annotationLayout(200, 450, 12)).toMatchObject({ labelY: 139, below: false });
+    // Near top of a 100px sub-pane: flips below the anchor and stays inside [4, 96]
+    const flipped = annotationLayout(20, 100, 12);
+    expect(flipped.below).toBe(true);
+    expect(flipped.labelY).toBeGreaterThan(20);
+    expect(flipped.labelY + Math.ceil(12 * 1.35) + 6).toBeLessThanOrEqual(96);
+    // Lower half of a 100px sub-pane: stays above, clamped so label top >= 4 (never negative)
+    const clamped = annotationLayout(75, 100, 12);
+    expect(clamped.below).toBe(false);
+    expect(clamped.labelY - (Math.ceil(12 * 1.35) + 6)).toBeGreaterThanOrEqual(4);
   });
 });

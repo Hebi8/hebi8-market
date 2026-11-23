@@ -316,13 +316,13 @@ const TV_FIB_DEFAULTS: readonly { level: number; color: string; visible: boolean
   { level: 2.414, color: "#4caf50", visible: false },
   { level: 2, color: "#089981", visible: false },
   { level: 3, color: "#00bcd4", visible: false },
-  { level: 3.272, color: "#787b86", visible: false },
+  { level: 3.272, color: "#808080", visible: false },
   { level: 3.414, color: "#2962ff", visible: false },
   { level: 4, color: "#f23645", visible: false },
   { level: 4.272, color: "#9c27b0", visible: false },
   { level: 4.414, color: "#e91e63", visible: false },
-  { level: 4.618, color: "#9c27b0", visible: false },
-  { level: 4.764, color: "#f23645", visible: false },
+  { level: 4.618, color: "#ff9800", visible: false },
+  { level: 4.764, color: "#089981", visible: false },
 ];
 
 const REASON_NO_FIB_LEVELS = "无可见斐波档位";

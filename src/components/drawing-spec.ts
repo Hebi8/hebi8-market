@@ -6,7 +6,7 @@
  * object with the chart: a saved state (the undo history among them) never changes under a later
  * drag or style. Type-only KLineChart imports, so it loads without KLineChart.
  */
-import type { Overlay, OverlayCreate } from "klinecharts";
+import type { Chart, Overlay, OverlayCreate } from "klinecharts";
 import { TIMEFRAMES, type Timeframe } from "@/lib/symbols";
 import type { OverlaySpec } from "@/lib/vault";
 import type { PriceScale } from "./drawing-scale";
@@ -187,4 +187,29 @@ export function drawingOf(spec: OverlaySpec): OverlayCreate {
     extendData: structuredClone(spec.extendData),
     ...(spec.styles ? { styles: structuredClone(spec.styles) as OverlayCreate["styles"] } : {}),
   };
+}
+
+/**
+ * Restore an overlay's pre-preview `styles` and `extendData` cleanly. KLineChart's `override()`
+ * ignores null/undefined `styles` and deep-merges objects/arrays, so we reset both fields first and
+ * nudge `zLevel` back and forth when neither was originally set so KLineChart still repaints.
+ */
+export function restoreOverlaySnapshot(
+  chart: Pick<Chart, "overrideOverlay">,
+  o: Overlay,
+  original: { styles: Overlay["styles"]; extendData: unknown },
+): void {
+  const mut = o as unknown as { styles: Overlay["styles"]; extendData: unknown };
+  mut.styles = null;
+  mut.extendData = undefined;
+  const repainted = chart.overrideOverlay({
+    id: o.id,
+    ...(original.styles ? { styles: structuredClone(original.styles) } : {}),
+    ...(original.extendData !== undefined ? { extendData: structuredClone(original.extendData) } : {}),
+  });
+  if (!repainted) {
+    const z = o.zLevel;
+    chart.overrideOverlay({ id: o.id, zLevel: z + 1 });
+    chart.overrideOverlay({ id: o.id, zLevel: z });
+  }
 }

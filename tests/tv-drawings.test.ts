@@ -375,12 +375,23 @@ describe("convertDrawing: styles", () => {
     const sparse2Levels = (sparse2.ok ? (sparse2.overlay.extendData as { levels: { level: number }[] }).levels : []).map((l) => l.level);
     expect(sparse2Levels).toEqual([0, 0.236, 0.35, 0.5, 0.618, 0.786, 1, 1.618, 2.618, 3.618, 4.236]);
 
-    // Enabling hidden slot level24 without sending coeff uses TradingView's standard default coeff (4.764)
-    const lv24 = convertDrawing(drawing("LineToolFibRetracement", points, { level24: { visible: true } }), US);
-    expect(lv24.ok).toBe(true);
-    const lv24Levels = (lv24.ok ? (lv24.overlay.extendData as { levels: { level: number }[] }).levels : []).map((l) => l.level);
-    expect(lv24Levels).toHaveLength(12);
-    expect(lv24Levels[11]).toBe(4.764);
+    // Enabling hidden slots level18 / level23 / level24 without sending coeff/color uses TradingView's standard defaults
+    const extraSlots = convertDrawing(
+      drawing("LineToolFibRetracement", points, {
+        level18: { visible: true },
+        level23: { visible: true },
+        level24: { visible: true },
+      }),
+      US,
+    );
+    expect(extraSlots.ok).toBe(true);
+    const extraLevels = extraSlots.ok ? (extraSlots.overlay.extendData as { levels: { level: number; color: string }[] }).levels : [];
+    expect(extraLevels).toHaveLength(14);
+    expect(extraLevels.slice(11)).toEqual([
+      { level: 3.272, color: "#808080" },
+      { level: 4.618, color: "#ff9800" },
+      { level: 4.764, color: "#089981" },
+    ]);
 
     // Turning off every visible slot skips the drawing with a clear reason instead of falling back to 11 default levels
     const allHidden = Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`level${i + 1}`, { visible: false }]));

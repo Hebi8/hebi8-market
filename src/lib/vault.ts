@@ -57,18 +57,16 @@ export function ensureUserVault(login: string): string {
   if (isScalar(first) && first.commentBefore && drop.includes(String(first.value))) {
     doc.commentBefore = [doc.commentBefore, first.commentBefore].filter(Boolean).join("\n");
   }
-  // strip owner's personal Fibonacci templates (expanding YAML aliases like `chart: *prefs` first)
+  // strip owner's personal Fibonacci templates (including from an aliased source map like `x-prefs: &prefs`)
   if (isMap(doc.contents)) {
-    const resolvedChart = resolved(doc, doc.contents.get("chart", true));
-    if (isMap(resolvedChart) && resolvedChart.has("fibTemplates")) {
-      const chart = own(doc, doc.contents, "chart");
-      if (isMap(chart)) {
-        unshareSubtree(doc, chart.get("fibTemplates", true));
-        chart.delete("fibTemplates");
-        if (!chart.items.length) {
-          unshareSubtree(doc, chart);
-          doc.delete("chart");
-        }
+    const rawChart = doc.contents.get("chart", true);
+    const target = resolved(doc, rawChart);
+    if (isMap(target) && target.has("fibTemplates")) {
+      unshareSubtree(doc, target.get("fibTemplates", true));
+      target.delete("fibTemplates");
+      if (!isAlias(rawChart) && !target.items.length) {
+        unshareSubtree(doc, target);
+        doc.delete("chart");
       }
     }
   }
@@ -351,6 +349,7 @@ export function upsertFibTemplate(doc: Document, tpl: FibTemplate): void {
       else existing.set("name", tpl.name);
       const levels = tpl.levels.map((l) => flowNode(doc, l));
       const levelsNode = own(doc, existing, "levels");
+      unshareSubtree(doc, levelsNode);
       if (isSeq(levelsNode)) {
         levelsNode.flow = false;
         levelsNode.items = levels;
@@ -370,6 +369,7 @@ export function upsertFibTemplate(doc: Document, tpl: FibTemplate): void {
       }
       return;
     }
+    unshareSubtree(doc, existing);
     list.items[i] = makeFibTemplateNode(doc, tpl);
     return;
   }

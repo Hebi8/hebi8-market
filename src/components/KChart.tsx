@@ -37,7 +37,7 @@ import { ChartLegend, createLegendStore, type ChartLegendProps } from "./ChartLe
 import { indicatorLines, styleRows } from "./indicator-style";
 import { IconAlarm } from "./chart-icons";
 import { timeAxisBarSpace } from "./chart-gestures";
-import { registerDrawingTemplates, setOverlayChart, setOverlayTheme, snapToBar, textOf, textSizeOf } from "./chart-overlays";
+import { annotationLayout, registerDrawingTemplates, setOverlayChart, setOverlayTheme, snapToBar, textOf, textSizeOf } from "./chart-overlays";
 import { LOG_AXIS } from "./log-axis";
 import { extensionOf, historyOf, record, redo, TREND_LINES, undo, withExtension, type History } from "./drawing-edit";
 import {
@@ -48,6 +48,7 @@ import {
   mergeSlots,
   normalizeTimeframes,
   patchHorizontalPoints,
+  restoreOverlaySnapshot,
   shouldRenderOverlay,
   specOf,
   type DrawingFlags,
@@ -530,7 +531,7 @@ export function KChart({
   const settingsRef = useRef(settings);
   const settingsOpenRef = useRef(false);
   /** A text drawing being typed in place (absolute px in the chart box) */
-  const [editor, setEditor] = useState<{ id: string; x: number; y: number; center: boolean; size: number; color: string; text: string; isNew: boolean } | null>(null);
+  const [editor, setEditor] = useState<{ id: string; x: number; y: number; center: boolean; below?: boolean; size: number; color: string; text: string; isNew: boolean } | null>(null);
   const editorRef = useRef(editor);
   const overlayMenuRef = useRef(false);
   const onAddAlertRef = useRef(onAddAlert);
@@ -580,7 +581,9 @@ export function KChart({
     const ed = editorRef.current;
     if (ed) {
       const next = editorAt(ed.id);
-      setEditor((cur) => (cur && cur.id === ed.id && (Math.abs(cur.x - next.x) > 1 || Math.abs(cur.y - next.y) > 1) ? { ...cur, ...next } : cur));
+      setEditor((cur) =>
+        cur && cur.id === ed.id && (Math.abs(cur.x - next.x) > 1 || Math.abs(cur.y - next.y) > 1 || cur.below !== next.below) ? { ...cur, ...next } : cur,
+      );
     }
     store.set({
       left: chart.getSize(CANDLE_PANE, "main")?.left ?? 0,
@@ -1036,12 +1039,7 @@ export function KChart({
     if (!s || !chart) return;
     const o = chart.getOverlays({ id: s.id })[0];
     if (!o) return;
-    o.extendData = undefined;
-    chart.overrideOverlay({
-      id: s.id,
-      styles: structuredClone(s.original.styles),
-      extendData: structuredClone(s.original.extendData),
-    });
+    restoreOverlaySnapshot(chart, o, s.original);
   };
 
   const cancelSettings = () => {
@@ -1167,17 +1165,25 @@ export function KChart({
     select(null);
   };
 
-  /** Where a text drawing's box goes, in px of the chart box (a 注释's label sits 61px above its point). */
-  const editorAt = (id: string): { x: number; y: number } => {
+  /** Where a text drawing's box goes, in px of the chart box, clamped within its own pane (sharing `annotationLayout` for 注释). */
+  const editorAt = (id: string): { x: number; y: number; below: boolean } => {
     const o = overlayById(id);
     const point = o?.points[0];
     const chart = chartRef.current;
     const paneId = o?.paneId ?? CANDLE_PANE;
     const at = (point ? chart?.convertToPixel({ timestamp: point.timestamp, value: point.value }, { paneId, absolute: true }) : {}) as Partial<Coordinate>;
+    const pane = chart?.getSize(paneId, "main");
     // `absolute` only adds the pane's top: x is still from the plot's left edge, after any left scale
-    const left = chart?.getSize(paneId, "main")?.left ?? 0;
-    const y = (at.y ?? 0) - (o?.name === "simpleAnnotation" ? 61 : 0);
-    return { x: left + (at.x ?? 0), y: Math.max(4, y) };
+    const left = pane?.left ?? 0;
+    const paneTop = pane?.top ?? 0;
+    const paneHeight = pane?.height ?? 0;
+    const absY = at.y ?? paneTop;
+    if (o?.name === "simpleAnnotation") {
+      const g = annotationLayout(absY - paneTop, paneHeight, textSizeOf(o));
+      return { x: left + (at.x ?? 0), y: paneTop + g.labelY, below: g.below };
+    }
+    const maxY = paneHeight > 0 ? Math.max(paneTop + 4, paneTop + paneHeight - 24) : absY;
+    return { x: left + (at.x ?? 0), y: Math.min(maxY, Math.max(paneTop + 4, absY)), below: false };
   };
 
   /** Type a text drawing in place; the canvas text hides meanwhile so it is not drawn twice. */
@@ -1862,7 +1868,9 @@ export function KChart({
     const chart = chartRef.current;
     if (!chart || reloadSeq === 0 || !restoredRef.current) return;
     const specs = overlaysRef.current;
-    if (JSON.stringify(serializeOverlays(chart)) === JSON.stringify(specs)) return;
+    // Compare against the committed (non-preview) state so tab-switching while previewing in the settings dialog never clobbers the draft or undo stack
+    const committed = JSON.stringify(historyRef.current.present);
+    if (committed === JSON.stringify(specs) || committed === JSON.stringify(specs.map(cloneSpec))) return;
     const typing = editorRef.current ? chart.getOverlays({ id: editorRef.current.id })[0] : undefined;
     let typed = typing ? JSON.stringify(specOf(typing, flagsRef.current, lastBarTimestamp())) : null;
     restoringRef.current = true;
@@ -1976,6 +1984,7 @@ export function KChart({
           x={editor.x}
           y={editor.y}
           center={editor.center}
+          below={editor.below}
           size={editor.size}
           color={editor.color}
           initial={editor.text}

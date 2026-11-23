@@ -845,6 +845,7 @@ export function TextEditor({
   x,
   y,
   center,
+  below,
   size,
   color,
   initial,
@@ -853,8 +854,9 @@ export function TextEditor({
 }: {
   x: number;
   y: number;
-  /** Centred above (x, y), like a 注释's label; otherwise the top-left corner is at (x, y) */
+  /** Centred above (or below when `below` is true) (x, y), like a 注释's label; otherwise top-left at (x, y) */
   center: boolean;
+  below?: boolean;
   size: number;
   color: string;
   initial: string;
@@ -898,7 +900,7 @@ export function TextEditor({
       style={{
         left: x,
         top: y,
-        transform: center ? "translate(-50%, -100%)" : undefined,
+        transform: center ? (below ? "translate(-50%, 0)" : "translate(-50%, -100%)") : undefined,
         fontSize: size,
         color,
         width: `${Math.max(6, ...text.split("\n").map(widthOf)) + 1}ch`,

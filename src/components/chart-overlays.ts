@@ -1183,13 +1183,17 @@ const annotation: Template[] = [
     needDefaultPointFigure: true,
     createPointFigures: (p) => {
       const [a] = p.coordinates;
-      const top = a.y - 6;
-      const end = top - 50;
+      const size = textSizeOf(p.overlay);
       const color = lineOf(p.chart, p.overlay).color;
+      const g = annotationLayout(a.y, p.bounding.height, size);
       return [
-        line([{ x: a.x, y: top }, { x: a.x, y: end }], DASHED, true),
-        { type: "polygon", attrs: { coordinates: [{ x: a.x, y: end }, { x: a.x - 4, y: end - 5 }, { x: a.x + 4, y: end - 5 }] }, styles: fillOnly(color), ignoreEvent: true },
-        { type: "text", attrs: { x: a.x, y: end - 5, text: textOf(p.overlay) || " ", align: "center", baseline: "bottom" }, styles: { size: textSizeOf(p.overlay), backgroundColor: color, borderColor: color, color: "#ffffff" } },
+        line([{ x: a.x, y: g.stemStart }, { x: a.x, y: g.arrowTip }], DASHED, true),
+        { type: "polygon", attrs: { coordinates: [{ x: a.x, y: g.arrowTip }, { x: a.x - 4, y: g.arrowBase }, { x: a.x + 4, y: g.arrowBase }] }, styles: fillOnly(color), ignoreEvent: true },
+        {
+          type: "text",
+          attrs: { x: a.x, y: g.labelY, text: textOf(p.overlay) || " ", align: "center", baseline: g.below ? "top" : "bottom" },
+          styles: { size, backgroundColor: color, borderColor: color, color: "#ffffff" },
+        },
       ];
     },
   },
@@ -1235,6 +1239,41 @@ const annotation: Template[] = [
     },
   },
 ];
+
+/**
+ * Vertical geometry for a `simpleAnnotation` inside a pane of height `paneHeight`, shared between
+ * the canvas overlay and the in-place HTML text editor so neither clips or drifts into the pane above.
+ * Defaults to 50px stem above the anchor; flips below when near the pane's top edge, or shortens
+ * the stem when the pane is too short for the full offset.
+ */
+export function annotationLayout(
+  anchorY: number,
+  paneHeight: number,
+  fontSize: number,
+): { stemStart: number; arrowTip: number; arrowBase: number; labelY: number; below: boolean } {
+  const pad = 4;
+  const labelH = Math.ceil(fontSize * 1.35) + 6;
+  const fullAbove = 61 + labelH + pad;
+  if (anchorY >= fullAbove || paneHeight <= 0) {
+    const stemStart = anchorY - 6;
+    const arrowTip = stemStart - 50;
+    const arrowBase = arrowTip - 5;
+    return { stemStart, arrowTip, arrowBase, labelY: arrowBase, below: false };
+  }
+  const spaceBelow = paneHeight - anchorY;
+  if (spaceBelow > anchorY) {
+    const stem = Math.max(8, Math.min(50, spaceBelow - 6 - 5 - labelH - pad));
+    const stemStart = anchorY + 6;
+    const arrowTip = stemStart + stem;
+    const arrowBase = Math.min(Math.max(arrowTip + 5, pad), Math.max(pad, paneHeight - labelH - pad));
+    return { stemStart: Math.min(stemStart, arrowTip), arrowTip: Math.min(arrowTip, arrowBase), arrowBase, labelY: arrowBase, below: true };
+  }
+  const labelY = Math.max(labelH + pad, anchorY - 61);
+  const arrowBase = labelY;
+  const arrowTip = Math.min(anchorY, arrowBase + 5);
+  const stemStart = Math.max(arrowTip, anchorY - 6);
+  return { stemStart, arrowTip, arrowBase, labelY, below: false };
+}
 
 /** TradingView's 向上 / 向下箭头: a fat arrow under (over) the point, green (red). */
 function arrowMark(name: string, up: boolean): Template {

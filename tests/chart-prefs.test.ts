@@ -174,6 +174,11 @@ chart: *prefs
     const carolCfg = readConfig(carolDir);
     expect(carolCfg.chart.tf).toBe("D");
     expect(carolCfg.chart.fibTemplates).toEqual([]);
+    // Owner's template must also be purged from the anchored source map in Carol's yaml
+    const carolYaml = fs.readFileSync(path.join(carolDir, "hebi8.yaml"), "utf8");
+    expect(carolYaml).not.toContain("私密模板");
+    expect(carolYaml).not.toContain("fibTemplates");
+    expect(read()).toContain("私密模板");
 
     // 2. saveFibTemplate and deleteFibTemplate expand `chart.fibTemplates: *myList` alias without losing entries or fake-deleting
     fs.writeFileSync(
@@ -233,6 +238,28 @@ chart:
     expect(text).toContain("# 向右延长");
     expect(readConfig(root).chart.fibTemplates).toEqual([
       { name: "主力模板", levels: [{ level: 0.618, color: "#089981" }], extendRight: false, reverse: true },
+    ]);
+
+    // 4. Overwriting a template whose level item carries an anchor referenced by another template keeps valid YAML
+    fs.writeFileSync(
+      yamlFile,
+      `chart:
+  tf: W
+  fibTemplates:
+    - name: 模板A
+      levels:
+        - &base { level: 0, color: "#787b86" }
+        - { level: 0.618, color: "#089981" }
+    - name: 模板B
+      levels:
+        - *base
+        - { level: 0.5, color: "#4caf50" }
+`,
+    );
+    expect(await saveFibTemplate({ name: "模板A", levels: [{ level: 1, color: "#2962ff" }] })).toEqual({ ok: true });
+    expect(readConfig(root).chart.fibTemplates).toEqual([
+      { name: "模板A", levels: [{ level: 1, color: "#2962ff" }] },
+      { name: "模板B", levels: [{ level: 0, color: "#787b86" }, { level: 0.5, color: "#4caf50" }] },
     ]);
   });
 });
