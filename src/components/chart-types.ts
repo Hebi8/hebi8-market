@@ -284,6 +284,21 @@ export const TEXT_DRAWINGS = new Set(["text", "simpleAnnotation"]);
 /** Tools drawn click by click until a double click, Enter or Esc. */
 export const OPEN_DRAWINGS = new Set(["path", "polyline"]);
 
+/** Basic tools supported on indicator and compare sub-panes (linear coordinates only). */
+export const SUBPANE_DRAWINGS = new Set([
+  "segment",
+  "rayLine",
+  "straightLine",
+  "horizontalStraightLine",
+  "horizontalRayLine",
+  "verticalStraightLine",
+  "crossLine",
+  "rect",
+  "text",
+  "simpleAnnotation",
+  "arrow",
+]);
+
 /**
  * Tools whose geometry depends on the price scale (lines through their points, parallels, levels):
  * they record the scale they were drawn on (`OverlaySpec.scale`) and keep to it on the other axis.

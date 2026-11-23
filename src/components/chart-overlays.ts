@@ -22,7 +22,7 @@ import { DRAW_DONE, MEASURE_TOOL, SCALED_DRAWINGS } from "./chart-types";
 import { bendLine, bendPolygon, bendRect, fitLine, fromSpace, makeWarp, movePrices, toSpace, type PriceScale, type Warp } from "./drawing-scale";
 import { lineOf, withAlpha } from "./drawing-style";
 import { BOX_HANDLES, boxHandleAt, channelHandles, dragBoxBy, dragChannel, drawable, yAt, type ChannelHandle } from "./drawing-edit";
-import { FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
+import { activeFibLevels, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
 import { hasOutline, isSeeThrough, outlineOf } from "./chart-gestures";
 import { measureLines, pct, priceChangeText, volumeBetween } from "./measure";
 import { tradingDayOffset, tradingDayTimestamp, yearOffset, yearTimestamp } from "./drawing-time";
@@ -99,10 +99,13 @@ function toward(a: C, b: C, d: number): C {
 // ---------------------------------------------------------------------------- price scale
 
 const axisScale = (yAxis?: { name: string } | null): PriceScale => (yAxis?.name === "logarithm" ? "log" : "linear");
-const mainScale = () => axisScale(activeChart?.getYAxes({ paneId: "candle_pane" })[0]);
-/** The space a drawing's geometry is straight in: the scale it was drawn on, or for an older drawing the axis it is on. */
-const spaceOf = (p: Params): PriceScale => scaleOf(p.overlay.id) ?? axisScale(p.yAxis);
-const spaceById = (id: string): PriceScale => scaleOf(id) ?? mainScale();
+/** Sub-panes always use a linear y-axis, independent of the main pane's log / % mode. */
+const paneScale = (paneId?: string): PriceScale =>
+  paneId && paneId !== "candle_pane" ? "linear" : axisScale(activeChart?.getYAxes({ paneId: "candle_pane" })[0]);
+/** The space a drawing's geometry is straight in: sub-panes are always linear; main pane uses its recorded scale or the axis. */
+const spaceOf = (p: Params): PriceScale => (p.overlay.paneId !== "candle_pane" ? "linear" : (scaleOf(p.overlay.id) ?? axisScale(p.yAxis)));
+const spaceOfOverlay = (o: Pick<Overlay, "id" | "paneId">): PriceScale =>
+  o.paneId !== "candle_pane" ? "linear" : (scaleOf(o.id) ?? paneScale(o.paneId));
 
 /** Figures a template made in the axis' pixels (arrow heads, info boxes): not bent. */
 const onScreen = new WeakSet<OverlayFigure>();
@@ -125,6 +128,7 @@ function scaled(t: Template): Template {
   return {
     ...t,
     createPointFigures: (p) => {
+      if (p.overlay.paneId !== "candle_pane") return create(p);
       const scale = scaleOf(p.overlay.id);
       const yAxis = p.yAxis;
       const values = p.overlay.points.flatMap((pt) => (pt.value === undefined ? [] : [pt.value]));
@@ -352,7 +356,7 @@ const onPress = (e: OverlayEvent<unknown>) => {
  */
 function settle(e: OverlayEvent<unknown>, next: Partial<Point>[], derived: Partial<Point>[] = []) {
   if (!pressed) return;
-  if (drawable([...next, ...derived], spaceById(e.overlay.id) === "log" || mainScale() === "log")) pressed.last = next;
+  if (drawable([...next, ...derived], spaceOfOverlay(e.overlay) === "log" || paneScale(e.overlay.paneId) === "log")) pressed.last = next;
   e.overlay.points = pressed.last.map((pt) => ({ ...pt }));
 }
 /** The handle being dragged (a stored point's own handle is `p0`, `p1`…), with the points when the drag began. */
@@ -369,7 +373,7 @@ function dragged(e: OverlayEvent<unknown>): { key: string; prev: Partial<Point>[
  * (`dragChannel`) is worked out there.
  */
 function channelSpace(chart: Chart, id: string, paneId: string) {
-  const scale = spaceById(id);
+  const scale = paneId !== "candle_pane" ? "linear" : (scaleOf(id) ?? paneScale(paneId));
   const filter = { paneId };
   const price = (u: number) => fromSpace(scale, u);
   return {
@@ -386,7 +390,7 @@ const boxHandles = {
   onPressedMoving: (e: OverlayEvent<unknown>) => {
     const d = dragged(e);
     const h = BOX_HANDLES.find((b) => b.key === d?.key);
-    if (d && h && pressed) settle(e, dragBoxBy(d.prev, e.overlay.points, h, pressed.value, pointerValue(e), spaceById(e.overlay.id)));
+    if (d && h && pressed) settle(e, dragBoxBy(d.prev, e.overlay.points, h, pressed.value, pointerValue(e), spaceOfOverlay(e.overlay)));
   },
 } satisfies Partial<Template>;
 const boxHandleFigures = (p: Params): Figures => handleFigures(p, BOX_HANDLES.map((h) => ({ key: h.key, c: boxHandleAt(p.coordinates, h) })));
@@ -587,7 +591,7 @@ function regression(chart: Chart, t0: number, t1: number, scale: PriceScale) {
 function snapToRegression(id: string, { points }: OverlayPerformEventParams) {
   const [a, b] = points;
   if (!activeChart || a?.timestamp === undefined || b?.timestamp === undefined) return;
-  const fit = regression(activeChart, a.timestamp, b.timestamp, spaceById(id));
+  const fit = regression(activeChart, a.timestamp, b.timestamp, scaleOf(id) ?? paneScale("candle_pane"));
   if (!fit) return;
   const [ia, ib] = a.timestamp <= b.timestamp ? [fit.i0, fit.i1] : [fit.i1, fit.i0];
   a.value = fit.price(ia);
@@ -605,10 +609,12 @@ function fibLevels(p: Params, xa: number, xb: number, prices: number[]): Figures
   const s = fibSettingsOf(p.overlay.extendData);
   const own = lineOf(p.chart, p.overlay).color;
   const [x0, x1] = fibSpan(xa, xb, s, p.bounding.width);
-  const levels = FIB_LEVELS.map(({ level, color }) => {
-    const value = fibPrice(spaceOf(p), prices, level, s.reverse);
-    return { level, value, y: p.yAxis!.convertToPixel(value), color: s.oneColor ? own : color };
-  });
+  const levels = activeFibLevels(s)
+    .map(({ level, color }) => {
+      const value = fibPrice(spaceOf(p), prices, level, s.reverse);
+      return { level, value, y: p.yAxis!.convertToPixel(value), color: s.oneColor ? own : color };
+    })
+    .filter((l) => Number.isFinite(l.value) && Number.isFinite(l.y));
   return [
     ...(s.background
       ? fibBands(levels).map(({ y, height, color }) => ({ type: "rect", attrs: { x: x0, y, width: x1 - x0, height }, styles: fillOnly(withAlpha(color, 1 - s.transparency / 100)), ignoreEvent: true }))
@@ -1267,13 +1273,13 @@ function patchMoves() {
     moveAll.call(this, point, store);
     const from = this._prevPressedPoint?.value;
     if (from === undefined || point.value === undefined) return;
-    const space = spaceById(this.id);
+    const space = spaceOfOverlay(this);
     const values = movePrices(
       this._prevPressedPoints.map((pt) => pt.value),
       from,
       point.value,
       space,
-      space === "log" || mainScale() === "log",
+      space === "log" || paneScale(this.paneId) === "log",
     );
     this.points.forEach((pt, i) => (pt.value = values ? values[i] : before[i]?.value));
     // a regression's handles go back onto the fit of its new bars
@@ -1281,7 +1287,7 @@ function patchMoves() {
   };
   const moveOne = proto.eventPressedPointMove;
   proto.eventPressedPointMove = function (this: Moving, point, index) {
-    const stay = spaceById(this.id) === "log" && point.value !== undefined && point.value <= 0;
+    const stay = spaceOfOverlay(this) === "log" && point.value !== undefined && point.value <= 0;
     moveOne.call(this, stay ? { ...point, value: undefined } : point, index);
   };
 }

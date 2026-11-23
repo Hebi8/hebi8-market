@@ -11,7 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isAlias, isMap, isNode, isScalar, isSeq, parse, parseDocument, visit, type Alias, type Document, type Node, type YAMLMap, type YAMLSeq } from "yaml";
 import { ConfigError, INSTANCE_KEYS, isLogin, normalizeConfig, normalizeUserConfig, resolveKey, writtenGroupName, type Config } from "./config";
-import { fileKey, hash6, isValidKey } from "./symbols";
+import { fileKey, hash6, isValidKey, type Timeframe } from "./symbols";
 import { applyOp, groupNames, opError, type WatchlistOp } from "./watchlist";
 import { isWeekId } from "./week";
 
@@ -57,6 +57,11 @@ export function ensureUserVault(login: string): string {
     doc.commentBefore = [doc.commentBefore, first.commentBefore].filter(Boolean).join("\n");
   }
   for (const key of drop) doc.delete(key);
+  const chart = doc.get("chart");
+  if (isMap(chart)) {
+    chart.delete("fibTemplates");
+    if (!chart.items.length) doc.delete("chart");
+  }
   leadGroups(doc);
   atomicWrite(yamlPath(dir), doc.toString({ lineWidth: 0 }));
   return dir;
@@ -530,6 +535,10 @@ export interface OverlaySpec {
   tvId?: string;
   /** The price scale it was drawn on, which its lines are straight in; older drawings have none and follow the axis */
   scale?: "log" | "linear";
+  /** Sub-pane identifier (indicator name like "RSI" / "F_dev40", or compare symbol key); omitted for main pane */
+  pane?: string;
+  /** Timeframes this drawing is visible on; omitted means visible on every timeframe */
+  timeframes?: Timeframe[];
 }
 
 export interface ChartState {

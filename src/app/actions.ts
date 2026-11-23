@@ -1,8 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { isMap, isScalar, type Document, type YAMLMap, type YAMLSeq } from "yaml";
-import { CHART_STYLES, USAGE_LIMITS, parseLineStyles, resolveKey, type ChartPrefs, type LineOverride, type FormulaDef, type UsageLimits } from "@/lib/config";
+import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
+import { normalizeTimeframes } from "@/components/drawing-spec";
+import { isPresetFibTemplate, type FibTemplate } from "@/components/fib";
+import { CHART_STYLES, USAGE_LIMITS, parseFibTemplate, parseLineStyles, resolveKey, type ChartPrefs, type LineOverride, type FormulaDef, type UsageLimits } from "@/lib/config";
 import * as ops from "@/lib/ops";
 import type { AddSymbolInput, AlertInput } from "@/lib/ops";
 import { CHANGE_PERIODS, MAX_PERIODS } from "@/lib/periods";
@@ -10,7 +12,7 @@ import type { Translation } from "@/lib/profile";
 import { translateDescription } from "@/lib/profiles";
 import type { Prices } from "@/lib/series";
 import { getSymbol } from "@/lib/store";
-import { isSynthetic, isTimeframe, isValidKey } from "@/lib/symbols";
+import { isSynthetic, isTimeframe, isValidKey, type Timeframe } from "@/lib/symbols";
 import { operands } from "@/lib/synth";
 import { syncAll, syncOne } from "@/lib/sync";
 import {
@@ -186,7 +188,21 @@ export async function editChartState(key: string, change: ChartChange): Promise<
       const overlays = (Array.isArray(change.overlays) ? change.overlays : []).flatMap((o) => {
         if (typeof o?.name !== "string" || !Array.isArray(o.points)) return [];
         const points = o.points.filter((p) => Number.isFinite(p?.timestamp) && Number.isFinite(p?.value)).map((p) => ({ timestamp: p.timestamp, value: p.value }));
-        return [{ name: o.name, points, ...(o.styles ? { styles: o.styles } : {}), ...(o.lock ? { lock: true } : {}), ...(o.hidden ? { hidden: true } : {}), ...(o.extendData !== undefined ? { extendData: o.extendData } : {}), ...(typeof o.tvId === "string" ? { tvId: o.tvId } : {}), ...(o.scale === "log" || o.scale === "linear" ? { scale: o.scale } : {}) }];
+        const timeframes = Array.isArray(o.timeframes) ? normalizeTimeframes(o.timeframes.filter((t): t is Timeframe => isTimeframe(t))) : undefined;
+        return [
+          {
+            name: o.name,
+            points,
+            ...(o.styles ? { styles: o.styles } : {}),
+            ...(o.lock ? { lock: true } : {}),
+            ...(o.hidden ? { hidden: true } : {}),
+            ...(o.extendData !== undefined ? { extendData: o.extendData } : {}),
+            ...(typeof o.tvId === "string" ? { tvId: o.tvId } : {}),
+            ...(o.scale === "log" || o.scale === "linear" ? { scale: o.scale } : {}),
+            ...(typeof o.pane === "string" && o.pane ? { pane: o.pane } : {}),
+            ...(timeframes ? { timeframes } : {}),
+          },
+        ];
       });
       writeChartState(dir, key, { ...readChartState(dir, key), overlays });
       return;
@@ -215,7 +231,7 @@ export async function editChartState(key: string, change: ChartChange): Promise<
 }
 
 export async function setChartPrefs(
-  partial: Partial<Omit<ChartPrefs, "panes" | "styles">> & { prices?: Prices; panes?: Record<string, "main" | "sub" | null>; styles?: Record<string, LineOverride[] | null> },
+  partial: Partial<Omit<ChartPrefs, "panes" | "styles" | "fibTemplates">> & { prices?: Prices; panes?: Record<string, "main" | "sub" | null>; styles?: Record<string, LineOverride[] | null> },
 ): Promise<ActionResult> {
   return attempt(({ dir }) => {
     updateConfig(dir, (doc) => {
@@ -261,6 +277,52 @@ export async function setChartPrefs(
         if (partial.prices !== "split" && partial.prices !== "total") throw new Error("无效的价格模式");
         setScalar(doc, ["prices"], partial.prices);
       }
+    });
+  });
+}
+
+/** Save or replace a personal Fibonacci template under `chart.fibTemplates` in the viewer's yaml. */
+export async function saveFibTemplate(input: FibTemplate): Promise<ActionResult> {
+  return attempt(({ dir }) => {
+    const tpl = parseFibTemplate(input);
+    if (!tpl) throw new Error("模板名称不能为空（最多 40 字），且至少启用 1 个档位");
+    if (isPresetFibTemplate(tpl.name)) throw new Error(`「${tpl.name}」是内置预设，请换一个名称`);
+    updateConfig(dir, (doc) => {
+      const entry = doc.createNode({
+        name: tpl.name,
+        levels: tpl.levels.map((l) => flowNode(doc, l)),
+        ...(tpl.background !== undefined ? { background: tpl.background } : {}),
+        ...(tpl.transparency !== undefined ? { transparency: tpl.transparency } : {}),
+        ...(tpl.extendLeft !== undefined ? { extendLeft: tpl.extendLeft } : {}),
+        ...(tpl.extendRight !== undefined ? { extendRight: tpl.extendRight } : {}),
+        ...(tpl.oneColor !== undefined ? { oneColor: tpl.oneColor } : {}),
+        ...(tpl.reverse !== undefined ? { reverse: tpl.reverse } : {}),
+        ...(tpl.color !== undefined ? { color: tpl.color } : {}),
+        ...(tpl.size !== undefined ? { size: tpl.size } : {}),
+        ...(tpl.dash !== undefined ? { dash: tpl.dash } : {}),
+      });
+      const existing = doc.getIn(["chart", "fibTemplates"]);
+      if (isSeq(existing)) {
+        const i = existing.items.findIndex((item) => isMap(item) && String(item.get("name") ?? "").trim() === tpl.name);
+        if (i >= 0) existing.items[i] = entry;
+        else existing.add(entry);
+      } else {
+        doc.setIn(["chart", "fibTemplates"], [entry]);
+      }
+    });
+  });
+}
+
+/** Remove a personal Fibonacci template from `chart.fibTemplates`; drops the key when empty. */
+export async function deleteFibTemplate(name: string): Promise<ActionResult> {
+  return attempt(({ dir }) => {
+    const target = str(name);
+    if (!target) throw new Error("缺少模板名称");
+    updateConfig(dir, (doc) => {
+      const existing = doc.getIn(["chart", "fibTemplates"]);
+      if (!isSeq(existing)) return;
+      existing.items = existing.items.filter((item) => !(isMap(item) && String(item.get("name") ?? "").trim() === target));
+      if (existing.items.length === 0) doc.deleteIn(["chart", "fibTemplates"]);
     });
   });
 }

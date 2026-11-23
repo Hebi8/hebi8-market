@@ -10,6 +10,7 @@ import {
   normalizeDrawing,
   parseTvSources,
   pointDay,
+  timeframesFromTv,
   type DrawingContext,
   type TvDrawing,
   type TvPoint,
@@ -71,7 +72,7 @@ describe("normalizeDrawing / parseTvSources", () => {
     symbol: "NASDAQ:NVDA",
     type: "LineToolHorzLine",
     points: [{ time_t: open("2026-09-01"), price: 120.5 }],
-    state: { linecolor: "rgba(242, 54, 69, 1)", linewidth: 2, linestyle: 2 },
+    state: { linecolor: "rgba(242, 54, 69, 1)", linewidth: 2, linestyle: 2, intervalsVisibilities: { days: true } },
   };
 
   it("reads a drawing as stored and as the library returns it", () => {
@@ -304,6 +305,90 @@ describe("convertDrawing: styles", () => {
   it("carries hidden and locked", () => {
     const r = convertDrawing(drawing("LineToolHorzLine", [pt("2026-09-01", 1)], { visible: false, frozen: true }), US);
     expect(r.ok && r.overlay).toMatchObject({ hidden: true, lock: true });
+  });
+
+  it("imports custom Fibonacci level1..level24 from full tables and sparse diffs, omitting defaults", () => {
+    const points = [pt("2026-09-01", 100), pt("2026-09-08", 200)];
+    // Full 24-slot default table (11 standard visible + extra hidden): matches defaults so levels/extendData omitted
+    const fullDefault: Record<string, unknown> = {
+      level1: { coeff: 0, color: "#787B86", visible: true },
+      level2: { coeff: 0.236, color: "#F23645", visible: true },
+      level3: { coeff: 0.382, color: "#FF9800", visible: true },
+      level4: { coeff: 0.5, color: "#4CAF50", visible: true },
+      level5: { coeff: 0.618, color: "#089981", visible: true },
+      level6: { coeff: 0.786, color: "#00BCD4", visible: true },
+      level7: { coeff: 1, color: "#787B86", visible: true },
+      level8: { coeff: 1.618, color: "#2962FF", visible: true },
+      level9: { coeff: 2.618, color: "#F23645", visible: true },
+      level10: { coeff: 3.618, color: "#9C27B0", visible: true },
+      level11: { coeff: 4.236, color: "#E91E63", visible: true },
+      level12: { coeff: -0.272, color: "#2962FF", visible: false },
+    };
+    const defRes = convertDrawing(drawing("LineToolFibRetracement", points, fullDefault), US);
+    expect(defRes.ok && "extendData" in defRes.overlay).toBe(false);
+
+    // Custom Rule of 7 levels serialized via level1..level6 (plus hidden slots), normalized through normalizeDrawing
+    const rawRule7 = {
+      id: "r7",
+      symbol: "NASDAQ:NVDA",
+      state: {
+        type: "LineToolFibRetracement",
+        id: "r7",
+        points: [pt("2026-09-01", 100), pt("2026-09-08", 200)],
+        state: {
+          level1: { coeff: 0, color: "#787B86", visible: true },
+          level2: { coeff: 1, color: "#787B86", visible: true },
+          level3: { coeff: 1.75, color: "rgba(41, 98, 255, 1)", visible: true },
+          level4: { coeff: 2.333, color: "#089981", visible: true },
+          level5: { coeff: 3.5, color: "#FF9800", visible: true },
+          level6: { coeff: 7, color: "#F23645", visible: true },
+          level7: { coeff: 0.5, color: "#4CAF50", visible: false },
+        },
+      },
+    };
+    const normR7 = normalizeDrawing(rawRule7)!;
+    const r7Res = convertDrawing(normR7, US);
+    expect(r7Res.ok && r7Res.overlay.extendData).toMatchObject({
+      levels: [
+        { level: 0, color: "#787b86" },
+        { level: 1, color: "#787b86" },
+        { level: 1.75, color: "#2962ff" },
+        { level: 2.333, color: "#089981" },
+        { level: 3.5, color: "#ff9800" },
+        { level: 7, color: "#f23645" },
+      ],
+    });
+
+    // Trend-based Fib extension with sparse diff (hide 0.236, add -0.272)
+    const extRes = convertDrawing(
+      drawing("LineToolTrendBasedFibExtension", [...points, pt("2026-09-15", 150)], {
+        level2: { visible: false },
+        level12: { coeff: -0.272, color: "#00bcd4", visible: true },
+        extendLines: true,
+      }),
+      US,
+    );
+    expect(extRes.ok && extRes.overlay.extendData).toMatchObject({ extendRight: true });
+    const extLevels = (extRes.ok ? (extRes.overlay.extendData as { levels: { level: number }[] }).levels : []).map((l) => l.level);
+    expect(extLevels).not.toContain(0.236);
+    expect(extLevels).toContain(-0.272);
+    expect(extLevels).toContain(0.618);
+  });
+
+  it("maps TradingView intervalsVisibilities to timeframe visibility and omits when all visible", () => {
+    expect(timeframesFromTv(undefined)).toBeUndefined();
+    expect(timeframesFromTv({ days: true, weeks: true, months: true })).toBeUndefined();
+    expect(timeframesFromTv({ days: false, weeks: true, months: true })).toEqual(["W", "M", "Q", "Y"]);
+    expect(timeframesFromTv({ days: true, daysFrom: 1, daysTo: 1, weeks: false, months: false })).toEqual(["D"]);
+    expect(timeframesFromTv({ days: true, daysFrom: 2, daysTo: 5, weeks: false, months: false })).toEqual(["3D"]);
+    expect(timeframesFromTv({ days: false, weeks: true, months: true, monthsFrom: 3, monthsTo: 12 })).toEqual(["W", "Q", "Y"]);
+    // Intraday-only drawing: none of D..Y match, so omit instead of making an unreachable hidden drawing
+    expect(timeframesFromTv({ days: false, weeks: false, months: false })).toBeUndefined();
+
+    const weekly = convertDrawing(drawing("LineToolHorzLine", [pt("2026-09-01", 100)], { intervalsVisibilities: { days: false, weeks: true, months: true } }), US);
+    expect(weekly.ok && weekly.overlay.timeframes).toEqual(["W", "M", "Q", "Y"]);
+    const all = convertDrawing(drawing("LineToolHorzLine", [pt("2026-09-01", 100)], { intervalsVisibilities: { days: true } }), US);
+    expect(all.ok && "timeframes" in all.overlay).toBe(false);
   });
 });
 

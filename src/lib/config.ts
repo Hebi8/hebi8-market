@@ -1,5 +1,6 @@
 /** Typed view of `vault/hebi8.yaml`; pure so it can be tested without a file system. */
 import type { LineDash } from "@/components/drawing-style";
+import { normalizeFibLevels, normalizeHex, type FibTemplate } from "@/components/fib";
 import { compile } from "@/indicators/formula";
 import { ALERT_CHECKS, ALERT_CONDS, defaultCheck, describeCondition, parseCondition, type AlertCheck, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { CHANGE_PERIODS, DEFAULT_PERIODS, MAX_PERIODS, type ChangePeriod } from "./periods";
@@ -97,6 +98,8 @@ export interface ChartPrefs {
   panes: Record<string, "main" | "sub">;
   /** Line styles by the same names as `indicators`, one entry per line in the order it is drawn; not per timeframe */
   styles: Record<string, LineOverride[]>;
+  /** Saved personal Fibonacci level/style templates */
+  fibTemplates: FibTemplate[];
 }
 
 export interface Config {
@@ -138,7 +141,7 @@ export const USAGE_LIMITS: Record<keyof UsageLimits, string> = { visitors: "ÊØèÊ
 
 export class ConfigError extends Error {}
 
-export const DEFAULT_CHART: ChartPrefs = { tf: "W", log: true, style: "candle_solid", indicators: ["MA", "VOL"], params: {}, panes: {}, styles: {} };
+export const DEFAULT_CHART: ChartPrefs = { tf: "W", log: true, style: "candle_solid", indicators: ["MA", "VOL"], params: {}, panes: {}, styles: {}, fibTemplates: [] };
 
 const obj = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -233,6 +236,44 @@ function parseStyles(raw: unknown): Record<string, LineOverride[]> {
     const parsed = parseLineStyles(lines);
     return parsed.length ? [[name, parsed]] : [];
   }));
+}
+
+/** Parse one saved Fibonacci template; null when the name is missing or no level is enabled. */
+export function parseFibTemplate(raw: unknown): FibTemplate | null {
+  const d = obj(raw);
+  const name = text(d.name);
+  if (!name || name.length > 40) return null;
+  const levels = normalizeFibLevels(d.levels);
+  if (!levels.some((l) => l.enabled !== false)) return null;
+  const color = normalizeHex(d.color);
+  const size = Number(d.size);
+  const transparency = Number(d.transparency);
+  return {
+    name,
+    levels,
+    ...(typeof d.background === "boolean" ? { background: d.background } : {}),
+    ...(d.transparency !== undefined && Number.isFinite(transparency) && transparency >= 0 && transparency <= 100 ? { transparency: Math.round(transparency) } : {}),
+    ...(typeof d.extendLeft === "boolean" ? { extendLeft: d.extendLeft } : {}),
+    ...(typeof d.extendRight === "boolean" ? { extendRight: d.extendRight } : {}),
+    ...(typeof d.oneColor === "boolean" ? { oneColor: d.oneColor } : {}),
+    ...(typeof d.reverse === "boolean" ? { reverse: d.reverse } : {}),
+    ...(color ? { color } : {}),
+    ...(LINE_WIDTHS.includes(size) ? { size } : {}),
+    ...(d.dash === "solid" || d.dash === "dashed" || d.dash === "dotted" ? { dash: d.dash as LineDash } : {}),
+  };
+}
+
+/** Parse `chart.fibTemplates`, dropping invalid entries and keeping the first of duplicate names. */
+export function parseFibTemplates(raw: unknown): FibTemplate[] {
+  const seen = new Set<string>();
+  const out: FibTemplate[] = [];
+  for (const item of list(raw)) {
+    const tpl = parseFibTemplate(item);
+    if (!tpl || seen.has(tpl.name)) continue;
+    seen.add(tpl.name);
+    out.push(tpl);
+  }
+  return out;
 }
 
 /** What GitHub allows in a login: letters, digits and single inner hyphens, at most 39 characters. */
@@ -342,6 +383,7 @@ export function normalizeConfig(raw: unknown): Config {
       params: parseParams(chart.params),
       panes: Object.fromEntries(Object.entries(obj(chart.panes)).filter((e): e is [string, "main" | "sub"] => e[1] === "main" || e[1] === "sub")),
       styles: parseStyles(chart.styles),
+      fibTemplates: parseFibTemplates(chart.fibTemplates),
     },
     usage,
     ignored: [],

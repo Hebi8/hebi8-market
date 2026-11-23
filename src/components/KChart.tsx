@@ -39,10 +39,10 @@ import { timeAxisBarSpace } from "./chart-gestures";
 import { registerDrawingTemplates, setOverlayChart, setOverlayTheme, snapToBar, textOf, textSizeOf } from "./chart-overlays";
 import { LOG_AXIS } from "./log-axis";
 import { extensionOf, historyOf, record, redo, TREND_LINES, undo, withExtension, type History } from "./drawing-edit";
-import { drawingOf, specOf, type DrawingFlags } from "./drawing-spec";
+import { cloneSpec, drawingOf, isVisibleOnTimeframe, mergeSlots, normalizeTimeframes, shouldRenderOverlay, specOf, type DrawingFlags, type DrawingSlot } from "./drawing-spec";
 import { dashOf, drawingStyles, lineOf, withAlpha } from "./drawing-style";
-import { FIB_DRAWINGS, fibSettingsOf } from "./fib";
-import { COMPARE_COLORS, DRAW_DONE, MEASURE_TOOL, MONO, OPEN_DRAWINGS, SANS, SCALED_DRAWINGS, TEXT_DRAWINGS, type ChartControl, type IndicatorLine, type IndicatorSpec, type LegendValue } from "./chart-types";
+import { FIB_DRAWINGS, cleanFibSettings, fibSettingsOf, type FibTemplate } from "./fib";
+import { COMPARE_COLORS, DRAW_DONE, MEASURE_TOOL, MONO, OPEN_DRAWINGS, SANS, SCALED_DRAWINGS, SUBPANE_DRAWINGS, TEXT_DRAWINGS, type ChartControl, type IndicatorLine, type IndicatorSpec, type LegendValue } from "./chart-types";
 import { DrawingSettings, DrawingToolbar, TextEditor, type DrawingChange, type DrawingInfo } from "./DrawingToolbar";
 
 export interface DrawingModes {
@@ -97,6 +97,12 @@ interface KChartProps {
   onAddAlert: (price: number) => void;
   /** The alarm label of an alert line was clicked */
   onEditAlert: (id: string) => void;
+  /** Personal Fibonacci templates saved in the viewer's yaml */
+  fibTemplates: FibTemplate[];
+  /** Visitor on a shared instance: cannot save or delete personal templates */
+  readOnly: boolean;
+  onSaveFibTemplate: (tpl: FibTemplate) => Promise<string | null>;
+  onDeleteFibTemplate: (name: string) => Promise<string | null>;
 }
 
 /** Alert lines live in their own overlay group, apart from the drawings. */
@@ -349,13 +355,15 @@ function distinctPoints(points: Partial<Point>[]): Partial<Point>[] {
   return points.filter((p, i) => i === 0 || p.timestamp !== points[i - 1].timestamp || p.value !== points[i - 1].value);
 }
 
-/** Finished drawings on the main pane; `except` is one being removed right now. */
-function serializeOverlays(chart: Chart, flags: Map<string, DrawingFlags>, except?: string): OverlaySpec[] {
-  return chart.getOverlays().flatMap((o) => {
-    if (o.paneId !== CANDLE_PANE || o.id === except || !isDrawing(o) || o.currentStep !== DRAW_DONE) return [];
+/** Finished drawings currently mounted on any pane, keyed by overlay id; `except` is one being removed right now. */
+function liveSpecsMap(chart: Chart, flags: Map<string, DrawingFlags>, except?: string): Map<string, OverlaySpec> {
+  const out = new Map<string, OverlaySpec>();
+  for (const o of chart.getOverlays()) {
+    if (o.id === except || !isDrawing(o) || o.currentStep !== DRAW_DONE) continue;
     const spec = specOf(o, flags);
-    return spec ? [spec] : [];
-  });
+    if (spec) out.set(o.id, spec);
+  }
+  return out;
 }
 
 function fmtValue(value: number, precision: number, big: boolean): string {
@@ -453,6 +461,10 @@ export function KChart({
   alertLines,
   onAddAlert,
   onEditAlert,
+  fibTemplates,
+  readOnly,
+  onSaveFibTemplate,
+  onDeleteFibTemplate,
 }: KChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<Chart | null>(null);
@@ -465,6 +477,8 @@ export function KChart({
   const precisionRef = useRef(pricePrecision);
   const styleRef = useRef(chartStyle);
   const compareRef = useRef(compare);
+  /** The symbol in each compare slot: a removed compare moves the next one into its slot, so heights and sub-pane keys go by symbol. */
+  const compareKeysRef = useRef<string[]>([]);
   const basesRef = useRef<number[]>([]);
   /** Where the pointer is, not the bar under it: scrolling and zooming move the bars under a still pointer */
   const crosshairRef = useRef<{ x: number; paneId?: string } | null>(null);
@@ -474,6 +488,8 @@ export function KChart({
   /** The saved drawings are on the chart (once per mount: another symbol mounts a new chart) */
   const restoredRef = useRef(false);
   const flagsRef = useRef(new Map<string, DrawingFlags>());
+  /** Ordered full list of drawings: live mounted ids plus parked off-chart specs (other timeframes / closed panes) */
+  const slotsRef = useRef<DrawingSlot[]>([]);
   /** The saved drawings, for undo and redo on this page (another symbol mounts a new chart) */
   const historyRef = useRef<History<OverlaySpec[]>>(historyOf([]));
   const selectedRef = useRef<string | null>(null);
@@ -488,13 +504,16 @@ export function KChart({
   const [legendHeight, setLegendHeight] = useState(24);
   /** A drawing's menu (设置 / 锁定 / 隐藏 / 删除), or the chart's own (在 X 添加警报) */
   const [menu, setMenu] = useState<({ kind: "overlay"; id: string; locked: boolean } | { kind: "chart"; price: number }) & { x: number; y: number } | null>(null);
-  /** The selected drawing, for its floating toolbar */
-  const [selected, setSelected] = useState<{ id: string; info: DrawingInfo } | null>(null);
+  const menuRef = useRef(menu);
+  /** The selected drawing, for its floating toolbar (with its pane-anchored vertical position) */
+  const [selected, setSelected] = useState<{ id: string; info: DrawingInfo; top: number; flipUp: boolean } | null>(null);
   /** The 设置 dialog of a drawing */
-  const [settings, setSettings] = useState<{ id: string; info: DrawingInfo } | null>(null);
+  const [settings, setSettings] = useState<{ id: string; info: DrawingInfo; precision: number } | null>(null);
+  const settingsRef = useRef(settings);
   const settingsOpenRef = useRef(false);
   /** A text drawing being typed in place (absolute px in the chart box) */
   const [editor, setEditor] = useState<{ id: string; x: number; y: number; center: boolean; size: number; color: string; text: string; isNew: boolean } | null>(null);
+  const editorRef = useRef(editor);
   const overlayMenuRef = useRef(false);
   const onAddAlertRef = useRef(onAddAlert);
   const onEditAlertRef = useRef(onEditAlert);
@@ -509,8 +528,11 @@ export function KChart({
     overlaysRef.current = overlays;
     precisionRef.current = pricePrecision;
     clockRef.current = clock;
+    menuRef.current = menu;
+    settingsRef.current = settings;
     settingsOpenRef.current = settings !== null;
-  }, [settings, onOverlaysChange, onDrawDone, onAutoScaleChange, compare, overlays, pricePrecision, clock, onAddAlert, onEditAlert]);
+    editorRef.current = editor;
+  }, [menu, settings, editor, onOverlaysChange, onDrawDone, onAutoScaleChange, compare, overlays, pricePrecision, clock, onAddAlert, onEditAlert]);
 
   const computeLegend = () => {
     const chart = chartRef.current;
@@ -528,6 +550,20 @@ export function KChart({
       return [{ name: ind.name, paneId: ind.paneId, params: ind.calcParams as number[], values: indicatorValues(chart, ind, idx, precisionRef.current, bar) }];
     });
     syncGap();
+    // keep a selected sub-pane toolbar and any open text editor glued to their pane after layout / pane drag / resize
+    const selId = selectedRef.current;
+    if (selId) {
+      const sel = chart.getOverlays({ id: selId })[0];
+      if (sel) {
+        const pos = toolbarPos(chart, sel.paneId);
+        setSelected((cur) => (cur && cur.id === selId && (cur.top !== pos.top || cur.flipUp !== pos.flipUp) ? { ...cur, ...pos } : cur));
+      }
+    }
+    const ed = editorRef.current;
+    if (ed) {
+      const next = editorAt(ed.id);
+      setEditor((cur) => (cur && cur.id === ed.id && (Math.abs(cur.x - next.x) > 1 || Math.abs(cur.y - next.y) > 1) ? { ...cur, ...next } : cur));
+    }
     store.set({
       left: chart.getSize(CANDLE_PANE, "main")?.left ?? 0,
       candle: bar ? { open: bar.open, high: bar.high, low: bar.low, close: bar.close, prevClose: prev?.close ?? null } : null,
@@ -566,10 +602,72 @@ export function KChart({
     scheduleLegend();
   };
 
+  /** Active sub-pane stable keys (indicator name like "RSI"/"F_dev40", or compare symbol key) -> KLineChart paneId. */
+  const activePaneMap = (chart: Chart): Map<string, string> => {
+    const map = new Map<string, string>();
+    for (const ind of chart.getIndicators()) {
+      if (ind.paneId === CANDLE_PANE) continue;
+      if (isCompare(ind.name)) {
+        const slot = Number(ind.name.slice(3));
+        const key = compareKeysRef.current[slot] ?? ind.shortName;
+        if (key) map.set(key, ind.paneId);
+      } else {
+        map.set(ind.name, ind.paneId);
+      }
+    }
+    return map;
+  };
+
+  /** Reverse lookup: KLineChart paneId -> stable pane key (undefined for the main pane or non-drawing panes). */
+  const paneKeyOf = (chart: Chart, paneId: string): string | undefined => {
+    if (paneId === CANDLE_PANE) return undefined;
+    for (const [key, id] of activePaneMap(chart)) if (id === paneId) return key;
+    return undefined;
+  };
+
+  const isAllowedPane = (chart: Chart, tool: string, paneId: string): boolean =>
+    paneId === CANDLE_PANE || (SUBPANE_DRAWINGS.has(tool) && paneKeyOf(chart, paneId) !== undefined);
+
+  /** Floating toolbar position: top of main pane, or just above the selected drawing's sub-pane. */
+  const toolbarPos = (chart: Chart, paneId: string): { top: number; flipUp: boolean } => {
+    if (paneId === CANDLE_PANE) return { top: 8, flipUp: false };
+    const paneTop = chart.getSize(paneId)?.top ?? 0;
+    const totalHeight = containerRef.current?.clientHeight ?? 600;
+    const top = Math.max(8, paneTop - 44);
+    return { top, flipUp: totalHeight - top < 220 };
+  };
+
+  const precisionForPane = (chart: Chart, paneId: string): number => {
+    if (paneId === CANDLE_PANE) return precisionRef.current;
+    const ind = chart.getIndicators({ paneId })[0];
+    return ind && !isCompare(ind.name) ? ind.precision : 2;
+  };
+
+  const flagsFromSpec = (spec: OverlaySpec): DrawingFlags | null => {
+    const timeframes = normalizeTimeframes(spec.timeframes);
+    const f: DrawingFlags = {
+      ...(spec.lock ? { lock: true } : {}),
+      ...(spec.hidden ? { hidden: true } : {}),
+      ...(spec.tvId ? { tvId: spec.tvId } : {}),
+      ...(spec.scale && !spec.pane ? { scale: spec.scale } : {}),
+      ...(spec.pane ? { pane: spec.pane } : {}),
+      ...(timeframes ? { timeframes } : {}),
+    };
+    return Object.keys(f).length ? f : null;
+  };
+
+  /** Full list of drawings (mounted + parked on other timeframes or closed sub-panes). */
+  const serializeOverlays = (chart: Chart, except?: string, updateSlots = false): OverlaySpec[] => {
+    const live = liveSpecsMap(chart, flagsRef.current, except);
+    const merged = mergeSlots(slotsRef.current, live);
+    if (updateSlots) slotsRef.current = merged.slots;
+    return merged.specs;
+  };
+
   const persistOverlays = (except?: string) => {
     const chart = chartRef.current;
     if (!chart || restoringRef.current) return;
-    const specs = serializeOverlays(chart, flagsRef.current, except);
+    const specs = serializeOverlays(chart, except, true);
     historyRef.current = record(historyRef.current, specs);
     onOverlaysChangeRef.current(specs);
   };
@@ -584,10 +682,11 @@ export function KChart({
     select(null);
     setSettings(null);
     setMenu(null);
-    for (const o of chart.getOverlays({ paneId: CANDLE_PANE })) {
+    for (const o of chart.getOverlays()) {
       if (isDrawing(o) && o.currentStep === DRAW_DONE) chart.removeOverlay({ id: o.id });
     }
-    flagsRef.current = createDrawings(chart, h.present).flags;
+    flagsRef.current = new Map();
+    slotsRef.current = createDrawings(chart, h.present).slots;
     restoringRef.current = false;
     onOverlaysChangeRef.current(h.present);
     return true;
@@ -609,42 +708,144 @@ export function KChart({
   };
   const modesOf = (id: string) => overlayModes(flagsRef.current.get(id));
 
-  /** Saved drawings onto the chart; their flags by the new ids. */
-  const createDrawings = (chart: Chart, specs: OverlaySpec[]): { ids: string[]; flags: Map<string, DrawingFlags> } => {
+  /** Mount the visible subset of `specs` onto their panes and park the rest in `slots`. */
+  const createDrawings = (chart: Chart, specs: OverlaySpec[]): { slots: DrawingSlot[]; flags: Map<string, DrawingFlags> } => {
     const flags = new Map<string, DrawingFlags>();
-    if (!specs.length) return { ids: [], flags };
-    // the ids up front, so the flags are there while KLineChart creates them: a regression snaps
-    // its points to the fit as it is created, in its own scale
-    const ids = specs.map(() => `drawing_${++drawingSeq}`);
-    specs.forEach(({ lock, hidden, tvId, scale }, i) => {
-      if (lock || hidden || tvId || scale) flags.set(ids[i], { lock, hidden, tvId, scale });
-    });
-    for (const [id, f] of flags) flagsRef.current.set(id, f);
-    chart.createOverlay(
-      specs.map((o, i) => ({
-        id: ids[i],
-        ...drawingOf(o),
-        paneId: CANDLE_PANE,
-        ...overlayModes({ lock: o.lock, hidden: o.hidden }),
+    const slots: DrawingSlot[] = [];
+    if (!specs.length) return { slots, flags };
+    const paneMap = activePaneMap(chart);
+    const currentTf = tfRef.current;
+    const toCreate: OverlayCreate[] = [];
+    for (const raw of specs) {
+      const spec = cloneSpec(raw);
+      if (!shouldRenderOverlay(spec, currentTf, paneMap)) {
+        slots.push({ mounted: false, spec });
+        continue;
+      }
+      const paneId = spec.pane ? paneMap.get(spec.pane)! : CANDLE_PANE;
+      // the ids up front, so the flags are there while KLineChart creates them: a regression snaps
+      // its points to the fit as it is created, in its own scale
+      const id = `drawing_${++drawingSeq}`;
+      const f = flagsFromSpec(spec);
+      if (f) {
+        flags.set(id, f);
+        flagsRef.current.set(id, f);
+      }
+      slots.push({ mounted: true, id });
+      toCreate.push({
+        id,
+        ...drawingOf(spec),
+        paneId,
+        ...overlayModes({ lock: spec.lock, hidden: spec.hidden }),
         ...overlayHandlers(),
-      })),
-    );
-    return { ids, flags };
+      });
+    }
+    if (toCreate.length) chart.createOverlay(toCreate);
+    return { slots, flags };
   };
 
-  /** A finished drawing keeps the scale of the axis it was drawn on (a % axis is linear), if its tool depends on one. */
+  /**
+   * Sync mounted vs. parked drawings whenever the timeframe or open sub-panes change, without
+   * altering saved specs or undo history.
+   */
+  const reconcileOverlays = () => {
+    const chart = chartRef.current;
+    if (!chart || !restoredRef.current) return;
+    const paneMap = activePaneMap(chart);
+    const currentTf = tfRef.current;
+    const liveOverlays = new Map<string, Overlay>();
+    for (const o of chart.getOverlays()) {
+      if (isDrawing(o) && o.currentStep === DRAW_DONE) liveOverlays.set(o.id, o);
+    }
+    const nextSlots: DrawingSlot[] = [];
+    const toCreate: OverlayCreate[] = [];
+    const unmountedIds = new Set<string>();
+    restoringRef.current = true;
+    try {
+      for (const slot of slotsRef.current) {
+        if (slot.mounted) {
+          const o = liveOverlays.get(slot.id);
+          if (!o) continue;
+          const spec = specOf(o, flagsRef.current);
+          if (!spec) continue;
+          if (!shouldRenderOverlay(spec, currentTf, paneMap)) {
+            chart.removeOverlay({ id: o.id });
+            flagsRef.current.delete(o.id);
+            unmountedIds.add(o.id);
+            nextSlots.push({ mounted: false, spec });
+            continue;
+          }
+          const targetPaneId = spec.pane ? paneMap.get(spec.pane)! : CANDLE_PANE;
+          if (o.paneId !== targetPaneId) {
+            const wasSelected = selectedRef.current === o.id;
+            chart.removeOverlay({ id: o.id });
+            flagsRef.current.delete(o.id);
+            const id = `drawing_${++drawingSeq}`;
+            const f = flagsFromSpec(spec);
+            if (f) flagsRef.current.set(id, f);
+            toCreate.push({
+              id,
+              ...drawingOf(spec),
+              paneId: targetPaneId,
+              ...overlayModes({ lock: spec.lock, hidden: spec.hidden }),
+              ...overlayHandlers(),
+            });
+            nextSlots.push({ mounted: true, id });
+            if (wasSelected) selectedRef.current = id;
+            continue;
+          }
+          nextSlots.push(slot);
+        } else {
+          if (!shouldRenderOverlay(slot.spec, currentTf, paneMap)) {
+            nextSlots.push(slot);
+            continue;
+          }
+          const paneId = slot.spec.pane ? paneMap.get(slot.spec.pane)! : CANDLE_PANE;
+          const id = `drawing_${++drawingSeq}`;
+          const f = flagsFromSpec(slot.spec);
+          if (f) flagsRef.current.set(id, f);
+          toCreate.push({
+            id,
+            ...drawingOf(slot.spec),
+            paneId,
+            ...overlayModes({ lock: slot.spec.lock, hidden: slot.spec.hidden }),
+            ...overlayHandlers(),
+          });
+          nextSlots.push({ mounted: true, id });
+        }
+      }
+      if (toCreate.length) chart.createOverlay(toCreate);
+      slotsRef.current = nextSlots;
+    } finally {
+      restoringRef.current = false;
+    }
+    if (selectedRef.current && unmountedIds.has(selectedRef.current)) select(null);
+    else if (selectedRef.current) refreshSelected(selectedRef.current);
+    if (settingsRef.current && unmountedIds.has(settingsRef.current.id)) setSettings(null);
+    if (menuRef.current?.kind === "overlay" && unmountedIds.has(menuRef.current.id)) setMenu(null);
+    if (editorRef.current && unmountedIds.has(editorRef.current.id)) setEditor(null);
+    const active = drawingRef.current;
+    if (active?.overlay && active.overlay.paneId !== CANDLE_PANE && !paneKeyOf(chart, active.overlay.paneId)) {
+      cancelDrawing();
+      onDrawDoneRef.current();
+    }
+  };
+
+  /** A finished main-pane drawing keeps the scale of the axis it was drawn on (a % axis is linear), if its tool depends on one. */
   const keepScale = (id: string, tool: string) => {
     if (SCALED_DRAWINGS.has(tool)) flagsRef.current.set(id, { ...flagsRef.current.get(id), scale: candleAxis()?.name === "logarithm" ? "log" : "linear" });
   };
 
   const overlayHandlers = (): Partial<OverlayCreate> => ({
     onDrawEnd: (e) => {
-      if (e.overlay.paneId !== CANDLE_PANE) {
-        // drawn on a sub pane: discard it, the click listener below restarts the tool
+      if (!isAllowedPane(e.chart, e.overlay.name, e.overlay.paneId)) {
+        // main-pane-only tool clicked on a sub pane (or axis): discard it, the click listener below restarts the tool
         e.chart.removeOverlay({ id: e.overlay.id });
         return;
       }
-      keepScale(e.overlay.id, e.overlay.name);
+      const pane = paneKeyOf(e.chart, e.overlay.paneId);
+      if (pane) flagsRef.current.set(e.overlay.id, { ...flagsRef.current.get(e.overlay.id), pane });
+      else keepScale(e.overlay.id, e.overlay.name);
       // drawn while "lock all" is on: lock it like the rest once it is finished
       if (drawingModesRef.current.locked) e.chart.overrideOverlay({ id: e.overlay.id, lock: true });
       // KLineChart finishes a path on a double click, keeping the click and the cursor point on the same spot
@@ -693,6 +894,7 @@ export function KChart({
 
   const infoOf = (chart: Chart, o: Overlay): DrawingInfo => {
     const line = lineOf(chart, o);
+    const f = flagsRef.current.get(o.id);
     return {
       name: o.name,
       color: line.color,
@@ -700,9 +902,11 @@ export function KChart({
       dash: dashOf(line),
       textSize: textSizeOf(o),
       text: textOf(o),
-      locked: Boolean(flagsRef.current.get(o.id)?.lock),
+      locked: Boolean(f?.lock),
       values: o.points.map((p) => p.value ?? 0),
-      scale: flagsRef.current.get(o.id)?.scale,
+      scale: f?.pane ? undefined : f?.scale,
+      pane: f?.pane,
+      timeframes: f?.timeframes,
       timestamps: o.points.map((p) => p.timestamp ?? 0),
       extend: TREND_LINES.has(o.name) ? extensionOf(o.name, o.points) : null,
       fib: FIB_DRAWINGS.has(o.name) ? fibSettingsOf(o.extendData) : null,
@@ -713,7 +917,7 @@ export function KChart({
   const select = (o: Overlay | null) => {
     selectedRef.current = o?.id ?? null;
     const chart = chartRef.current;
-    setSelected(o && chart ? { id: o.id, info: infoOf(chart, o) } : null);
+    setSelected(o && chart ? { id: o.id, info: infoOf(chart, o), ...toolbarPos(chart, o.paneId) } : null);
   };
   /** Re-read the selected drawing after the toolbar changed it. */
   const refreshSelected = (id: string) => {
@@ -724,10 +928,10 @@ export function KChart({
   const openSettings = (id: string) => {
     const chart = chartRef.current;
     const o = overlayById(id);
-    if (chart && o) setSettings({ id, info: infoOf(chart, o) });
+    if (chart && o) setSettings({ id, info: infoOf(chart, o), precision: precisionForPane(chart, o.paneId) });
   };
 
-  /** Style, text, point prices and dates, a trend line's extension and a Fibonacci drawing's settings from the floating toolbar or the settings dialog. */
+  /** Style, text, point prices and dates, a trend line's extension, timeframe visibility and a Fibonacci drawing's settings. */
   const changeDrawing = (id: string, change: DrawingChange) => {
     const chart = chartRef.current;
     const o = overlayById(id);
@@ -737,10 +941,19 @@ export function KChart({
     if (TEXT_DRAWINGS.has(o.name)) styles.text = { ...styles.text, size: change.textSize ?? textSizeOf(o) };
     // a colour picked on the toolbar is the one colour of a Fibonacci drawing's levels (TradingView's 使用单一颜色)
     const was = FIB_DRAWINGS.has(o.name) ? fibSettingsOf(o.extendData) : null;
-    const fib = was && (change.fib ?? (change.color ? { ...was, oneColor: true } : was));
+    const fib = was && cleanFibSettings(change.fib ?? (change.color ? { ...was, oneColor: true } : was));
     const extendData = change.text ?? (fib && JSON.stringify(fib) !== JSON.stringify(was) ? fib : undefined);
-    // before the override, which redraws it (new styles always do)
-    if (change.scale) flagsRef.current.set(id, { ...flagsRef.current.get(id), scale: change.scale });
+    // update flags before redraw or visibility check
+    const prevFlags = flagsRef.current.get(id);
+    const nextFlags: DrawingFlags = { ...prevFlags };
+    if (change.scale && !prevFlags?.pane) nextFlags.scale = change.scale;
+    if (change.timeframes !== undefined) {
+      const normalized = change.timeframes ? normalizeTimeframes(change.timeframes) : undefined;
+      if (normalized) nextFlags.timeframes = normalized;
+      else delete nextFlags.timeframes;
+    }
+    if (Object.keys(nextFlags).length) flagsRef.current.set(id, nextFlags);
+    else flagsRef.current.delete(id);
     // a date lands on the bar it falls in on this timeframe, in the empty space past the last bar too
     let points = o.points.map((p, i) => ({
       ...p,
@@ -749,28 +962,60 @@ export function KChart({
     }));
     let name = o.name;
     if (change.extend && TREND_LINES.has(o.name)) ({ name, points } = withExtension(points, change.extend));
+
+    // If this edit hid the drawing on the current timeframe, park it off-chart right away (saved and undoable)
+    if (!isVisibleOnTimeframe({ timeframes: nextFlags.timeframes }, tfRef.current)) {
+      const base = specOf(o, flagsRef.current);
+      if (!base) return;
+      const parked: OverlaySpec = {
+        ...base,
+        name,
+        styles: structuredClone(styles),
+        points: points.map((p) => ({ timestamp: p.timestamp!, value: p.value! })),
+        ...(extendData !== undefined ? { extendData: structuredClone(extendData) } : {}),
+      };
+      const slotIdx = slotsRef.current.findIndex((s) => s.mounted && s.id === id);
+      if (slotIdx >= 0) slotsRef.current[slotIdx] = { mounted: false, spec: parked };
+      else slotsRef.current.push({ mounted: false, spec: parked });
+      restoringRef.current = true;
+      chart.removeOverlay({ id });
+      flagsRef.current.delete(id);
+      restoringRef.current = false;
+      select(null);
+      setMenu(null);
+      persistOverlays();
+      return;
+    }
+
     // another scale moves a regression's points onto its fit there: KLineChart re-snaps them when it is given points
     const moved = Boolean(change.values || change.timestamps || change.extend || change.scale);
     if (name === o.name) {
-      chart.overrideOverlay({ id, styles, ...(extendData !== undefined ? { extendData } : {}), ...(moved ? { points } : {}) });
+      // KLineChart's override() deep-merges objects and arrays inside extendData; clear first so custom Fib levels replace cleanly
+      if (extendData !== undefined) o.extendData = undefined;
+      chart.overrideOverlay({ id, styles, ...(extendData !== undefined ? { extendData: structuredClone(extendData) } : {}), ...(moved ? { points } : {}) });
       persistOverlays();
       return refreshSelected(id);
     }
     // another tool (趋势线, 射线, 延长线): KLineChart cannot rename an overlay, so it is drawn again
-    // the way saved drawings are put back, keeping its flags (scale, tvId, lock, hidden)
+    // on the same pane, keeping its flags (scale, tvId, lock, hidden, pane, timeframes) and slot order
     const spec = specOf(o, flagsRef.current);
     if (!spec) return;
     const wasSelected = selectedRef.current === id;
+    const slotIdx = slotsRef.current.findIndex((s) => s.mounted && s.id === id);
     restoringRef.current = true;
     chart.removeOverlay({ id });
     flagsRef.current.delete(id);
-    const [next] = createDrawings(chart, [{ ...spec, name, styles, points: points.map((p) => ({ timestamp: p.timestamp!, value: p.value! })) }]).ids;
+    const [rebuilt] = createDrawings(chart, [{ ...spec, name, styles, points: points.map((p) => ({ timestamp: p.timestamp!, value: p.value! })) }]).slots;
+    if (rebuilt) {
+      if (slotIdx >= 0) slotsRef.current[slotIdx] = rebuilt;
+      else slotsRef.current.push(rebuilt);
+    }
     restoringRef.current = false;
     persistOverlays();
-    if (wasSelected) select(overlayById(next) ?? null);
+    if (wasSelected && rebuilt?.mounted) select(overlayById(rebuilt.id) ?? null);
   };
 
-  const setFlag = (id: string, flag: keyof DrawingFlags, on: boolean) => {
+  const setFlag = (id: string, flag: "lock" | "hidden", on: boolean) => {
     flagsRef.current.set(id, { ...flagsRef.current.get(id), [flag]: on });
     chartRef.current?.overrideOverlay({ id, ...modesOf(id) });
     persistOverlays();
@@ -793,10 +1038,12 @@ export function KChart({
     const o = overlayById(id);
     const point = o?.points[0];
     const chart = chartRef.current;
-    const at = (point ? chart?.convertToPixel({ timestamp: point.timestamp, value: point.value }, { paneId: CANDLE_PANE, absolute: true }) : {}) as Partial<Coordinate>;
+    const paneId = o?.paneId ?? CANDLE_PANE;
+    const at = (point ? chart?.convertToPixel({ timestamp: point.timestamp, value: point.value }, { paneId, absolute: true }) : {}) as Partial<Coordinate>;
     // `absolute` only adds the pane's top: x is still from the plot's left edge, after any left scale
-    const left = chart?.getSize(CANDLE_PANE, "main")?.left ?? 0;
-    return { x: left + (at.x ?? 0), y: (at.y ?? 0) - (o?.name === "simpleAnnotation" ? 61 : 0) };
+    const left = chart?.getSize(paneId, "main")?.left ?? 0;
+    const y = (at.y ?? 0) - (o?.name === "simpleAnnotation" ? 61 : 0);
+    return { x: left + (at.x ?? 0), y: Math.max(4, y) };
   };
 
   /** Type a text drawing in place; the canvas text hides meanwhile so it is not drawn twice. */
@@ -832,7 +1079,15 @@ export function KChart({
   const startDrawing = (tool: string, extendData?: unknown) => {
     const chart = chartRef.current;
     if (!chart) return;
-    const id = chart.createOverlay({ name: tool, paneId: CANDLE_PANE, extendData, ...overlayModes(), lock: false, ...overlayHandlers() });
+    // Sub-pane-capable tools omit `paneId` so KLineChart attaches them to whichever pane receives the first click
+    const id = chart.createOverlay({
+      name: tool,
+      ...(SUBPANE_DRAWINGS.has(tool) ? {} : { paneId: CANDLE_PANE }),
+      extendData,
+      ...overlayModes(),
+      lock: false,
+      ...overlayHandlers(),
+    });
     // the live object: its points and step show how far the drawing has got
     if (typeof id === "string") drawingRef.current = { tool, id, overlay: chart.getOverlays({ id })[0] ?? null, extendData };
   };
@@ -895,8 +1150,6 @@ export function KChart({
   /** Each sub pane's height as created or last dragged, before `paneScaleRef` shrinks it to fit a short chart. */
   const paneHeightsRef = useRef(new Map<string, number>());
   const paneScaleRef = useRef(1);
-  /** The symbol in each compare slot: a removed compare moves the next one into its slot, so heights go by symbol. */
-  const compareKeysRef = useRef<string[]>([]);
   const heightKey = (paneId: string) => {
     const slot = compareKeysRef.current.findIndex((_, i) => comparePane(i) === paneId);
     return slot < 0 ? paneId : `cmp:${compareKeysRef.current[slot]}`;
@@ -1049,12 +1302,13 @@ export function KChart({
       keepPaneHeights();
       scheduleLegend();
     });
-    // Drawing follows the mouse into sub panes; a click there is thrown away and the tool restarts on the main pane.
+    // Main-pane-only tools clicked on a sub pane (or axis) are discarded and restarted on the main pane;
+    // supported sub-pane tools stay on the sub pane they were clicked on.
     // A tap too: KLineChart takes it on the touchend and stops the click a browser would make of it.
     const onClick = () =>
       setTimeout(() => {
         const d = drawingRef.current;
-        if (d?.overlay && d.overlay.paneId !== CANDLE_PANE) restartDrawing();
+        if (d?.overlay && !isAllowedPane(chart, d.tool, d.overlay.paneId)) restartDrawing();
         const m = measureRef.current;
         if (m && m.currentStep !== DRAW_DONE && m.paneId !== CANDLE_PANE) startMeasure();
       }, 0);
@@ -1224,6 +1478,7 @@ export function KChart({
       setOverlayChart(null);
       // the drawings went with the chart: a chart made again (React's StrictMode mounts twice in dev) restores them
       restoredRef.current = false;
+      slotsRef.current = [];
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- chart lives for the component's lifetime
   }, []);
@@ -1299,9 +1554,10 @@ export function KChart({
     // ...and put the price axis back on auto scale
     onAutoScaleRef.current(true);
     // Drawings are stored by timestamp, so they land on the nearest bar of any timeframe. They are
-    // restored once; when the bars reload (another timeframe or ADJ) they stay as they are, with
-    // the selection, a drawing half done and a text being typed (its box moves with it).
+    // restored once; when the bars reload (another timeframe or ADJ) visible drawings stay as they
+    // are while timeframe-restricted drawings mount / park cleanly without altering saved specs.
     if (restoredRef.current) {
+      reconcileOverlays();
       // the text box follows its drawing to where it sits on the new bars
       setEditor((ed) => (ed ? { ...ed, ...editorAt(ed.id) } : ed));
       crosshairRef.current = null;
@@ -1310,9 +1566,10 @@ export function KChart({
     }
     restoredRef.current = true;
     restoringRef.current = true;
-    flagsRef.current = createDrawings(chart, overlaysRef.current).flags;
+    flagsRef.current = new Map();
+    slotsRef.current = createDrawings(chart, overlaysRef.current).slots;
     restoringRef.current = false;
-    historyRef.current = historyOf(serializeOverlays(chart, flagsRef.current));
+    historyRef.current = historyOf(serializeOverlays(chart));
     crosshairRef.current = null;
     scheduleLegend();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers are stable refs
@@ -1368,6 +1625,7 @@ export function KChart({
       }
     }
     sizePanes();
+    reconcileOverlays();
     scheduleLegend();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- scheduleLegend reads refs
   }, [indicatorKey, templates]);
@@ -1400,6 +1658,7 @@ export function KChart({
     });
     for (let slot = entries.length; slot < MAX_COMPARE; slot++) compareSeries[slot] = undefined;
     sizePanes();
+    reconcileOverlays();
     updateBases();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- updateBases reads refs
   }, [compareKey, bars, refs]);
@@ -1410,20 +1669,20 @@ export function KChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- applyYAxis reads the ref set here
   }, [log, percent, headroom]);
 
-  // magnet, lock all and hide all apply to every drawing and to the ones drawn next
+  // magnet, lock all and hide all apply to every drawing across main and sub panes and to the ones drawn next
   const drawingKey = `${drawing.magnet}|${drawing.locked}|${drawing.hidden}`;
   useEffect(() => {
     drawingModesRef.current = drawing;
     const chart = chartRef.current;
     if (!chart) return;
-    for (const o of chart.getOverlays({ paneId: CANDLE_PANE })) {
+    for (const o of chart.getOverlays()) {
       if (o.id === drawingRef.current?.id || !isDrawing(o)) continue;
       chart.overrideOverlay({ id: o.id, ...modesOf(o.id) });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the three flags
   }, [drawingKey]);
 
-  // 显示所有绘图 also brings back the drawings hidden one by one
+  // 显示所有绘图 also brings back the drawings hidden one by one (including parked ones on other timeframes or closed panes)
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || revealSeq === 0) return;
@@ -1432,6 +1691,12 @@ export function KChart({
       flagsRef.current.set(id, { ...f, hidden: false });
       chart.overrideOverlay({ id, ...modesOf(id) });
     }
+    slotsRef.current = slotsRef.current.map((slot) => {
+      if (slot.mounted || !slot.spec.hidden) return slot;
+      const next = { ...slot.spec };
+      delete next.hidden;
+      return { mounted: false, spec: next };
+    });
     persistOverlays();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per reveal
   }, [revealSeq]);
@@ -1455,28 +1720,39 @@ export function KChart({
     const chart = chartRef.current;
     if (!chart || reloadSeq === 0 || !restoredRef.current) return;
     const specs = overlaysRef.current;
-    if (JSON.stringify(serializeOverlays(chart, flagsRef.current)) === JSON.stringify(specs)) return;
-    const typing = editor ? chart.getOverlays({ id: editor.id })[0] : undefined;
+    if (JSON.stringify(serializeOverlays(chart)) === JSON.stringify(specs)) return;
+    const typing = editorRef.current ? chart.getOverlays({ id: editorRef.current.id })[0] : undefined;
     let typed = typing ? JSON.stringify(specOf(typing, flagsRef.current)) : null;
     restoringRef.current = true;
     setMenu(null);
     setSettings(null);
-    for (const o of chart.getOverlays({ paneId: CANDLE_PANE })) {
+    for (const o of chart.getOverlays()) {
       if (isDrawing(o) && o.currentStep === DRAW_DONE && o.id !== typing?.id) chart.removeOverlay({ id: o.id });
     }
-    // the text being typed is already on the chart
-    const rest = specs.filter((s) => {
-      if (typed === null || JSON.stringify(s) !== typed) return true;
-      typed = null;
-      return false;
-    });
-    const { flags } = createDrawings(chart, rest);
     const typingFlags = typing && flagsRef.current.get(typing.id);
-    if (typing && typingFlags) flags.set(typing.id, typingFlags);
-    flagsRef.current = flags;
+    flagsRef.current = new Map();
+    if (typing && typingFlags) flagsRef.current.set(typing.id, typingFlags);
+    // the text being typed is already on the chart; rebuild the rest in original slot order
+    const nextSlots: DrawingSlot[] = [];
+    const toMount: { slotIndex: number; spec: OverlaySpec }[] = [];
+    for (const raw of specs) {
+      const spec = cloneSpec(raw);
+      if (typing && typed !== null && JSON.stringify(spec) === typed) {
+        typed = null;
+        nextSlots.push({ mounted: true, id: typing.id });
+        continue;
+      }
+      toMount.push({ slotIndex: nextSlots.length, spec });
+      nextSlots.push({ mounted: false, spec });
+    }
+    const built = createDrawings(chart, toMount.map((m) => m.spec));
+    toMount.forEach((m, i) => {
+      nextSlots[m.slotIndex] = built.slots[i];
+    });
+    slotsRef.current = nextSlots;
     restoringRef.current = false;
     // what was undone before is not what is on the server now
-    historyRef.current = historyOf(serializeOverlays(chart, flagsRef.current));
+    historyRef.current = historyOf(serializeOverlays(chart));
     scheduleLegend();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per reload
   }, [reloadSeq]);
@@ -1487,9 +1763,13 @@ export function KChart({
     restoringRef.current = true;
     drawingRef.current = null;
     select(null);
-    // every drawing, not the alert lines
-    for (const o of chart.getOverlays({ paneId: CANDLE_PANE })) if (isDrawing(o)) chart.removeOverlay({ id: o.id });
+    setSettings(null);
+    setMenu(null);
+    setEditor(null);
+    // every drawing across main and sub panes, not the alert lines
+    for (const o of chart.getOverlays()) if (isDrawing(o)) chart.removeOverlay({ id: o.id });
     flagsRef.current = new Map();
+    slotsRef.current = [];
     restoringRef.current = false;
     historyRef.current = record(historyRef.current, []);
     onOverlaysChangeRef.current([]);
@@ -1565,7 +1845,10 @@ export function KChart({
         <DrawingToolbar
           key={`toolbar:${selected.id}`}
           info={selected.info}
-          canAlert={PRICE_LINES.has(selected.info.name)}
+          currentTf={tf}
+          top={selected.top}
+          flipUp={selected.flipUp}
+          canAlert={!selected.info.pane && PRICE_LINES.has(selected.info.name)}
           onChange={(change) => changeDrawing(selected.id, change)}
           onEditText={() => {
             const o = overlayById(selected.id);
@@ -1586,7 +1869,12 @@ export function KChart({
         <DrawingSettings
           key={`settings:${settings.id}`}
           info={settings.info}
-          precision={pricePrecision}
+          precision={settings.precision}
+          currentTf={tf}
+          fibTemplates={fibTemplates}
+          readOnly={readOnly}
+          onSaveFibTemplate={onSaveFibTemplate}
+          onDeleteFibTemplate={onDeleteFibTemplate}
           onApply={(change) => {
             changeDrawing(settings.id, change);
             setSettings(null);
