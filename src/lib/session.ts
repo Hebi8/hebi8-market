@@ -2,9 +2,10 @@
  * When the unfinished bar of a timeframe closes, for the countdown under the last price (design
  * §5.2), TradingView's way. Pure, shared by the server's tests and the chart.
  */
-import { bucketStart } from "./series";
+import { bucketStart, nextBucketStart } from "./series";
 import type { QuoteSession } from "./sources/types";
 import type { Timeframe } from "./symbols";
+import { DAY } from "./time";
 import { dayOf, partsIn, zonedToUtc, type Parts } from "./tz";
 
 /** The quote poller's round (src/lib/quotes.ts); pre-market, after-hours and closed markets are asked hourly. */
@@ -83,20 +84,10 @@ export function closeOn(calendar: TradingCalendar, day: Parts): { hh: number; mm
   return m ? { hh: Number(m[1]), mm: Number(m[2]) } : null;
 }
 
-/** The start of the next UTC day, three days, week (Monday), month or quarter after `now`. */
+/** The start of the next UTC day, three days, week (Monday), month, quarter or year after `now`. */
 function nextUtcBucket(now: number, tf: Timeframe, weekends: boolean): number {
-  const d = new Date(now);
-  const [y, m, day] = [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()];
-  if (tf === "D") return Date.UTC(y, m, day + 1);
-  if (tf === "3D") {
-    // the next day that starts another 3D bar, counted the chart's way (weekdays: over the weekend)
-    const start = bucketStart(Date.UTC(y, m, day) / 1000, tf, weekends);
-    let next = Date.UTC(y, m, day + 1) / 1000;
-    while (bucketStart(next, tf, weekends) === start) next += 86400;
-    return next * 1000;
-  }
-  if (tf === "W") return Date.UTC(y, m, day + 7 - ((d.getUTCDay() + 6) % 7));
-  return tf === "M" ? Date.UTC(y, m + 1, 1) : Date.UTC(y, Math.floor(m / 3) * 3 + 3, 1);
+  const day = Math.floor(now / (DAY * 1000)) * DAY;
+  return nextBucketStart(day, tf, weekends) * 1000;
 }
 
 /** Unix seconds at UTC midnight of a day. */
@@ -104,18 +95,72 @@ const secondsOf = (p: Parts) => Date.UTC(p.y, p.m - 1, p.d) / 1000;
 
 /** How far ahead the next trading day is looked for: longer than any run of holidays. */
 const LOOKAHEAD_DAYS = 14;
-/** How far the sessions of one bar reach: a quarter and a run of holidays after it. */
-const BAR_DAYS = 92 + LOOKAHEAD_DAYS;
+/** Furthest a session can start before its calendar day (`F6` in TradingView notation: 5 days ahead of its bar day). */
+const OVERNIGHT_CARRY_DAYS = 5;
+
+/** The last trading bar day (unix seconds, UTC midnight) and closing instant (ms) of one period bucket. */
+export interface PeriodClose {
+  day: number;
+  closeAt: number;
+}
+
+/** Whether a day is shut by `holidays` / `corrections` when regular `hours` are unknown. */
+function isDayOff({ holidays, corrections }: TradingCalendar, day: Parts): boolean {
+  const date = ymd(day);
+  for (const entry of corrections ? corrections.split(";") : []) {
+    const at = entry.lastIndexOf(":");
+    if (entry.slice(at + 1).split(",").includes(date)) return entry.startsWith("dayoff");
+  }
+  return Boolean(holidays?.split(",").includes(date));
+}
+
+/**
+ * When the bar of `tf` covering `[startDay, nextStartDay)` closes on `calendar`, and which daily
+ * bar day (`day`, unix seconds at UTC midnight) carries that close; null when the period has no
+ * trading days on `calendar` (e.g. a full-holiday week).
+ *
+ * For exchanges with known `hours`, sessions are grouped by the daily bar day they produce
+ * (`barDayOf`, so holiday-merged overnight sessions like CME `1700F2` stay with their bucket).
+ * Without known `hours`, weekdays count as trading days unless `weekends` is true.
+ */
+export function periodClose(startDay: number, tf: Timeframe, calendar: TradingCalendar, weekends = false): PeriodClose | null {
+  const start = bucketStart(startDay, tf, weekends);
+  if (tf === "D") return { day: start, closeAt: dayCloseAt(start, calendar) };
+  const next = nextBucketStart(start, tf, weekends);
+  if (calendar.hours === "24x7") return { day: next - DAY, closeAt: next * 1000 };
+  if (calendar.hours) {
+    const timezone = calendar.timezone ?? "UTC";
+    const nextParts = dayOf(partsIn(new Date(next * 1000), "UTC"));
+    for (let d = dayOf(nextParts, OVERNIGHT_CARRY_DAYS); secondsOf(d) >= start; d = dayOf(d, -1)) {
+      const end = closeOn(calendar, d);
+      if (!end) continue;
+      const barDay = secondsOf(barDayOf(calendar, d));
+      if (bucketStart(barDay, tf, weekends) === start) {
+        return { day: barDay, closeAt: zonedToUtc({ ...d, ...end }, timezone) };
+      }
+    }
+    return null;
+  }
+  for (let t = next - DAY; t >= start; t -= DAY) {
+    const d = dayOf(partsIn(new Date(t * 1000), "UTC"));
+    if (!weekends) {
+      const dow = weekday(d);
+      if (dow === 0 || dow === 6) continue;
+    }
+    if (isDayOff(calendar, d)) continue;
+    return { day: t, closeAt: dayCloseAt(t, calendar) };
+  }
+  return null;
+}
 
 /**
  * When the bar of `tf` that is forming now closes (ms), or null when there is nothing to count
  * down to: no quote that is still current, the market is not in its regular session, or its hours
- * are unknown. Around the clock (crypto) bars end with the UTC day, three days, week, month or
- * quarter. An exchange's daily bar ends at the first close after the quote, at the earlier time on
- * a half day; a 3D, weekly, monthly or quarterly one at the close of the last session that is the
- * bar's: sessions are grouped by the day of the daily bar they make, as the chart's bars are, and
- * 3D counts days the way the symbol does (`weekends`, from the server).
- * Without holidays and corrections every weekday counts as a full trading day.
+ * are unknown. Around the clock (crypto) bars end with the UTC day, three days, week, month,
+ * quarter or year. An exchange's daily bar ends at the first close after the quote, at the earlier
+ * time on a half day; a 3D, weekly, monthly, quarterly or yearly one at the close of the last
+ * session that is the bar's (`periodClose`). Without holidays and corrections every weekday counts
+ * as a full trading day.
  */
 export function barCloseAt(tf: Timeframe, now: number, clock: SessionClock, weekends = false): number | null {
   const { session, quotedAt, hours, timezone } = clock;
@@ -130,18 +175,8 @@ export function barCloseAt(tf: Timeframe, now: number, clock: SessionClock, week
   // the session is the quote's: counted from when it was taken, so a close that has passed since ends the countdown
   let day = dayOf(partsIn(new Date(quotedAt), timezone));
   for (let i = 0; (closeAt(day) ?? 0) <= quotedAt; i++, day = dayOf(day, 1)) if (i === LOOKAHEAD_DAYS) return null;
-  // the sessions closing on a day make the bar of that day or, from two evenings back after a
-  // holiday, of the day before: the bar ends with the last of them before one makes the next bar
-  const barOf = (d: Parts) => bucketStart(secondsOf(barDayOf(clock, d)), tf, weekends);
-  const bar = barOf(day);
-  let last = day;
-  for (let i = 1, next = dayOf(day, 1); i <= BAR_DAYS; i++, next = dayOf(next, 1)) {
-    if (!closeAt(next)) continue;
-    if (barOf(next) !== bar) break;
-    last = next;
-  }
-  const close = closeAt(last)!;
-  return close > now ? close : null;
+  const close = tf === "D" ? closeAt(day)! : (periodClose(secondsOf(barDayOf(clock, day)), tf, clock, weekends)?.closeAt ?? null);
+  return close !== null && close > now ? close : null;
 }
 
 /**

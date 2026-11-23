@@ -14,6 +14,8 @@ export type Series = number[];
 type Value = Series | number;
 
 export interface OhlcvBar {
+  /** Bar timestamp in UTC milliseconds (matching KLineChart's KLineData.timestamp) */
+  timestamp?: number;
   open: number;
   high: number;
   low: number;
@@ -34,6 +36,8 @@ export interface RefSeries {
 export interface EvalInput {
   bars: OhlcvBar[];
   refs?: Record<string, RefSeries>;
+  /** First daily bar's open per UTC calendar year, so 3D and weekly series align with daily/monthly/yearly `yearopen`. */
+  yearOpens?: Record<number, number>;
 }
 
 export class FormulaError extends Error {
@@ -104,6 +108,9 @@ export const SERIES_VARS: Record<string, string> = {
   hl2: "(high + low) / 2",
   hlc3: "(high + low + close) / 3",
   tr: "真实波幅",
+  year: "当前 K 线的 UTC 年份（如 2026）",
+  month: "当前 K 线的 UTC 月份（1–12）",
+  yearopen: "该公历年首个交易日的开盘价",
 };
 
 const isSeries = (v: Value): v is Series => Array.isArray(v);
@@ -246,6 +253,23 @@ function trueRange(bars: OhlcvBar[]): Series {
   });
 }
 
+function macdLine(x: Series, fast: number, slow: number): Series {
+  const f = ema(x, fast);
+  const s = ema(x, slow);
+  return f.map((v, i) => v - s[i]);
+}
+
+function yearOpenSeries(bars: OhlcvBar[], yearOpens?: Record<number, number>): Series {
+  const first = new Map<number, number>();
+  return bars.map((d) => {
+    if (!Number.isFinite(d.timestamp)) return NaN;
+    const y = new Date(d.timestamp!).getUTCFullYear();
+    if (yearOpens && Number.isFinite(yearOpens[y])) return yearOpens[y];
+    if (!first.has(y)) first.set(y, d.open);
+    return first.get(y)!;
+  });
+}
+
 interface Ctx {
   len: number;
   bars: OhlcvBar[];
@@ -328,6 +352,28 @@ export const FUNCTIONS: Record<string, FnSpec> = {
     },
   },
   rsi: { arity: 2, windows: [1], hint: "rsi(x, n) 相对强弱指数", run: ([x, n], { len }) => rsi(toSeries(x, len), n as number) },
+  macd: {
+    arity: [1, 3],
+    windows: [1, 2],
+    hint: "macd(x, fast=12, slow=26) MACD 线（快慢 EMA 之差）",
+    run: ([x, fast = 12, slow = 26], { len }) => macdLine(toSeries(x, len), fast as number, slow as number),
+  },
+  macdsignal: {
+    arity: [1, 4],
+    windows: [1, 2, 3],
+    hint: "macdsignal(x, fast=12, slow=26, signal=9) MACD 信号线",
+    run: ([x, fast = 12, slow = 26, signal = 9], { len }) => ema(macdLine(toSeries(x, len), fast as number, slow as number), signal as number),
+  },
+  macdhist: {
+    arity: [1, 4],
+    windows: [1, 2, 3],
+    hint: "macdhist(x, fast=12, slow=26, signal=9) MACD 柱（MACD 线减信号线）",
+    run: ([x, fast = 12, slow = 26, signal = 9], { len }) => {
+      const line = macdLine(toSeries(x, len), fast as number, slow as number);
+      const sig = ema(line, signal as number);
+      return line.map((v, i) => v - sig[i]);
+    },
+  },
   atr: { arity: 1, windows: [0], hint: "atr(n) 平均真实波幅", run: ([n], { bars }) => rma(trueRange(bars), n as number) },
   corr: {
     arity: 3,
@@ -696,7 +742,7 @@ const COMPARE: Record<CmpOp, (a: number, b: number) => boolean> = {
 
 /** Evaluate every statement; returns one series per plotted line (NaN where undefined). */
 export function evaluate(program: Program, input: EvalInput): Series[] {
-  const { bars, refs = {} } = input;
+  const { bars, refs = {}, yearOpens } = input;
   const len = bars.length;
   const env = new Map<string, Value>();
   const cache = new Map<string, Series>();
@@ -711,6 +757,12 @@ export function evaluate(program: Program, input: EvalInput): Series[] {
         return bars.map((d) => d.volume ?? NaN);
       case "tr":
         return trueRange(bars);
+      case "year":
+        return bars.map((d) => (Number.isFinite(d.timestamp) ? new Date(d.timestamp!).getUTCFullYear() : NaN));
+      case "month":
+        return bars.map((d) => (Number.isFinite(d.timestamp) ? new Date(d.timestamp!).getUTCMonth() + 1 : NaN));
+      case "yearopen":
+        return yearOpenSeries(bars, yearOpens);
       case "bench":
         return program.benchKey ? refSeries(refs, program.benchKey, "close", len) : new Array(len).fill(NaN);
       default:

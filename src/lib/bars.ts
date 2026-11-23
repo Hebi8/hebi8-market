@@ -2,8 +2,8 @@
 import type { RefSeries } from "@/indicators/formula";
 import type { BarsTail, ChartBar } from "./api-types";
 import { findItem, type Config } from "./config";
-import { aggregate, align, applyPrices, hasWeekendBars, type Bar, type Prices } from "./series";
-import { dayCloseAt, weekendTrading } from "./session";
+import { aggregate, align, applyPrices, hasWeekendBars, nextBucketStart, yearOpens as computeYearOpens, type Bar, type Prices } from "./series";
+import { dayCloseAt, periodClose, weekendTrading } from "./session";
 import { calendarOfRow, getSymbol, readDaily } from "./store";
 import { isSynthetic, parseKey, type Timeframe } from "./symbols";
 import { evalSynth, parseSynth } from "./synth";
@@ -20,12 +20,13 @@ export function dayClosed(key: string, t: number, now = Date.now()): boolean {
   return parseKey(key).source === "data" || dayCloseAt(t, calendarOfRow(getSymbol(key))) <= now;
 }
 
-/** Daily bars that are done: the last one is left out while its trading day is still going (`dayClosed`). */
-export function closedReader(now = Date.now()): DailyReader {
+/** Daily bars that are done: trailing bars whose trading day is still going are left out (`dayClosed`). */
+export function closedReader(now = Date.now(), base: DailyReader = readDaily): DailyReader {
   return (key) => {
-    const bars = readDaily(key);
-    const last = bars.at(-1);
-    return last && !dayClosed(key, last.t, now) ? bars.slice(0, -1) : bars;
+    const bars = base(key);
+    let end = bars.length;
+    while (end > 0 && !dayClosed(key, bars[end - 1].t, now)) end--;
+    return end === bars.length ? bars : bars.slice(0, end);
   };
 }
 
@@ -40,6 +41,89 @@ export function barClosed(key: string, t: number, cfg: Config, read: DailyReader
     const used = read(k).findLast((b) => b.t <= t);
     return !used || dayClosed(k, used.t, now);
   });
+}
+
+function realPeriodClosed(key: string, startDay: number, tf: Timeframe, read: DailyReader, weekends: boolean, now: number): boolean {
+  if (tf === "D") return dayClosed(key, startDay, now);
+  if (parseKey(key).source === "data") return nextBucketStart(startDay, tf, weekends) * 1000 <= now;
+  const row = getSymbol(key);
+  const calendar = calendarOfRow(row);
+  const close = periodClose(startDay, tf, calendar, weekends);
+  if (!close || close.closeAt > now) return false;
+  const lastDaily = read(key).at(-1);
+  if (!lastDaily || lastDaily.t >= close.day) return true;
+  // Cached daily bars stop before the period's expected closing trading day:
+  // do not close on a failed/stale sync, on a 24x7 market missing its final day,
+  // or while the natural period is still running (upstream lag).
+  if (calendar.hours === "24x7" || row?.syncError || (row?.syncedAt != null && row.syncedAt < close.closeAt)) return false;
+  return nextBucketStart(startDay, tf, weekends) * 1000 <= now;
+}
+
+/**
+ * Whether the bar of `tf` covering `[startDay, nextStartDay)` has finished trading as of `now`.
+ * Daily bars follow `barClosed`; higher timeframes wait for the last trading day in the bucket
+ * to close (every operand for a synthetic symbol; `nextStartDay` UTC for a `data:` dataset).
+ */
+export function periodClosed(
+  key: string,
+  startDay: number,
+  tf: Timeframe,
+  cfg: Config,
+  read: DailyReader = readDaily,
+  weekends = tradesWeekends(key, cfg, read),
+  now = Date.now(),
+): boolean {
+  if (tf === "D") return barClosed(key, startDay, cfg, read, now);
+  if (!isSynthetic(key)) return realPeriodClosed(key, startDay, tf, read, weekends, now);
+  const next = nextBucketStart(startDay, tf, weekends);
+  let anyScheduled = false;
+  for (const k of parseSynth(key.slice(1), cfg.aliases).keys) {
+    if (parseKey(k).source === "data") {
+      anyScheduled = true;
+      if (next * 1000 > now) return false;
+      continue;
+    }
+    const close = periodClose(startDay, tf, calendarOfRow(getSymbol(k)), weekends);
+    if (!close) {
+      // Operand has no trading days in this bucket (e.g. a holiday week): its last used bar before `next` must be closed.
+      const used = read(k).findLast((b) => b.t < next);
+      if (used && !dayClosed(k, used.t, now)) return false;
+      continue;
+    }
+    anyScheduled = true;
+    if (!realPeriodClosed(k, startDay, tf, read, weekends, now)) return false;
+  }
+  return anyScheduled;
+}
+
+/** Drop trailing bars whose period has not closed yet as of `now`. */
+export function trimClosed(
+  key: string,
+  bars: Bar[],
+  tf: Timeframe,
+  cfg: Config,
+  read: DailyReader = readDaily,
+  weekends = tradesWeekends(key, cfg, read),
+  now = Date.now(),
+): Bar[] {
+  let end = bars.length;
+  while (end > 0 && !periodClosed(key, bars[end - 1].t, tf, cfg, read, weekends, now)) end--;
+  return end === bars.length ? bars : bars.slice(0, end);
+}
+
+/** Bars of `key` on `tf` whose period has closed as of `now` (unfinished trailing bar dropped). */
+export function closedSeries(
+  key: string,
+  tf: Timeframe,
+  prices: Prices,
+  cfg: Config,
+  read?: DailyReader,
+  weekends?: boolean,
+  now = Date.now(),
+): Bar[] {
+  const effectiveRead = closedReader(now, read);
+  const w = weekends ?? tradesWeekends(key, cfg, effectiveRead);
+  return trimClosed(key, loadSeries(key, tf, prices, cfg, effectiveRead, w), tf, cfg, effectiveRead, w, now);
 }
 
 export function loadDaily(key: string, prices: Prices, cfg: Config, read: DailyReader = readDaily): Bar[] {
@@ -123,6 +207,8 @@ export interface ChartData {
   weekends: boolean;
   bars: ChartBar[];
   refs: Record<string, RefSeries>;
+  /** First daily bar's open per UTC calendar year, rounded like `bars`, for formula `yearopen` */
+  yearOpens: Record<number, number>;
 }
 
 /** What the chart draws for a key: its bars on a timeframe with the benchmark's close, and the other symbols aligned to them. */
@@ -142,18 +228,21 @@ export function loadChart(key: string, tf: Timeframe, prices: Prices, withKeys: 
     volume: b.v ?? undefined,
     bench: benchCloses?.[i] != null ? round(benchCloses[i]!) : undefined,
   }));
-  return { daily, weekends, bars, refs };
+  const yearOpens = Object.fromEntries(Object.entries(computeYearOpens(daily)).map(([y, o]) => [y, round(o)]));
+  return { daily, weekends, bars, refs, yearOpens };
 }
 
 /** The last bar of a chart and the other symbols at it, for updating an open chart after a quote round. */
-export function chartTail({ daily, weekends, bars, refs }: ChartData): BarsTail | null {
+export function chartTail({ daily, weekends, bars, refs, yearOpens }: ChartData): BarsTail | null {
   const i = bars.length - 1;
   if (i < 0) return null;
+  const yearOpen = yearOpens[new Date(bars[i].timestamp).getUTCFullYear()];
   return {
     bar: bars[i],
     prev: bars[i - 1]?.timestamp ?? null,
     refs: Object.fromEntries(Object.entries(refs).map(([k, r]) => [k, { o: r.o?.[i] ?? null, h: r.h?.[i] ?? null, l: r.l?.[i] ?? null, c: r.c[i], v: r.v?.[i] ?? null }])),
     lastDay: daily[daily.length - 1].t * 1000,
     weekends,
+    ...(yearOpen !== undefined ? { yearOpen } : {}),
   };
 }

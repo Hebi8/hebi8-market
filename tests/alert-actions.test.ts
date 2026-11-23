@@ -71,7 +71,7 @@ describe("alert Server Actions", () => {
     const alerts = readConfig(root).alerts;
     expect(alerts.map((a) => a.check)).toEqual(["price", "close", "close", "price"]);
     // the list says so where it is not the default
-    expect(alertViews("", readConfig(root), {}).map((a) => a.summary)).toEqual(["收盘价大于 1", "日线公式 close > 1", "收盘价小于 1 · 日线收盘", "日线公式 close > 2 · 盘中价格"]);
+    expect(alertViews("", readConfig(root), {}).map((a) => a.summary)).toEqual(["收盘价大于 1", "日线公式 close > 1", "收盘价小于 1 · K 线收盘", "日线公式 close > 2 · 盘中价格"]);
     // back to the default: the field goes, the id (and with it the state) stays
     expect(await saveAlert({ id: alerts[2].id, key: "binance:BTCUSDT", cond: "less", value: 1, trigger: "once", check: "price" })).toEqual({ ok: true });
     expect(read()).toContain("- { key: BTC, cond: less, value: 1, trigger: once }\n");
@@ -331,7 +331,7 @@ describe("the alert list", () => {
     expect(badges[ETH]).toBeUndefined();
     expect(badges[BTC][0].title).toBe("破十三万\n收盘价上穿 130,000\n盘中价格 · 仅一次 · 推送到通知通道\n状态：本周新触发（10/05 10:00）");
     expect(badges[BTC][1].title).toContain("状态：成立中（上次触发 10/02 12:00）");
-    expect(badges[BTC][4].title).toBe("周线多头\n周线公式 close > sma(close, 40)\n全部自选 · 日线收盘 · 每根 K 线最多一次 · 只在总览显示\n状态：成立中");
+    expect(badges[BTC][4].title).toBe("周线多头\n周线公式 close > sma(close, 40)\n全部自选 · K 线收盘 · 每根 K 线最多一次 · 只在总览显示\n状态：成立中");
   });
 
   it("tells a fired once alert (已触发) from a paused one (已停止) and draws only active levels", async () => {

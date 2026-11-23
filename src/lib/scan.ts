@@ -7,17 +7,17 @@
 import { describeError } from "@/indicators/formula-indicators";
 import type { AlertCheck } from "./alert-conds";
 import { closedReader, type DailyReader } from "./bars";
-import { compileFor, holds, runFormula } from "./conditions";
+import { compileFor, holds, runFormula, type FormulaOptions } from "./conditions";
 import type { Config } from "./config";
 import { fmtDate } from "./format";
 import { nameOf } from "./names";
 import { liveReader } from "./quotes";
 import type { Bar } from "./series";
 import { getSymbol } from "./store";
-import { isSynthetic, type Timeframe } from "./symbols";
+import { isSynthetic, TF_LABELS, type Timeframe } from "./symbols";
 
-/** The bars an alert with this `check` is judged on: with today's unfinished bar, or closed daily bars only. */
-export const readerFor = (check: AlertCheck): DailyReader => (check === "close" ? closedReader() : liveReader());
+/** The bars an alert with this `check` is judged on: with today's unfinished bar, or closed bars only. */
+export const readerFor = (check: AlertCheck, now = Date.now()): DailyReader => (check === "close" ? closedReader(now) : liveReader());
 
 /**
  * A formula's value as a reply can carry it. JSON has no infinity, so an infinite value (a
@@ -29,9 +29,12 @@ export type ScanValue = number | "Infinity" | "-Infinity" | null;
 const shown = (v: number | undefined): ScanValue => (v === undefined || Number.isNaN(v) ? null : v === Infinity ? "Infinity" : v === -Infinity ? "-Infinity" : Number(v.toPrecision(10)));
 
 /** `runFormula`, with a symbol without bars reported. */
-function run(key: string, formula: string, tf: Timeframe, cfg: Config, read: DailyReader): { bars: Bar[]; line: number[] } {
-  const result = runFormula(key, formula, tf, cfg, read);
-  if (result.bars.length === 0) throw new Error(isSynthetic(key) ? "合成不出数据：操作数没有缓存的日线或日期不重叠" : "没有缓存的日线");
+function run(key: string, formula: string, tf: Timeframe, cfg: Config, read: DailyReader, opts?: FormulaOptions): { bars: Bar[]; line: number[] } {
+  const result = runFormula(key, formula, tf, cfg, read, new Map(), opts);
+  if (result.bars.length === 0) {
+    if (result.daily.length > 0 && opts?.closed) throw new Error(`还没有已收盘的${TF_LABELS[tf]}线`);
+    throw new Error(isSynthetic(key) ? "合成不出数据：操作数没有缓存的日线或日期不重叠" : "没有缓存的日线");
+  }
   return result;
 }
 
@@ -44,7 +47,7 @@ export interface ScanRow {
   /** Whether it is true on the last bar and was on the one before, as an alert judges it (`holds`); null without a value */
   holds: boolean | null;
   held: boolean | null;
-  /** The last bar's date (the start of its 3D bar, week, month or quarter) */
+  /** The last bar's date (the start of its 3D bar, week, month, quarter or year) */
   date: string | null;
   error?: string;
 }
@@ -56,13 +59,13 @@ export interface ScanResult {
 }
 
 /** One formula on each of `keys` (resolved keys); a formula that does not compile at all throws. */
-export function scan(cfg: Config, keys: string[], formula: string, tf: Timeframe, read: DailyReader): ScanResult {
+export function scan(cfg: Config, keys: string[], formula: string, tf: Timeframe, read: DailyReader, opts?: FormulaOptions): ScanResult {
   // `bench` is each symbol's own, so it is only checked per symbol
   const program = compileFor(formula, cfg);
   const rows = keys.map((key): ScanRow => {
     const name = nameOf(cfg, key, getSymbol(key)?.name);
     try {
-      const { bars, line } = run(key, formula, tf, cfg, read);
+      const { bars, line } = run(key, formula, tf, cfg, read, opts);
       return { key, name, value: shown(line.at(-1)), prev: shown(line.at(-2)), holds: holds(line.at(-1)), held: holds(line.at(-2)), date: fmtDate(bars.at(-1)!.t) };
     } catch (err) {
       return { key, name, value: null, prev: null, holds: null, held: null, date: null, error: describeError(err) };
@@ -99,8 +102,8 @@ export interface FormulaTest {
  * rule (`decide`): the last known value was false and this bar is true; a bar without a value
  * changes nothing, and the first value ever seen only records.
  */
-export function testFormula(cfg: Config, key: string, formula: string, tf: Timeframe, window: number, read: DailyReader): FormulaTest {
-  const { bars, line } = run(key, formula, tf, cfg, read);
+export function testFormula(cfg: Config, key: string, formula: string, tf: Timeframe, window: number, read: DailyReader, opts?: FormulaOptions): FormulaTest {
+  const { bars, line } = run(key, formula, tf, cfg, read, opts);
   const start = Math.max(0, bars.length - window);
   const date = (i: number) => fmtDate(bars[i].t);
   let known: boolean | null = null;

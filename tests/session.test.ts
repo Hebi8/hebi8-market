@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { barCloseAt, closeOn, weekendTrading, dayCloseAt, fmtCountdown, quoteIsCurrent, scheduledSession, sessionStartsBetween, sessionsOn, tradingDayAt, type SessionClock, type TradingCalendar } from "@/lib/session";
+import { barCloseAt, closeOn, weekendTrading, dayCloseAt, fmtCountdown, periodClose, quoteIsCurrent, scheduledSession, sessionStartsBetween, sessionsOn, tradingDayAt, type SessionClock, type TradingCalendar } from "@/lib/session";
 
 const utc = (s: string) => Date.parse(`${s}Z`);
 const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString().slice(0, 16));
@@ -42,6 +42,7 @@ describe("the countdown to the bar's close", () => {
     expect(iso(barCloseAt("W", now, crypto))).toBe("2026-10-12T00:00");
     expect(iso(barCloseAt("M", now, crypto))).toBe("2026-11-01T00:00");
     expect(iso(barCloseAt("Q", now, crypto))).toBe("2027-01-01T00:00");
+    expect(iso(barCloseAt("Y", now, crypto))).toBe("2027-01-01T00:00");
     // three calendar days from Monday 1970-01-05: this one runs from Monday 10-05 to Wednesday 10-07
     expect(iso(barCloseAt("3D", now, crypto, true))).toBe("2026-10-08T00:00");
     expect(iso(barCloseAt("3D", utc("2026-10-08T00:00:01"), { ...crypto, quotedAt: utc("2026-10-08T00:00:00") }, true))).toBe("2026-10-11T00:00");
@@ -205,9 +206,12 @@ describe("the countdown to the bar's close", () => {
     // Christmas week: Thursday the 24th is a half day, Friday the 25th a holiday
     const christmas = open(NASDAQ, "2026-12-21T15:00:00");
     expect(iso(barCloseAt("W", utc("2026-12-21T15:01:00"), christmas))).toBe("2026-12-24T18:00");
-    // across the year: December and the fourth quarter end on Thursday the 31st, a full day
+    // across the year: December, Q4 and the year end on Thursday the 31st, a full day
     expect(iso(barCloseAt("M", utc("2026-12-21T15:01:00"), christmas))).toBe("2026-12-31T21:00");
     expect(iso(barCloseAt("Q", utc("2026-12-21T15:01:00"), christmas))).toBe("2026-12-31T21:00");
+    expect(iso(barCloseAt("Y", utc("2026-01-05T15:01:00"), open(NASDAQ, "2026-01-05T15:00:00")))).toBe("2026-12-31T21:00");
+    // 2028-12-31 is a Sunday: the year closes on Friday 2028-12-29
+    expect(iso(barCloseAt("Y", utc("2028-02-01T15:01:00"), open(plain("0930-1600", "America/New_York"), "2028-02-01T15:00:00")))).toBe("2028-12-29T21:00");
     // December 2027: the 31st is a Friday and trades, the 24th is the holiday
     expect(iso(barCloseAt("M", utc("2027-12-20T15:01:00"), open(NASDAQ, "2027-12-20T15:00:00")))).toBe("2027-12-31T21:00");
     // Hong Kong, the week of Monday 2026-10-19 (Chung Yeung): unaffected at the end, Friday 16:00 local
@@ -380,5 +384,39 @@ describe("a session beginning between two polls", () => {
   it("knows nothing without hours, and nothing begins around the clock", () => {
     expect(between("2026-10-21T13:08", "2026-10-21T14:03", plain(null, "America/New_York"))).toBe(false);
     expect(between("2026-10-21T23:30", "2026-10-22T00:30", plain("24x7", "UTC"))).toBe(false);
+  });
+});
+
+describe("periodClose", () => {
+  const sec = (isoDate: string) => Date.parse(`${isoDate}T00:00:00Z`) / 1000;
+  const fmt = (res: ReturnType<typeof periodClose>) => (res ? { day: new Date(res.day * 1000).toISOString().slice(0, 10), closeAt: iso(res.closeAt) } : null);
+
+  it("finds the last trading day and its close time for every timeframe", () => {
+    // regular US week: Mon 2026-01-05 -> Fri 2026-01-09 16:00 EST (21:00 UTC)
+    expect(fmt(periodClose(sec("2026-01-05"), "W", NASDAQ, false))).toEqual({ day: "2026-01-09", closeAt: "2026-01-09T21:00" });
+    // Good Friday week: closes early on Thu 2026-04-02 16:00 EDT (20:00 UTC)
+    expect(fmt(periodClose(sec("2026-03-30"), "W", NASDAQ, false))).toEqual({ day: "2026-04-02", closeAt: "2026-04-02T20:00" });
+    // Christmas week: Thu 2026-12-24 half-day 13:00 EST (18:00 UTC), Fri holiday
+    expect(fmt(periodClose(sec("2026-12-21"), "W", NASDAQ, false))).toEqual({ day: "2026-12-24", closeAt: "2026-12-24T18:00" });
+    // 3D (Tue-Thu across Thanksgiving): Wed 2026-11-25
+    expect(fmt(periodClose(sec("2026-11-24"), "3D", NASDAQ, false))).toEqual({ day: "2026-11-25", closeAt: "2026-11-25T21:00" });
+    // ES holiday-merged Thanksgiving 3D (Tue-Thu): barDay Thu closes Fri 12:15 CST (18:15 UTC)
+    expect(fmt(periodClose(sec("2026-11-24"), "3D", ES, false))).toEqual({ day: "2026-11-26", closeAt: "2026-11-27T18:15" });
+    // Month / Quarter / Year
+    expect(fmt(periodClose(sec("2026-10-01"), "M", NASDAQ, false))).toEqual({ day: "2026-10-30", closeAt: "2026-10-30T20:00" });
+    expect(fmt(periodClose(sec("2026-10-01"), "Q", NASDAQ, false))).toEqual({ day: "2026-12-31", closeAt: "2026-12-31T21:00" });
+    expect(fmt(periodClose(sec("2026-01-01"), "Y", NASDAQ, false))).toEqual({ day: "2026-12-31", closeAt: "2026-12-31T21:00" });
+  });
+
+  it("handles 24x7 crypto, no-hours fallback, and all-holiday periods", () => {
+    const crypto = plain("24x7", "UTC");
+    expect(fmt(periodClose(sec("2026-01-05"), "W", crypto, true))).toEqual({ day: "2026-01-11", closeAt: "2026-01-12T00:00" });
+    expect(fmt(periodClose(sec("2026-01-01"), "Y", crypto, true))).toEqual({ day: "2026-12-31", closeAt: "2027-01-01T00:00" });
+    // No hours synced: weekdays for !weekends, calendar days for weekends
+    expect(fmt(periodClose(sec("2026-01-05"), "W", plain(null, "America/New_York"), false))).toEqual({ day: "2026-01-09", closeAt: "2026-01-10T05:00" });
+    expect(fmt(periodClose(sec("2026-01-05"), "W", plain(null, null), true))).toEqual({ day: "2026-01-11", closeAt: "2026-01-12T00:00" });
+    // Entire week is a holiday -> null
+    const closedWeek = { ...NASDAQ, holidays: "20260105,20260106,20260107,20260108,20260109" };
+    expect(periodClose(sec("2026-01-05"), "W", closedWeek, false)).toBeNull();
   });
 });

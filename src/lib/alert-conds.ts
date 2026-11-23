@@ -39,9 +39,9 @@ export function currentFirst<T extends { key: string | null }>(alerts: T[], curr
 /** `once` disables the alert after it fires; `bar` fires at most once per daily bar. */
 export type AlertTrigger = "once" | "bar";
 
-/** When an alert is judged: on the live price after every quote round, or on closed daily bars after a daily sync. */
+/** When an alert is judged: on the live price after every quote round, or on closed bars of its timeframe after a daily sync. */
 export type AlertCheck = "price" | "close";
-export const ALERT_CHECKS: Record<AlertCheck, string> = { price: "盘中价格", close: "日线收盘" };
+export const ALERT_CHECKS: Record<AlertCheck, string> = { price: "盘中价格", close: "K 线收盘" };
 /** What an alert does when its `check` is left out: one on a symbol follows the price, one on the whole watchlist waits for the close. */
 export const defaultCheck = (key: string | null): AlertCheck => (key ? "price" : "close");
 
