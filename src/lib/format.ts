@@ -1,3 +1,4 @@
+import type { ColumnFormat } from "./columns";
 import type { QuoteSession } from "./sources/types";
 import { pricePrecision } from "./stats";
 
@@ -9,6 +10,42 @@ export function fmtPct(value: number | null | undefined, digits = 1): string {
   if (value == null || !Number.isFinite(value)) return "—";
   const pct = value * 100;
   return `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${Math.abs(pct).toFixed(digits)}%`;
+}
+
+const ZERO_FMT = /^0(?:\.0+)?$/;
+const COMPACT_AT = 1e9;
+
+/**
+ * Format a custom overview formula column's latest value (`pct` expects percentage points, e.g. `roc()`).
+ * Formats `Math.abs(value)` before adding the sign so positive/negative half-steps stay symmetric
+ * and huge finite values stay compact.
+ */
+export function fmtColumnValue(value: number | null | undefined, format: ColumnFormat): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  if (format === "pct") {
+    const body = abs >= COMPACT_AT ? abs.toExponential(2) : abs.toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    const sign = ZERO_FMT.test(body) ? "" : value > 0 ? "+" : "−";
+    return `${sign}${body}%`;
+  }
+  if (format === "ratio") {
+    const digits = abs >= 100 ? 1 : 2;
+    const body = abs >= COMPACT_AT ? abs.toExponential(2) : abs.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    const sign = ZERO_FMT.test(body) || value >= 0 ? "" : "−";
+    return `${sign}${body}x`;
+  }
+  const digits = abs >= 10000 ? 0 : abs >= 1000 ? 1 : abs === 0 || abs >= 0.01 ? 2 : 4;
+  const body = abs >= COMPACT_AT ? abs.toExponential(2) : abs.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  const sign = ZERO_FMT.test(body) || value >= 0 ? "" : "−";
+  return `${sign}${body}`;
+}
+
+/** Text color for a formatted overview column value: signed up/down for non-zero pct, neutral otherwise. */
+export function columnColor(value: number | null | undefined, format: ColumnFormat): string {
+  if (value == null || !Number.isFinite(value)) return "text-muted";
+  if (format !== "pct") return "text-fg";
+  if (fmtColumnValue(value, "pct") === "0.0%") return "text-muted";
+  return changeColor(value);
 }
 
 export function fmtDate(unixSeconds: number): string {

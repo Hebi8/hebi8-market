@@ -3,7 +3,11 @@ import type { LineDash } from "@/components/drawing-style";
 import { isPresetFibTemplate, normalizeFibLevels, normalizeHex, type FibTemplate } from "@/components/fib";
 import { compile } from "@/indicators/formula";
 import { ALERT_CHECKS, ALERT_CONDS, defaultCheck, describeCondition, parseCondition, type AlertCheck, type AlertCondition, type AlertTrigger } from "./alert-conds";
+import { COLUMN_ID, MAX_COLUMNS, RESERVED_COLUMN_IDS, isColumnFormat, type ColumnDef, type ColumnFormat } from "./columns";
 import { CHANGE_PERIODS, DEFAULT_PERIODS, MAX_PERIODS, type ChangePeriod } from "./periods";
+
+export type { ColumnDef, ColumnFormat };
+export { MAX_COLUMNS };
 import type { Prices } from "./series";
 import { DATA_ID, TF_LABELS, hash6, isSynthetic, isTimeframe, isValidKey, tickerOf, type Timeframe } from "./symbols";
 import { operands, parseSynth, synthName } from "./synth";
@@ -116,6 +120,8 @@ export interface Config {
   aliases: Record<string, string>;
   groups: Group[];
   indicators: FormulaDef[];
+  /** Custom formula numeric columns shown on the overview table (at most MAX_COLUMNS) */
+  columns: ColumnDef[];
   /** Including the old `conditions` list, read as alerts on the whole watchlist */
   alerts: AlertDef[];
   /** The old conditions' `alert_state` rules (`cond:<id>`) → the alert ids they continue as; empty once the yaml has moved them */
@@ -151,7 +157,7 @@ const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ?
 /** Aliases first, otherwise the reference is taken as a full key. */
 export function resolveKey(ref: string, aliases: Record<string, string>): string {
   const r = ref.trim();
-  return aliases[r] ?? r;
+  return Object.hasOwn(aliases, r) ? aliases[r] : r;
 }
 
 function checkKey(key: string, aliases: Record<string, string>, where: string): void {
@@ -325,6 +331,15 @@ export function normalizeConfig(raw: unknown): Config {
     return [{ id, label: text(d.label) ?? id, pane: d.pane === "main" ? ("main" as const) : ("sub" as const), formula }];
   });
 
+  const columns = list(root.columns)
+    .slice(0, MAX_COLUMNS)
+    .map((raw, i) => parseColumn(raw, i));
+  const colIds = new Set<string>();
+  for (const c of columns) {
+    if (colIds.has(c.id)) throw new ConfigError(`columns：重复的 id「${c.id}」`);
+    colIds.add(c.id);
+  }
+
   const alerts = list(root.alerts).map((raw, i) => parseAlert(raw, i, aliases));
   const taken = new Set(alerts.map((a) => a.id));
   const conditionRules: Record<string, string> = {};
@@ -372,6 +387,7 @@ export function normalizeConfig(raw: unknown): Config {
     aliases,
     groups: parseGroups(root.groups, aliases),
     indicators,
+    columns,
     alerts,
     conditionRules,
     datasets,
@@ -435,6 +451,30 @@ export function checkNote(a: Pick<AlertDef, "key" | "check">): string | null {
 export function describeAlert(a: Pick<AlertDef, "condition" | "when" | "tf">): string {
   if (a.condition) return a.condition.cond.startsWith("moving_") ? describeCondition(a.condition) : `收盘价${describeCondition(a.condition)}`;
   return `${TF_LABELS[a.tf]}线公式 ${a.when}`;
+}
+
+/** One entry of `columns`; exported so a write-back can match an entry by its parsed id. */
+export function parseColumn(raw: unknown, i: number): ColumnDef {
+  const d = obj(raw);
+  const where = `columns[${i}]`;
+  const label = text(d.label);
+  const formula = text(d.formula);
+  if (!label) throw new ConfigError(`${where}：需要 label`);
+  if (!formula) throw new ConfigError(`${where}：需要 formula`);
+  const tf = d.tf === undefined ? ("D" as const) : d.tf;
+  if (!isTimeframe(tf)) throw new ConfigError(`${where}：无效的周期「${String(d.tf)}」，应为 D / 3D / W / M / Q / Y`);
+  const format = d.format === undefined ? ("number" as const) : d.format;
+  if (!isColumnFormat(format)) throw new ConfigError(`${where}：format 应为 number、pct 或 ratio`);
+  let id: string;
+  if (d.id === undefined || d.id === null) {
+    id = `c_${hash6(`${label}|${formula}|${tf}|${format}`)}`;
+  } else {
+    const own = text(d.id);
+    if (!own || !COLUMN_ID.test(own)) throw new ConfigError(`${where}：id「${String(d.id)}」只能用字母、数字、下划线、横线`);
+    if (RESERVED_COLUMN_IDS.has(own)) throw new ConfigError(`${where}：id「${own}」为保留名称，请换一个`);
+    id = own;
+  }
+  return { id, label, formula, tf, format };
 }
 
 /** One entry of `alerts`; exported so a write-back can find an entry by its id. */
@@ -516,7 +556,10 @@ export function syncKeys(cfg: Config, extra: string[] = []): string[] {
     add(item.key);
     if (item.bench) add(item.bench);
   }
-  for (const formula of cfg.indicators.map((d) => d.formula).concat(cfg.alerts.flatMap((a) => (a.when ? [a.when] : [])))) {
+  for (const formula of cfg.indicators
+    .map((d) => d.formula)
+    .concat(cfg.columns.map((c) => c.formula))
+    .concat(cfg.alerts.flatMap((a) => (a.when ? [a.when] : [])))) {
     try {
       compile(formula, { aliases: cfg.aliases }).refs.forEach(add);
     } catch {

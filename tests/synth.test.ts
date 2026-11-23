@@ -98,8 +98,15 @@ describe("parseSynth", () => {
     ["BTC % 2", "无法识别的字符"],
     ["nope:AAPL/BTC", "无效的标的 key「nope:AAPL」"],
     ["data:gpu/BTC", "无效的标的 key「data:gpu」"],
+    ['"=yahoo:A/yahoo:B"/BTC', "不能嵌套合成标的"],
+    ["toString/BTC", "未知别名「toString」"],
   ])("rejects %j", (expr, message) => {
     expect(() => parseSynth(expr, aliases)).toThrow(message);
+  });
+
+  it("rejects nested synthetic aliases", () => {
+    const nested = { ...aliases, INNER: "=BTC/GOLD" };
+    expect(() => parseSynth("INNER/yahoo:SPY", nested)).toThrow("不能嵌套合成标的");
   });
 });
 

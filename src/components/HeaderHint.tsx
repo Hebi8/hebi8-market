@@ -33,12 +33,22 @@ export function useHeaderHint(content: ReactNode) {
   // the header moves with the page; the card follows it
   useEffect(() => {
     if (!shown) return;
-    const onScroll = () => setAt(under(anchor.current!));
-    window.addEventListener("scroll", onScroll, true);
-    return () => window.removeEventListener("scroll", onScroll, true);
+    const onMove = () => {
+      if (anchor.current) setAt(under(anchor.current));
+    };
+    window.addEventListener("scroll", onMove, true);
+    window.addEventListener("resize", onMove);
+    return () => {
+      window.removeEventListener("scroll", onMove, true);
+      window.removeEventListener("resize", onMove);
+    };
   }, [shown]);
 
   return {
+    dismiss: () => {
+      setHovered(false);
+      setFocused(false);
+    },
     hover: {
       onMouseEnter: (e: { currentTarget: HTMLElement }) => {
         place(e.currentTarget);
@@ -60,7 +70,7 @@ export function useHeaderHint(content: ReactNode) {
         role="tooltip"
         hidden={!shown}
         style={{ ...at, width: WIDTH }}
-        className="fixed z-30 flex flex-col gap-1.5 rounded-md border border-line bg-card p-3 text-left text-[11px] font-normal whitespace-pre-line text-fg shadow-lg"
+        className="pointer-events-none fixed z-30 flex flex-col gap-1.5 rounded-md border border-line bg-card p-3 text-left text-[11px] font-normal whitespace-pre-line text-fg shadow-lg"
       >
         {content}
       </span>
