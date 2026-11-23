@@ -48,7 +48,7 @@ describe("normalizeConfig", () => {
     expect(cfg.groups[3].symbols[1]).toEqual({ key: "yahoo:600519.SS", name: "贵州茅台", bench: "tv:SSE:000300", group: "港 A" });
     expect(cfg.groups[4].symbols[0].key).toBe("=BTC/GOLD");
     expect(cfg.periods).toEqual(["1W", "1M", "1Y"]);
-    expect(cfg.chart).toEqual({ tf: "W", log: true, style: "candle_solid", indicators: ["MA", "VOL"], params: { W: { MA: [10, 40, 200] } }, panes: {}, styles: {} });
+    expect(cfg.chart).toEqual({ tf: "W", log: true, style: "candle_solid", indicators: ["MA", "VOL"], params: { W: { MA: [10, 40, 200] } }, panes: {}, styles: {}, fibTemplates: [] });
     // nothing is assigned: alerts are each person's own
     expect(cfg.alerts).toEqual([]);
   });
@@ -87,6 +87,49 @@ describe("normalizeConfig", () => {
       },
     });
     expect(cfg.chart.styles).toEqual({ MA: [{ color: "#f23645", size: 2 }, {}, { dash: "dotted" }], F_x: [{ color: "#aabbcc" }] });
+  });
+
+  it("parses valid chart.fibTemplates, deduplicates by name and drops invalid entries", () => {
+    const cfg = normalizeConfig({
+      chart: {
+        fibTemplates: [
+          {
+            name: "我的目标",
+            levels: [
+              { level: 0, color: "#787B86" },
+              { level: 1.75, color: "#29f" },
+              { level: 3.5, color: "#ff9800", enabled: false },
+            ],
+            extendRight: true,
+            transparency: 75,
+            color: "#F23645",
+            size: 2,
+            dash: "dashed",
+          },
+          { name: "我的目标", levels: [{ level: 0.5, color: "#4caf50" }] }, // duplicate name
+          { name: "Rule of 7", levels: [{ level: 0.5, color: "#4caf50" }] }, // built-in preset name collision
+          { name: "默认", levels: [{ level: 0.5, color: "#4caf50" }] }, // built-in preset name collision
+          { name: "精简回撤", levels: [{ level: 0.5, color: "#4caf50" }] }, // built-in preset name collision
+          { name: "空档位", levels: [{ level: 0.5, color: "#4caf50", enabled: false }] }, // 0 enabled
+          { name: "   ", levels: [{ level: 0.5, color: "#4caf50" }] }, // empty name
+        ],
+      },
+    });
+    expect(cfg.chart.fibTemplates).toEqual([
+      {
+        name: "我的目标",
+        levels: [
+          { level: 0, color: "#787b86" },
+          { level: 1.75, color: "#2299ff" },
+          { level: 3.5, color: "#ff9800", enabled: false },
+        ],
+        extendRight: true,
+        transparency: 75,
+        color: "#f23645",
+        size: 2,
+        dash: "dashed",
+      },
+    ]);
   });
 
   it.each([

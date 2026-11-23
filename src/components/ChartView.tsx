@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
-import { addSymbol, deleteIndicator, editChartState, editWatchlist, loadSymbol, saveIndicator, setChartPrefs, type ChartChange } from "@/app/actions";
+import { addSymbol, deleteFibTemplate, deleteIndicator, editChartState, editWatchlist, loadSymbol, saveFibTemplate, saveIndicator, setChartPrefs, type ChartChange } from "@/app/actions";
 import type { AlertView } from "@/lib/alert-view";
 import { INDICATORS } from "@/indicators/catalog";
 import { compileFormula, formulaIndicatorName, formulaTemplate, isFormulaIndicator } from "@/indicators/formula-indicators";
@@ -48,7 +48,9 @@ import {
   IconWatchlist,
 } from "./chart-icons";
 import { renderSnapshot, snapshotFileName } from "./chart-snapshot";
-import { COMPARE_COLORS, DRAW_GROUPS, DRAW_TOOLS, MEASURE_TOOL, OPEN_DRAWINGS, RANGES, type ChartControl, type IndicatorSpec } from "./chart-types";
+import { COMPARE_COLORS, DRAW_GROUPS, DRAW_TOOLS, MEASURE_TOOL, OPEN_DRAWINGS, RANGES, SUBPANE_DRAWINGS, type ChartControl, type IndicatorSpec } from "./chart-types";
+import { countParkedOverlays } from "./drawing-spec";
+import type { FibTemplate } from "./fib";
 import { DrawToolGroups, GroupMenuItems } from "./DrawToolGroups";
 import { AlertDialog, AlertLoginDialog } from "./AlertDialog";
 import { AlertsPanel } from "./AlertsPanel";
@@ -167,6 +169,7 @@ export function ChartView({
   const [overrides, setOverrides] = useState<ParamOverrides>(prefs.params);
   const [panes, setPanes] = useState(prefs.panes);
   const [styles, setStyles] = useState(prefs.styles);
+  const [fibTemplates, setFibTemplates] = useState<FibTemplate[]>(prefs.fibTemplates);
   /** An indicator's lines as its open 样式 tab has them, before 确定 */
   const [stylePreview, setStylePreview] = useState<{ id: string; lines: LineOverride[] } | null>(null);
   const [hiddenCompares, setHiddenCompares] = useState<string[]>([]);
@@ -446,6 +449,23 @@ export function ChartView({
     const result = await deleteIndicator(id);
     if (result.ok) setEnabled(enabled.filter((n) => n !== id));
     return result.ok ? null : result.error;
+  };
+  const onSaveFibTemplate = async (tpl: FibTemplate): Promise<string | null> => {
+    if (readOnly) return "登录后才能保存模板";
+    const result = await saveFibTemplate(tpl);
+    if (!result.ok) return result.error;
+    setFibTemplates((cur) => {
+      const i = cur.findIndex((t) => t.name === tpl.name);
+      return i >= 0 ? cur.map((t, j) => (j === i ? tpl : t)) : [...cur, tpl];
+    });
+    return null;
+  };
+  const onDeleteFibTemplate = async (tplName: string): Promise<string | null> => {
+    if (readOnly) return "登录后才能删除模板";
+    const result = await deleteFibTemplate(tplName);
+    if (!result.ok) return result.error;
+    setFibTemplates((cur) => cur.filter((t) => t.name !== tplName));
+    return null;
   };
 
   /**
@@ -1071,7 +1091,7 @@ export function ChartView({
             )}
             {drawLabel && (
               <div className="pointer-events-none absolute top-2 left-1/2 z-20 -translate-x-1/2 rounded border border-line bg-card/95 px-2 py-1 text-[11px] text-muted" role="status">
-                {drawLabel} · 在主图上点击{drawTool && OPEN_DRAWINGS.has(drawTool) ? " · 双击或回车结束" : ""} · Esc 退出
+                {drawLabel} · {drawTool && SUBPANE_DRAWINGS.has(drawTool) ? "在主图或副图上点击" : "在主图上点击"}{drawTool && OPEN_DRAWINGS.has(drawTool) ? " · 双击或回车结束" : ""} · Esc 退出
               </div>
             )}
             <div className="absolute inset-0">
@@ -1108,6 +1128,10 @@ export function ChartView({
                   const alert = alerts.find((a) => a.id === id);
                   if (alert) setDialog({ kind: "alert", alert, price: null });
                 }}
+                fibTemplates={fibTemplates}
+                readOnly={readOnly}
+                onSaveFibTemplate={onSaveFibTemplate}
+                onDeleteFibTemplate={onDeleteFibTemplate}
               />
             </div>
           </div>
@@ -1274,19 +1298,29 @@ export function ChartView({
             onClose={() => setDialog(null)}
           />
         ))}
-      {dialog?.kind === "clear" && (
-        <Dialog title="删除所有绘图" onClose={() => setDialog(null)} className="max-w-[360px]">
-          <div className="p-4 text-sm">删除这个标的的全部 {chartState.overlays.length} 个绘图？</div>
-          <div className="flex justify-end gap-2 border-t border-line px-4 py-3">
-            <button type="button" className="btn" onClick={() => setDialog(null)}>
-              取消
-            </button>
-            <button type="button" className="btn btn-primary" autoFocus onClick={confirmClearDrawings}>
-              删除
-            </button>
-          </div>
-        </Dialog>
-      )}
+      {dialog?.kind === "clear" && (() => {
+        const openSubPanes = new Set<string>([
+          ...specs.filter((s) => s.pane === "sub").map((s) => s.name),
+          ...chartState.compare.slice(0, COMPARE_COLORS.length).filter((c) => c.mode === "pane" && Boolean(data?.refs[c.key]?.c)).map((c) => c.key),
+        ]);
+        const parkedCount = countParkedOverlays(chartState.overlays, dataTf, openSubPanes);
+        return (
+          <Dialog title="删除所有绘图" onClose={() => setDialog(null)} className="max-w-[360px]">
+            <div className="p-4 text-sm">
+              删除这个标的的全部 {chartState.overlays.length} 个绘图？
+              {parkedCount > 0 && <span className="text-muted">（含其他周期或已关闭副图上的 {parkedCount} 条）</span>}
+            </div>
+            <div className="flex justify-end gap-2 border-t border-line px-4 py-3">
+              <button type="button" className="btn" onClick={() => setDialog(null)}>
+                取消
+              </button>
+              <button type="button" className="btn btn-primary" autoFocus onClick={confirmClearDrawings}>
+                删除
+              </button>
+            </div>
+          </Dialog>
+        );
+      })()}
     </main>
   );
 }
