@@ -80,6 +80,11 @@ indicators:                    # 公式指标，图表页可开关；语法见 �
   - { id: dev40, label: 均线乖离, pane: sub, formula: "(close / sma(close, 40) - 1) * 100" }
   - { id: vs_bench, label: 对基准比价, pane: sub, formula: "close / close(bench)" }
 
+columns:                       # 可省；总览自定义公式列，最多 6 列；tf 默认 D，format：number（默认）| pct | ratio
+  - { id: dev200w, label: 距200W, formula: "(close / sma(close, 200) - 1) * 100", tf: W, format: pct }
+  - { id: rsi_m, label: 月RSI, formula: "rsi(close, 14)", tf: M, format: number }
+  - { id: vol_r, label: 量比, formula: "volume / sma(volume, 20)", tf: W, format: ratio }
+
 alerts:                        # 警报（§2.6）：总览「警报」列按名字显示；图表和总览上建的写成这样，也可以手写
   - { key: BTC, cond: crossing_up, value: 130000, trigger: once }            # BTC 上穿 130,000，仅一次
   - { key: SPY, cond: entering, value: [500, 520], trigger: bar }            # 进入通道，每根 K 线一次
@@ -477,7 +482,7 @@ date,open,high,low,close,volume
   已触发的 `once` 手改 yaml 的 `enabled: true` 不会重新启用；重新启用请用界面上的恢复。
 - 状态记在 `alert_state`（§1.4），事件类的上一次结果也在这里。
 
-**谁被轮询**（标配，不用建警报）：所有 vault 的自选标的和它们的 `bench`，加上 `enabled`、不是草稿且判断时机是「盘中价格」的警报的标的和它们 `when` 公式引用到的标的；合成标的展开成操作数；`data:` 标的只有日线，不轮询，跟着日线同步判断。判断时机是「K 线收盘」的警报（对全部自选的默认）不为轮询添标的，报价轮次也不判断它们。
+**谁被轮询**（标配，不用建警报）：所有 vault 的自选标的和它们的 `bench`，总览公式列（`columns`）引用的跨标的，加上 `enabled`、不是草稿且判断时机是「盘中价格」的警报的标的和它们 `when` 公式引用到的标的；合成标的展开成操作数；`data:` 标的只有日线，不轮询，跟着日线同步判断。判断时机是「K 线收盘」的警报（对全部自选的默认）不为轮询添标的，报价轮次也不判断它们。
 
 **规模**：请求数按「每轮每个源一次」算，不随标的数涨：到期的标的每个源每 100 个一个请求（`CHUNK`），同一个源的几个请求并发。实测 Yahoo 155 个一次 0.8 秒，TradingView 一个 quote 会话 155 个 1.6 秒（100 个 0.9 秒，远在 20 秒超时内），Binance `tradingDay` 一次最多 100 个、权重每个 4（封顶 200，限额 6000/分钟），100 个交易对的 URL 约 1.7 KB。`upstream` 按实际请求数记（每块一次）。一块失败时别的块照常入库，失败那块的标的下一轮再取；一个源整轮没有一块成功才算一次失败。
 
@@ -647,11 +652,12 @@ D 原样；**3D** 见下；W 周一起算；M 月初；**Q 季初**（`Date.UTC(
   ddAth,                                  // 距历史最高收盘的回撤，<= 0
   pos52,                                  // 52 周高低区间位置 0..1
   spark: number[],                        // 近 104 周的周收盘
+  columns?: Record<string, number | null>, // 可省；按 hebi8.yaml 的 columns id 存自定义公式列最新值（缺数据 / 无 bench / NaN / 非有限值或出错为 null）
 }
 ```
 
 - `changes`/`ddAth`/`pos52` 的定义与 v1 `src/lib/stats.ts` 相同，按 yaml 的 `prices` 模式计算。
-- **只有一个来源**：`overviewStats(vault, cfg)`（`src/lib/quotes.ts`），总览、图表页的自选列表、MCP `overview` 都读它。按每个 vault 的全部自选行（含合成）在图表和警报看到的同一组日线上算：价格来自报价的行（自己的报价，合成标的是操作数的，`withQuote` 采纳的才算）最后一根是今日 K 线。自选全部有报价以后，每次打开页面都现读全部日线太贵（51 个标的、40 万根日线约 250 ms），所以结果按 vault 缓存在内存里，缓存的戳是「行情版本（`marketVersion()`：每次写日线、报价或同步状态都加一，这些写入都在应用进程里；不用时间戳，两次写入落在同一毫秒也不会漏）、`prices`、自选列表、别名」，任何一个变了下一次读就重算，手改 yaml 也立即生效，不用哪个写入口记得去重算；每轮报价和每次 `syncAll` 收尾时先算好，页面只读缓存（约 0.5 ms，不读 `bars`）。
+- **只有一个来源**：`overviewStats(vault, cfg)`（`src/lib/quotes.ts`），总览、图表页的自选列表、MCP `overview` 都读它。按每个 vault 的全部自选行（含合成）在图表和警报看到的同一组日线上算：价格来自报价的行（自己的报价，合成标的是操作数的，`withQuote` 采纳的才算）最后一根是今日 K 线；配置了 `columns` 时在同一轮用复用 `liveReader` 缓存和每标的 `SeriesCache` 调 `runFormula()` 算每列最新值（避免重复读 SQLite），手改 yaml 里单列公式语法错或未知别名只让该列得 `null` 并在表头提示，不崩整页。自选全部有报价以后，每次打开页面都现读全部日线太贵（51 个标的、40 万根日线约 250 ms），所以结果按 vault 缓存在内存里，缓存的戳是「行情版本（`marketVersion()`：每次写日线、报价或同步状态都加一，这些写入都在应用进程里；不用时间戳，两次写入落在同一毫秒也不会漏）、`prices`、自选列表及各自 `bench`、别名、`columns` 定义，以及自选/基准/公式列引用标的的最新同步与报价状态」，任何一个变了下一次读就重算，手改 yaml、增删改公式列或跨标的引用价格更新都立即生效，不用哪个写入口记得去重算；每轮报价和每次 `syncAll` 收尾时先算好，页面只读缓存（约 0.5 ms，不读 `bars`）。
 - 算好时整份写进 `stats` 表（按 vault 替换），表只是最近一次的结果：页面不读它，流量统计用它认出有人在看的合成标的（§1.7）。
 - stats 里不再有条件结果：警报的状态在 `alert_state`（§1.4），总览徽标从那里读。
 
@@ -671,7 +677,7 @@ D 原样；**3D** 见下；W 周一起算；M 月初；**Q 季初**（`Date.UTC(
 - `compile(source)` 额外返回 `refs: string[]`（引用到的标的，别名已解析为 key）。
 - `evaluate(program, { bars, refs, yearOpens })`（`OhlcvBar` 带可选 UTC 毫秒 `timestamp`，贯通服务端 `Bar.t * 1000` 与 KLineChart `KLineData.timestamp`）。
 
-**用在三处**：图表指标（客户端，KLineChart 模板）、警报的 `when`（服务端，§2.5）、对比（客户端）。引擎是纯 TS，没有环境依赖。
+**用在四处**：图表指标（客户端，KLineChart 模板）、总览自定义公式列（服务端，§3.4）、警报的 `when`（服务端，§2.5）、对比（客户端）。引擎是纯 TS，没有环境依赖。
 
 ---
 
@@ -679,9 +685,9 @@ D 原样；**3D** 见下；W 周一起算；M 月初；**Q 季初**（`Date.UTC(
 
 ### 5.1 总览 `/`（RSC 直读 yaml + 总览 stats，§3.4）
 
-- 顶部：`自选 · 上次同步`；右侧「上次复盘 N 天前」链到 `/review`、「周期 · 1周 1月 1年」（点开选择显示的涨跌周期）、涨跌色分段开关「绿涨 | 红涨」、「刷新」、「+ 添加」（打开全局搜索的添加模式，Enter = 加入自选，见 §5.4）。
+- 顶部：`自选 · 上次同步`；右侧「上次复盘 N 天前」链到 `/review`、「周期 · 1周 1月 1年」（点开选择显示的涨跌周期）、「公式列」（可写用户可见，点开 `ColumnsDialog` 增删改排总览自定义公式列，最多 6 列，含实时语法校验与常用示例）、涨跌色分段开关「绿涨 | 红涨」、「刷新」、「+ 添加」（打开全局搜索的添加模式，Enter = 加入自选，见 §5.4）。
 - **待确认的警报**：viewer 有草稿警报（agent 经 MCP 建的对全部自选的警报，§2.5）时，标题行上方多一块卡片，每条一行：名字、范围和定义、「确认」「丢弃」。没有草稿时不出现。
-- **一张表格**，`table-layout: fixed` + `<colgroup>`，分组做 subheader 行，所以「价格」列在每个分组里的 x 坐标一致。名称列吃剩余宽度并 truncate（title 显全名）；其余列固定：价格 112、每个涨跌周期 72、距高点 96、警报 220、两年 200、菜单 28。
+- **一张表格**，`table-layout: fixed` + `<colgroup>`，分组做 subheader 行，所以「价格」列在每个分组里的 x 坐标一致。名称列吃剩余宽度并 truncate（title 显全名）；其余列固定：价格 112、每个涨跌周期 72、每个自定义公式列 84（等宽数字 `font-mono tabular-nums`，`pct` 按涨跌配色直接加 `%` 后缀，`ratio` 形如 `2.35x`，`number` 自适应小数，缺失显示 `—`；表头悬停显示「周期 · 公式原文」，点击三态排序且 `null` 排在末尾）、距高点 96、警报 220、两年 200、菜单 28。访客能看到 owner 配置的公式列并点击排序，不能修改。
 - **距高点**一列合并了原来的「距高点」和「52 周」两列：上面是距历史最高收盘的跌幅（`ddAth`，按它排序），下面是 52 周区间位置的短条（`pos52`，最左 52 周低点、最右高点）。
 - **表头悬浮说明**：名称、价格、各涨跌周期（相对哪天的收盘）、距高点（两部分各是什么）、两年都有 `title`，有说明的表头文字带虚下划线；可排序的在说明后面接排序提示。
 - **分组（分区）**：标题行是「拖动手柄 · 折叠箭头 + 组名 + 数量 · ⋯」。折叠状态是界面偏好，存 localStorage（`hebi8:watchlist:collapsed`，组名列表，和图表页的自选面板共用）。「⋯」：重命名 / 删除分组（照 TV 删除分区：组里的标的并入上面那组，第一组并入下面那组；唯一的组里还有标的时不能删）。列表末尾「+ 新建分组」内联输入。每个组的显示名都不重复，它也是编辑时认组的身份（`watchlist.ts` 的 `groupNames`，读 yaml 和改 yaml 用同一个）：写了 `name` 的用它，没写的按位置叫「组 N」，被前面的组或任何一个写出来的名字占了就加「 (2)」「 (3)」（yaml 里两个组写了同一个名字也这样分开）。一次编辑之后，哪个组按新位置再读会换名字（没写名字的组挪了位置、改名腾出了别人的名字），就先把它原来的显示名写进 yaml，免得名字跟着位置变，页面指错组。
@@ -696,7 +702,7 @@ D 原样；**3D** 见下；W 周一起算；M 月初；**Q 季初**（`Date.UTC(
 - **点徽标**打开和图表上同一个警报对话框（§5.2）编辑，对话框里也能删除；行菜单「添加警报…」新建，商品默认是这一行，可切到「全部自选」。保存后同一个响应里重新渲染总览。
 - **报价**：价格来自报价的行（`withQuote` 采用了报价，§2.6，和图表、警报同一个价），价格是报价价，涨跌幅等按它现算；价格下面一行（窄屏是价格左边）是小号灰字「盘中 · 3 分钟前」，时段用状态条的叫法（盘中 / 盘前 / 盘后 / 休市，加密是 24h），只在报价还是当前的时候标，过了只写「3 小时前」；时间总是报价取到多久前。休市（`closed`）只写「休市」不带时间（收盘价不会变旧，时间留在悬停里）。悬停 title 补充取价频率（开盘和加密每 5 分钟、其余时段每小时）。合成标的按操作数的报价现算，只写多久前（最旧的那个操作数报价），不标时段。价格来自日线的行不标（`data:` 标的，或者日线同步刚跑完、下一轮报价还没到）。
 - 显示名：yaml `name` > 内置字典中文名 > 数据源名（超过 24 字符 truncate，hover 显全名）。
-- ≤768px 隐藏 sparkline，徽标 `whitespace-nowrap`；≤640px 改为列表：第一行 名称 + 报价标签 + 价格，第二行 所选涨跌周期，第三行 徽标（徽标是按钮，放在卡片链接外面）；外层 `overflow-x-auto` 兜底，不允许横向溢出。
+- ≤768px 隐藏 sparkline，徽标 `whitespace-nowrap`；≤640px 改为列表：第一行 名称 + 报价标签 + 价格，第二行 所选涨跌周期，有公式列时加一行紧凑键值，最后一行 徽标（徽标是按钮，放在卡片链接外面）；外层 `overflow-x-auto` 兜底，不允许横向溢出。
 - 页面上不提示 yaml 的路径：共用实例的其他人和访客改不了服务器上的文件，怎么手改 yaml 写在 [usage.md](usage.md) 和 [self-hosting.md](self-hosting.md#vault)。
 - 同步错误显示在该行；库为空时显示「首次拉取中…」并轮询。
 
@@ -1130,13 +1136,13 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 - `/api/github/login`（GET，跳到 GitHub 的授权页）、`/api/github/callback`（GET，GitHub 跳回来，建会话）、`/api/github/device`（POST 开始 device flow / DELETE 取消）、`/api/github/device/poll`（POST）、`/api/github/logout`（POST）、`/api/github/issues`（GET 最近反馈 / POST 提交）：§5.8，唯一会碰 GitHub 网络的接口（`login` 自己不联网，只是重定向），都是打开反馈页签或用户动作触发。
 - `/api/github/claim`（POST 生成「在其他设备上登录」的一次性链接和二维码 / DELETE 作废）、`/api/github/claim/redeem`（POST，确认页的表单，建会话）：§5.8，不联网。
 
-**Server Actions（写）**：`refresh()`、`addSymbol({ key, group, name?, bench?, alias? })`、`loadSymbol(key)`（只拉缓存，§2.3）、`editWatchlist(op)`（`op` 是 `removeSymbol { key }`、`moveSymbol { key, group, index }`（index 不算被移动的那个，超出范围取边界）、`moveGroup { name, index }`、`addGroup { name }`、`renameGroup { name, next }`、`deleteGroup { name }`（标的并入相邻组）之一，规则见 §5.1）、`renameSymbol(key, name)`、`setBench(key, bench | null)`、`saveNote(key, body)`、`saveJournal(week, body)`、`saveIndicator(def)` / `deleteIndicator(id)`、`saveAlert({ id?, key | null, cond, value? | when + tf?, trigger, label?, notify? })` / `deleteAlert(id)` / `setAlertEnabled(id, enabled)`、`editChartState(key, change)`（画线和对比，一次一个改动，§5.2）、`setChartPrefs(partial)`、`setPeriods(list)`、`setUpdown(mode)`、`setUsageLimits({ visitors, limited })`（owner，§1.7）、`translateProfile(key)`（把简介翻成中文并存进缓存，返回原文和译文 `{ source, text }`，§2.8）；`src/app/tv-actions.ts` 里的 `importTvList({ text, fallback, mode })`、`listTvLayouts({ sessionid, sign })`、`previewTvDrawings(来源)`、`importTvDrawings({ drawings, add })`（§5.5，`listTvLayouts` 和 `previewTvDrawings` 是仅有的带用户 TradingView cookie 访问外网的地方：`/my-charts/`；`/markets/`、`/chart-token`、charts-storage）。Server Action 在客户端是**串行派发**的，自动保存靠去抖合并，不并行发。
+**Server Actions（写）**：`refresh()`、`addSymbol({ key, group, name?, bench?, alias? })`、`loadSymbol(key)`（只拉缓存，§2.3）、`editWatchlist(op)`（`op` 是 `removeSymbol { key }`、`moveSymbol { key, group, index }`（index 不算被移动的那个，超出范围取边界）、`moveGroup { name, index }`、`addGroup { name }`、`renameGroup { name, next }`、`deleteGroup { name }`（标的并入相邻组）之一，规则见 §5.1）、`renameSymbol(key, name)`、`setBench(key, bench | null)`、`saveNote(key, body)`、`saveJournal(week, body)`、`saveIndicator(def)` / `deleteIndicator(id)`、`saveColumn(input)` / `deleteColumn(id)` / `reorderColumns(ids)`、`saveAlert({ id?, key | null, cond, value? | when + tf?, trigger, label?, notify? })` / `deleteAlert(id)` / `setAlertEnabled(id, enabled)`、`editChartState(key, change)`（画线和对比，一次一个改动，§5.2）、`setChartPrefs(partial)`、`setPeriods(list)`、`setUpdown(mode)`、`setUsageLimits({ visitors, limited })`（owner，§1.7）、`translateProfile(key)`（把简介翻成中文并存进缓存，返回原文和译文 `{ source, text }`，§2.8）；`src/app/tv-actions.ts` 里的 `importTvList({ text, fallback, mode })`、`listTvLayouts({ sessionid, sign })`、`previewTvDrawings(来源)`、`importTvDrawings({ drawings, add })`（§5.5，`listTvLayouts` 和 `previewTvDrawings` 是仅有的带用户 TradingView cookie 访问外网的地方：`/my-charts/`；`/markets/`、`/chart-token`、charts-storage）。Server Action 在客户端是**串行派发**的，自动保存靠去抖合并，不并行发。
 
 `saveAlert` 的入参还有 `check?`、`enabled?`，以及撤销删除时把草稿和来源放回去用的 `draft?`、`by?`；`confirmAlert(id)` 确认一条草稿（§2.5）。设置页的令牌在 `src/app/token-actions.ts`：`createAgentToken({ name, write })`（返回值里带一次明文）、`revokeAgentToken(id)`（§5.5）。
 
 所有写入校验输入；文件路径只能落在 vault 内（fileKey 已保证无 `/`、`..`）；写入原子。
 
-**操作层**（`src/lib/ops.ts`）：页面和 agent 都能做的写操作只有一份实现，入参是 viewer：`addSymbol`、`editWatchlist`（MCP 的 `remove_symbol` 用它的 `removeSymbol`）、`saveAlert`、`deleteAlert`、`setAlertEnabled`、`confirmAlert`、`saveIndicator`、`deleteIndicator`，以及只给 agent 的 `appendNote`、`appendJournal`。对应的 Server Action 是薄壳（取 viewer、`requireWriter`、`revalidatePath`、包成 `ActionResult`），MCP 工具是另一层薄壳；校验和报错（中文，抛出）都在操作层，两边看到的一样。`saveAlert` 和 `setAlertEnabled` 多一个参数说明是谁在改（`page` / `agent`），§2.5 的草稿规则就在这里。只有页面用的操作（标的改名和基准、图表偏好、画线、整篇保存笔记和日志、TV 导入）留在 action 里。
+**操作层**（`src/lib/ops.ts`）：页面和 agent 都能做的写操作只有一份实现，入参是 viewer：`addSymbol`、`editWatchlist`（MCP 的 `remove_symbol` 用它的 `removeSymbol`）、`saveAlert`、`deleteAlert`、`setAlertEnabled`、`confirmAlert`、`saveIndicator`、`deleteIndicator`、`saveColumn`、`deleteColumn`、`reorderColumns`，以及只给 agent 的 `appendNote`、`appendJournal`。对应的 Server Action 是薄壳（取 viewer、`requireWriter`、`revalidatePath`、包成 `ActionResult`），MCP 工具是另一层薄壳；校验和报错（中文，抛出）都在操作层，两边看到的一样。`saveAlert` 和 `setAlertEnabled` 多一个参数说明是谁在改（`page` / `agent`），§2.5 的草稿规则就在这里。只有页面用的操作（标的改名和基准、图表偏好、画线、整篇保存笔记和日志、TV 导入）留在 action 里。
 
 **MCP 入口 `/mcp`**（`src/app/mcp/route.ts` → `src/lib/mcp/server.ts`，工具在 `src/lib/mcp/tools.ts`）：给 agent 用的唯一入口，也是唯一的非浏览器写入口。
 
@@ -1152,7 +1158,7 @@ fork：建自己的公开 App（同样的权限、开 Device Flow、装在自己
 
 | 工具 | 读 / 写 | 作用 |
 |---|---|---|
-| `overview` | 读 | 分组和每个标的：key、别名、名字、基准、最新价（有报价用报价，带时段）、1W…5Y 涨跌、距高点、52 周位置、在它上面成立或本周触发的警报、同步错误；上次和下次同步时间；待确认的草稿数 |
+| `overview` | 读 | 分组和每个标的：key、别名、名字、基准、最新价（有报价用报价，带时段）、1W…5Y 涨跌、距高点、52 周位置、配置了 `columns` 时的自定义公式列数值（顶层同时附带列定义元数据）、在它上面成立或本周触发的警报、同步错误；上次和下次同步时间；待确认的草稿数 |
 | `get_bars` | 读 | 一个标的某周期（D / 3D / W / M / Q / Y）的 OHLCV，最新的 `limit` 根（默认 200，最多 1000），带今天未收盘的那根（`last_daily_bar.closed` 说明这根的交易日结束没有，和日线收盘警报同一个判断：`bars.ts` 的 `barClosed`，合成标的看各操作数用到的那根） |
 | `get_profile` | 读 | 一个标的是什么（§2.8）：缓存里的元数据（类型、交易所、币种、时区、时段）、存下的事实（简介、板块、行业、国家、员工、网站、股本、EPS、每股分红、下次财报日；基金的发行商、类别、费率、规模、前十大持仓、行业分布）、用实际成交的最新价现算的市值 / 市盈率 / 股息率（带 `price`；`prices: total` 下它和 `get_bars` 的收盘可以不一样）、已有的中文译文（`description_zh`）、相关链接（`links`：`{ name, url }`，现算的，不保证此刻还打得开）和资料的取得时间；合成标的返回它的操作数。只读缓存，没取过资料的返回缓存里有的 |
 | `scan` | 读 | 一条公式（布尔或数值）× 一批标的（默认全部自选，可给 `group` 或 `keys`）：每个标的最后一根和上一根的值、是否成立（`holds`）、出错原因；`only_true` 只留成立的和出错的。求值和警报是同一个函数（`conditions.ts` 的 `runFormula`：同样的周期 K 线、同样对齐的引用），成立与否也和警报同一个（`holds`）：没有值（NaN）不算，其余非 0 为真，无穷大（除以 0）也是值、为真，返回里写成字符串 `"Infinity"` / `"-Infinity"`（JSON 放不了），没有值是 `null`。`check` 选带今日未收盘 K 线（`price`，默认）还是只看 `tf` 已收盘 K 线（`close`），和警报的判断时机对应 |

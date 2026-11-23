@@ -4,12 +4,13 @@
  * the tools in `src/lib/mcp/tools.ts` are thin shells around them, and both refuse a viewer that
  * may not write before calling in. Errors are thrown with the message the person reads.
  */
-import { isMap, isScalar, isSeq, type Document, type YAMLMap } from "yaml";
+import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { compile } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
 import { defaultCheck, type AlertCheck, type AlertCond, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { adoptConditionState, alertIndex, editAlerts, forgetAlerts, runAlerts, serializeAlerts, setAlertsEnabled } from "./alerts";
-import { aliasOf, findItem, parseAlert, resolveKey, type FormulaDef } from "./config";
+import { COLUMN_ID, MAX_COLUMNS, isColumnFormat, newColumnId, type ColumnDef, type ColumnFormat } from "./columns";
+import { aliasOf, findItem, parseAlert, parseColumn, resolveKey, type FormulaDef } from "./config";
 import { liveReader } from "./quotes";
 import { isCJK } from "./search";
 import { isTimeframe, isValidKey, type Timeframe } from "./symbols";
@@ -159,6 +160,122 @@ export function deleteIndicator({ dir }: Viewer, id: string): void {
       const i = enabled.items.findIndex((item) => (isScalar(item) ? item.value : item) === target);
       if (i >= 0) enabled.delete(i);
     }
+  });
+}
+
+// ---------------------------------------------------------------------------- overview columns
+
+export interface ColumnInput {
+  /** Existing column id when editing, or an explicit id when creating; omitted generates a unique id */
+  id?: string;
+  label: string;
+  formula: string;
+  tf?: Timeframe;
+  format?: ColumnFormat;
+}
+
+function columnIndex(doc: Document, id: string): number {
+  const seq = doc.get("columns");
+  if (!isSeq(seq)) return -1;
+  return seq.items.findIndex((item, i) => {
+    try {
+      return parseColumn(isMap(item) ? item.toJSON() : item, i).id === id;
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Create or edit an overview formula column in the viewer's yaml, keeping comments and order. */
+export function saveColumn({ dir }: Viewer, input: ColumnInput): ColumnDef {
+  const label = str(input.label);
+  const formula = str(input.formula);
+  const tf = input.tf ?? "D";
+  const format = input.format ?? "number";
+  if (!label) throw new Error("请填写列标题");
+  if (label.length > 40) throw new Error("列标题最多 40 个字符");
+  if (!formula) throw new Error("公式为空");
+  if (!isTimeframe(tf)) throw new Error("无效的周期");
+  if (!isColumnFormat(format)) throw new Error("无效的展示格式");
+  const rawId = str(input.id);
+  if (rawId && !COLUMN_ID.test(rawId)) throw new Error("id 只能用字母、数字、下划线、横线");
+
+  let saved: ColumnDef | null = null;
+  updateConfig(dir, (doc, current) => {
+    try {
+      compile(formula, { aliases: current.aliases });
+    } catch (err) {
+      throw new Error(describeError(err));
+    }
+    let columns = doc.get("columns");
+    if (!isSeq(columns)) {
+      columns = doc.createNode([]);
+      doc.set("columns", columns);
+    }
+    const seq = columns as YAMLSeq;
+    seq.flow = false;
+    const index = rawId ? columnIndex(doc, rawId) : -1;
+    if (index >= 0) {
+      const node = seq.items[index];
+      if (isMap(node)) {
+        setField(doc, node, "label", label);
+        setField(doc, node, "formula", formula);
+        setField(doc, node, "tf", tf);
+        setField(doc, node, "format", format);
+        saved = parseColumn(node.toJSON(), index);
+      } else {
+        const entry: ColumnDef = { id: rawId, label, formula, tf, format };
+        seq.items[index] = flowNode(doc, entry);
+        saved = entry;
+      }
+      return;
+    }
+    if (current.columns.length >= MAX_COLUMNS) throw new Error(`最多保留 ${MAX_COLUMNS} 个公式列`);
+    const id = rawId || newColumnId(current.columns.map((c) => c.id));
+    const entry: ColumnDef = { id, label, formula, tf, format };
+    seq.add(flowNode(doc, entry));
+    saved = entry;
+  });
+  return saved!;
+}
+
+export function deleteColumn({ dir }: Viewer, id: string): void {
+  const target = str(id);
+  if (!target) return;
+  updateConfig(dir, (doc) => {
+    const seq = doc.get("columns");
+    if (!isSeq(seq)) return;
+    const index = columnIndex(doc, target);
+    if (index >= 0) seq.delete(index);
+  });
+}
+
+export function reorderColumns({ dir }: Viewer, ids: string[]): void {
+  const order = (Array.isArray(ids) ? ids : []).map(str).filter(Boolean);
+  updateConfig(dir, (doc) => {
+    const seq = doc.get("columns");
+    if (!isSeq(seq) || seq.items.length < 2) return;
+    const entries = seq.items.map((node, i) => {
+      try {
+        return { id: parseColumn(isMap(node) ? node.toJSON() : node, i).id, node };
+      } catch {
+        return { id: null, node };
+      }
+    });
+    const byId = new Map(entries.filter((e): e is { id: string; node: unknown } => e.id !== null).map((e) => [e.id, e.node]));
+    const next: unknown[] = [];
+    const placed = new Set<unknown>();
+    for (const id of order) {
+      const node = byId.get(id);
+      if (node && !placed.has(node)) {
+        placed.add(node);
+        next.push(node);
+      }
+    }
+    for (const { node } of entries) {
+      if (!placed.has(node)) next.push(node);
+    }
+    seq.items = next;
   });
 }
 

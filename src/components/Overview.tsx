@@ -6,14 +6,16 @@ import { useCallback, useEffect, useState, useTransition } from "react";
 import { confirmAlert, deleteAlert, refresh, renameSymbol, setBench, setPeriods, setUpdown } from "@/app/actions";
 import type { AlertBadge, AlertView } from "@/lib/alert-view";
 import type { SymbolStatus } from "@/lib/api-types";
+import { columnSortKey, nextSort, sortOverviewRows, type OverviewSort, type OverviewSortKey } from "@/lib/columns";
 import type { UpDown } from "@/lib/config";
-import { SESSION_LABELS, changeColor, fmtAgo, fmtPct, fmtPrice } from "@/lib/format";
+import { SESSION_LABELS, changeColor, fmtAgo, fmtColumnValue, fmtPct, fmtPrice } from "@/lib/format";
 import { CHANGE_PERIODS, MAX_PERIODS, type ChangePeriod } from "@/lib/periods";
 import { pricePrecision, type Stats } from "@/lib/stats";
-import { SOURCE_LABELS, type Source } from "@/lib/symbols";
+import { SOURCE_LABELS, TF_LABELS, type Source } from "@/lib/symbols";
 import { mergeTarget } from "@/lib/watchlist";
 import { AlertDialog } from "./AlertDialog";
 import { AlertBadgeList, AlertLegend } from "./AlertBadges";
+import { ColumnsDialog, type OverviewColumn } from "./ColumnsDialog";
 import { HINT_LABEL, useHeaderHint } from "./HeaderHint";
 import { RowMenu } from "./RowMenu";
 import { Sparkline } from "./Sparkline";
@@ -35,6 +37,8 @@ export interface OverviewRow {
   benchLabel: string | null;
   /** From today's bar built from the quote when `quote` is set */
   stats: Stats | null;
+  /** Latest values of configured custom formula columns, by column id */
+  columns: Record<string, number | null>;
   /** The quote the price comes from (newer than the daily sync); its session is set while it is current */
   quote: SymbolStatus | null;
   syncError: string | null;
@@ -45,6 +49,8 @@ export interface OverviewRow {
 export interface OverviewData {
   groups: { name: string; items: OverviewRow[] }[];
   periods: ChangePeriod[];
+  /** Custom formula columns configured in `hebi8.yaml` */
+  columns: OverviewColumn[];
   updown: UpDown;
   /** Every alert of the viewer's vault, for the dialog (none for a visitor) */
   alerts: AlertView[];
@@ -58,35 +64,12 @@ export interface OverviewData {
   readOnly: boolean;
 }
 
-type SortKey = "last" | "ddAth" | ChangePeriod;
-type Sort = { key: SortKey; dir: 1 | -1 } | null;
-
-function sortValue(row: OverviewRow, key: SortKey): number | null {
-  const s = row.stats;
-  if (!s) return null;
-  if (key === "last") return s.last;
-  if (key === "ddAth") return s.ddAth;
-  return s.changes[key];
-}
-
-function sortRows(rows: OverviewRow[], sort: Sort): OverviewRow[] {
-  if (!sort) return rows;
-  return [...rows].sort((a, b) => {
-    const va = sortValue(a, sort.key);
-    const vb = sortValue(b, sort.key);
-    if (va === null && vb === null) return 0;
-    if (va === null) return 1;
-    if (vb === null) return -1;
-    return (va - vb) * sort.dir;
-  });
-}
-
 /**
  * Column widths shared by every group, so the price column sits at the same x everywhere. The name
  * takes what is left (at least 140px) and the alerts as much as their badges need: up to two side by
  * side, one below 900px. The sparkline only fits from xl (1280px) up; below md the table becomes a list.
  */
-const COL = { price: 112, period: 72, high: 96, menu: 28 }; // spark 200 comes from a CSS variable
+const COL = { price: 112, period: 72, formula: 84, high: 96, menu: 28 }; // spark 200 comes from a CSS variable
 
 /** What each change column is measured against (stats.ts: the close on or before that day). */
 const SINCE: Record<ChangePeriod, string> = {
@@ -161,15 +144,17 @@ function Th({
   sort,
   onSort,
   width,
+  error = false,
   className = "",
 }: {
   label: string;
   /** What the column means, in the header's hover card */
   hint: string;
-  sortKey?: SortKey;
-  sort: Sort;
-  onSort: (key: SortKey) => void;
+  sortKey?: OverviewSortKey;
+  sort: OverviewSort;
+  onSort: (key: OverviewSortKey) => void;
   width?: number;
+  error?: boolean;
   className?: string;
 }) {
   const active = sortKey !== undefined && sort?.key === sortKey;
@@ -182,15 +167,15 @@ function Th({
     </>,
   );
   return (
-    <th {...card.hover} style={width ? { width } : undefined} aria-sort={sorted} className={`p-0 text-[11px] font-normal text-muted ${className}`}>
+    <th {...card.hover} style={width ? { width } : undefined} aria-sort={sorted} className={`p-0 text-[11px] font-normal ${error ? "text-down" : "text-muted"} ${className}`}>
       {sortKey ? (
         <button
           {...card.trigger}
           onClick={() => onSort(sortKey)}
           className={`flex h-7 w-full items-center gap-1 px-2 hover:text-fg ${className.includes("text-right") ? "justify-end" : ""} ${active ? "text-fg" : ""}`}
         >
-          <span className={HINT_LABEL}>{label}</span>
-          <span className="w-2 text-[9px]">{active ? (sort.dir < 0 ? "▼" : "▲") : ""}</span>
+          <span className={`${HINT_LABEL} truncate`}>{label}</span>
+          <span className="w-2 shrink-0 text-[9px]">{active ? (sort.dir < 0 ? "▼" : "▲") : ""}</span>
         </button>
       ) : (
         <span tabIndex={0} {...card.trigger} className="flex h-7 cursor-help items-center px-2">
@@ -208,8 +193,9 @@ export function Overview({ data }: { data: OverviewData }) {
   const readOnly = data.readOnly;
   const [, startTransition] = useTransition();
   const [refreshing, setRefreshing] = useState(false);
-  const [sort, setSort] = useState<Sort>(null);
+  const [sort, setSort] = useState<OverviewSort>(null);
   const [choosingPeriods, setChoosingPeriods] = useState(false);
+  const [editingColumns, setEditingColumns] = useState(false);
   const [periods, setPeriodsState] = useState(data.periods);
   const [updown, setUpdownState] = useState(data.updown);
   const [message, setMessage] = useState<string | null>(null);
@@ -217,7 +203,8 @@ export function Overview({ data }: { data: OverviewData }) {
   const closeMenu = useCallback(() => setMenuFor(null), []);
   const [alertTarget, setAlertTarget] = useState<AlertTarget | null>(null);
   const openAlert = (row: OverviewRow, id: string) => setAlertTarget({ row, alert: data.alerts.find((a) => a.id === id) ?? null });
-  const wl = useWatchlist(data.groups, { readOnly, sorted: sort !== null });
+  const activeSort = sort && sort.key.startsWith("col:") && !data.columns.some((c) => columnSortKey(c.id) === sort.key) ? null : sort;
+  const wl = useWatchlist(data.groups, { readOnly, sorted: activeSort !== null });
   // an agent's alerts waiting to be confirmed (§2.5): no badge shows them, so they are listed above the table
   const drafts = data.alerts.filter((a) => a.draft);
 
@@ -241,7 +228,7 @@ export function Overview({ data }: { data: OverviewData }) {
       } else setMessage(result.error ?? "操作失败");
     });
 
-  const onSort = (key: SortKey) => setSort((s) => (s?.key !== key ? { key, dir: -1 } : s.dir === -1 ? { key, dir: 1 } : null));
+  const onSort = (key: OverviewSortKey) => setSort((s) => nextSort(s, key));
 
   const changeUpdown = (next: UpDown) => {
     if (next === updown) return;
@@ -259,7 +246,7 @@ export function Overview({ data }: { data: OverviewData }) {
   const shownPeriods = CHANGE_PERIODS.filter((p) => periods.includes(p.key));
   const groups = wl.groups;
   const groupNames = groups.map((g) => g.name);
-  const colCount = 6 + shownPeriods.length;
+  const colCount = 6 + shownPeriods.length + data.columns.length;
 
   const menu = (row: OverviewRow, group: string) =>
     menuFor?.key === row.key && (
@@ -364,6 +351,11 @@ export function Overview({ data }: { data: OverviewData }) {
           <button onClick={() => setChoosingPeriods((v) => !v)} aria-pressed={choosingPeriods} className="btn" title="选择显示的涨跌周期">
             周期 · {shownPeriods.map((p) => p.label).join(" ")}
           </button>
+          {!readOnly && (
+            <button onClick={() => setEditingColumns(true)} aria-pressed={editingColumns} className="btn" title="管理总览的自定义公式列">
+              {data.columns.length > 0 ? `公式列 · ${data.columns.length}` : "公式列"}
+            </button>
+          )}
           <div className="seg" role="group" aria-label="涨跌颜色">
             <button onClick={() => changeUpdown("green-up")} aria-pressed={updown === "green-up"}>
               绿涨
@@ -412,7 +404,7 @@ export function Overview({ data }: { data: OverviewData }) {
           还没有自选。点「+ 添加」，或按 <kbd className="rounded border border-line px-1 font-mono">/</kbd> 搜索后点结果行上的 +。
         </p>
       )}
-      {sort && !readOnly && <p className="mb-2 text-[11px] text-muted">按列排序时不能拖动；再点表头直到恢复默认顺序，就可以拖动调整了。</p>}
+      {activeSort && !readOnly && <p className="mb-2 text-[11px] text-muted">按列排序时不能拖动；再点表头直到恢复默认顺序，就可以拖动调整了。</p>}
 
       <div className="overflow-x-auto">
         <table className="hidden w-full border-separate border-spacing-0 text-xs md:table">
@@ -422,6 +414,9 @@ export function Overview({ data }: { data: OverviewData }) {
             {shownPeriods.map((p) => (
               <col key={p.key} style={{ width: COL.period }} />
             ))}
+            {data.columns.map((c) => (
+              <col key={c.id} style={{ width: COL.formula }} />
+            ))}
             <col style={{ width: COL.high }} />
             {/* as narrow as the badges allow */}
             <col style={{ width: 1 }} />
@@ -430,16 +425,28 @@ export function Overview({ data }: { data: OverviewData }) {
           </colgroup>
           <thead>
             <tr className="text-left">
-              <Th label="名称" hint={readOnly ? HINTS.name.split("。")[0] : HINTS.name} sort={sort} onSort={onSort} />
-              <Th label="价格" hint={HINTS.last} sortKey="last" sort={sort} onSort={onSort} className="text-right" />
+              <Th label="名称" hint={readOnly ? HINTS.name.split("。")[0] : HINTS.name} sort={activeSort} onSort={onSort} />
+              <Th label="价格" hint={HINTS.last} sortKey="last" sort={activeSort} onSort={onSort} className="text-right" />
               {shownPeriods.map((p) => (
-                <Th key={p.key} label={p.label} hint={`${p.label}涨跌：最新价相对 ${SINCE[p.key]}收盘的涨跌幅`} sortKey={p.key} sort={sort} onSort={onSort} className="text-right" />
+                <Th key={p.key} label={p.label} hint={`${p.label}涨跌：最新价相对 ${SINCE[p.key]}收盘的涨跌幅`} sortKey={p.key} sort={activeSort} onSort={onSort} className="text-right" />
               ))}
-              <Th label="距高点" hint={HINTS.high} sortKey="ddAth" sort={sort} onSort={onSort} className="text-right" />
+              {data.columns.map((c) => (
+                <Th
+                  key={c.id}
+                  label={c.label}
+                  hint={c.error ? `${TF_LABELS[c.tf]}线 · ${c.formula}\n公式错误：${c.error}` : `${TF_LABELS[c.tf]}线 · ${c.formula}`}
+                  sortKey={columnSortKey(c.id)}
+                  sort={activeSort}
+                  onSort={onSort}
+                  error={Boolean(c.error)}
+                  className="text-right"
+                />
+              ))}
+              <Th label="距高点" hint={HINTS.high} sortKey="ddAth" sort={activeSort} onSort={onSort} className="text-right" />
               <th className="min-w-16 p-0 text-[11px] font-normal text-muted">
                 <AlertLegend readOnly={readOnly} />
               </th>
-              <Th label="两年" hint={HINTS.spark} sort={sort} onSort={onSort} className="wide-col" />
+              <Th label="两年" hint={HINTS.spark} sort={activeSort} onSort={onSort} className="wide-col" />
               <th />
             </tr>
           </thead>
@@ -450,9 +457,10 @@ export function Overview({ data }: { data: OverviewData }) {
                 group={group}
                 head={groupHead(group)}
                 open={!wl.collapsed.includes(group.name)}
-                sort={sort}
+                sort={activeSort}
                 colCount={colCount}
                 shownPeriods={shownPeriods}
+                columns={data.columns}
                 openAlert={openAlert}
                 menuFor={menuFor}
                 setMenuFor={setMenuFor}
@@ -464,7 +472,7 @@ export function Overview({ data }: { data: OverviewData }) {
         </table>
       </div>
 
-      {/* Narrow screens: one card per symbol, three lines. */}
+      {/* Narrow screens: one card per symbol, compact lines. */}
       <div className="md:hidden" {...wl.drag.rootProps}>
         {groups.map((group) => {
           const open = !wl.collapsed.includes(group.name);
@@ -480,7 +488,7 @@ export function Overview({ data }: { data: OverviewData }) {
                       这组还没有标的
                     </li>
                   )}
-                  {sortRows(group.items, sort).map((row) => (
+                  {sortOverviewRows(group.items, activeSort).map((row) => (
                     <li key={row.key} {...rowAttrs(`s:${row.key}`, group.name, wl.drag)} className="relative">
                       <div className="flex items-center">
                       {wl.canDrag && <DragHandle label={row.name} onKeyDown={(e) => wl.drag.onHandleKeyDown(e, { kind: "symbol", key: row.key })} className="ml-1" />}
@@ -500,6 +508,20 @@ export function Overview({ data }: { data: OverviewData }) {
                             </span>
                           ))}
                         </div>
+                        {data.columns.length > 0 && (
+                          <div className="mt-0.5 flex flex-wrap gap-x-3 font-mono text-[11px]">
+                            {data.columns.map((c) => {
+                              const v = row.columns[c.id] ?? null;
+                              const color = c.format === "pct" ? changeColor(v) : v == null ? "text-muted" : "text-fg";
+                              return (
+                                <span key={c.id} className="tabular">
+                                  <span className="text-muted">{c.label}</span>{" "}
+                                  <span className={color}>{fmtColumnValue(v, c.format)}</span>
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
                       </Link>
                       </div>
                       {/* outside the link: a badge is a button */}
@@ -520,6 +542,15 @@ export function Overview({ data }: { data: OverviewData }) {
       <div aria-live="polite" className="sr-only">
         {wl.drag.announcement}
       </div>
+      {editingColumns && !readOnly && (
+        <ColumnsDialog
+          columns={data.columns}
+          aliases={data.aliases}
+          onSaved={(label, isNew) => toast(isNew ? `已添加公式列「${label}」` : `已保存公式列「${label}」`)}
+          onDeleted={(label) => toast(`已删除公式列「${label}」`)}
+          onClose={() => setEditingColumns(false)}
+        />
+      )}
       {alertTarget && (
         <AlertDialog
           symbolKey={alertTarget.row.key}
@@ -551,6 +582,7 @@ function GroupRows({
   sort,
   colCount,
   shownPeriods,
+  columns,
   openAlert,
   menuFor,
   setMenuFor,
@@ -560,9 +592,10 @@ function GroupRows({
   group: OverviewData["groups"][number];
   head: React.ReactNode;
   open: boolean;
-  sort: Sort;
+  sort: OverviewSort;
   colCount: number;
   shownPeriods: (typeof CHANGE_PERIODS)[number][];
+  columns: OverviewColumn[];
   openAlert: (row: OverviewRow, id: string) => void;
   menuFor: RowMenuAt | null;
   setMenuFor: (menu: RowMenuAt | null) => void;
@@ -586,7 +619,7 @@ function GroupRows({
         </tr>
       )}
       {open &&
-        sortRows(group.items, sort).map((row) => {
+        sortOverviewRows(group.items, sort).map((row) => {
           const s = row.stats;
           const href = chartHref(row.key);
           const menuOpen = menuFor?.key === row.key;
@@ -638,6 +671,19 @@ function GroupRows({
                   {fmtPct(s?.changes[p.key])}
                 </td>
               ))}
+              {columns.map((c) => {
+                const v = row.columns[c.id] ?? null;
+                const color = c.format === "pct" ? changeColor(v) : v == null ? "text-muted" : "text-fg";
+                return (
+                  <td
+                    key={c.id}
+                    className={`font-mono tabular ${cell} text-right ${color}`}
+                    title={v != null ? String(Number(v.toPrecision(8))) : (c.error ?? undefined)}
+                  >
+                    {fmtColumnValue(v, c.format)}
+                  </td>
+                );
+              })}
               <td className={`${cell} text-right`}>
                 <div className={`tabular ${changeColor(s?.ddAth)}`}>{fmtPct(s?.ddAth)}</div>
                 {s?.pos52 != null && <Range52 pos={s.pos52} />}

@@ -1,3 +1,4 @@
+import type { ColumnFormat } from "./columns";
 import type { QuoteSession } from "./sources/types";
 import { pricePrecision } from "./stats";
 
@@ -9,6 +10,29 @@ export function fmtPct(value: number | null | undefined, digits = 1): string {
   if (value == null || !Number.isFinite(value)) return "—";
   const pct = value * 100;
   return `${pct > 0 ? "+" : pct < 0 ? "−" : ""}${Math.abs(pct).toFixed(digits)}%`;
+}
+
+/** Format a custom overview formula column's latest value (`pct` expects percentage points, e.g. `roc()`). */
+export function fmtColumnValue(value: number | null | undefined, format: ColumnFormat): string {
+  if (value == null || !Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  if (format === "pct") {
+    const rounded = Math.round(value * 10) / 10;
+    const sign = rounded > 0 ? "+" : rounded < 0 ? "−" : "";
+    return `${sign}${Math.abs(rounded).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+  }
+  if (format === "ratio") {
+    const digits = abs >= 100 ? 1 : 2;
+    const factor = 10 ** digits;
+    const rounded = Math.round(value * factor) / factor;
+    const sign = rounded < 0 ? "−" : "";
+    return `${sign}${Math.abs(rounded).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}x`;
+  }
+  const digits = abs >= 10000 ? 0 : abs >= 1000 ? 1 : abs === 0 || abs >= 0.01 ? 2 : 4;
+  const factor = 10 ** digits;
+  const rounded = Math.round(value * factor) / factor;
+  const sign = rounded < 0 ? "−" : "";
+  return `${sign}${Math.abs(rounded).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
 
 export function fmtDate(unixSeconds: number): string {

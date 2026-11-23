@@ -8,7 +8,8 @@
 import { compile } from "@/indicators/formula";
 import type { SymbolStatus } from "./api-types";
 import { runAlerts } from "./alerts";
-import { lastInputs, loadDaily, type BarInput } from "./bars";
+import { lastInputs, loadDaily, type BarInput, type DailyReader } from "./bars";
+import { evalColumn, type SeriesCache } from "./conditions";
 import { allItems, findItem, isLive, type Config } from "./config";
 import type { Bar } from "./series";
 import { QUOTE_ROUND_MS, QUOTE_SLOW_MS, quoteIsCurrent, scheduledSession, sessionStartsBetween, tradingDayAt, type TradingCalendar } from "./session";
@@ -43,7 +44,7 @@ interface Intraday {
   l: number;
 }
 
-/** A vault's overview stats, as long as `stamp` (quotes, syncs, prices, the list, aliases) stays the same; `quotedAt` for a row whose price is a quote */
+/** A vault's overview stats, as long as `stamp` (quotes, syncs, prices, list, benches, aliases, columns) stays the same; `quotedAt` for a row whose price is a quote */
 interface OverviewCache {
   stamp: string;
   rows: Record<string, { stats: Stats; quotedAt: number | null }>;
@@ -65,8 +66,9 @@ const state: State = (g.hebi8mQuotes ??= { started: false, seen: new Map(), fail
 const log = (msg: string) => console.log(`[hebi8m] quotes: ${msg}`);
 
 /**
- * The real keys a round asks for: every watched symbol and its benchmark, and what enabled alerts
- * judged on the price read (synthetic ones expanded into their operands). `data:` only has daily bars.
+ * The real keys a round asks for: every watched symbol and its benchmark, cross-symbol references
+ * of overview formula columns, and what enabled alerts judged on the price read (synthetic ones
+ * expanded into their operands). `data:` only has daily bars.
  */
 export function quoteKeys(configs: Config[]): string[] {
   const keys = new Set<string>();
@@ -93,6 +95,13 @@ export function quoteKeys(configs: Config[]): string[] {
         compile(alert.when, { aliases: cfg.aliases, bench: alert.key ? (findItem(cfg, alert.key)?.bench ?? null) : undefined }).refs.forEach(add);
       } catch {
         // a broken formula is reported by the alert itself
+      }
+    }
+    for (const col of cfg.columns) {
+      try {
+        compile(col.formula, { aliases: cfg.aliases }).refs.forEach(add);
+      } catch {
+        // a broken formula is reported on the overview
       }
     }
   }
@@ -322,24 +331,69 @@ function currentSession(quote: QuoteRow | undefined): QuoteSession | null {
  * The overview's stats for every watched row of a vault (§3.4): the one source the overview, the
  * chart's watchlist panel and MCP `overview` read. Computed on the bars the chart and the alerts
  * see, so a row whose price comes from a quote (its own, or for a synthetic row an operand's,
- * wherever `withQuote` takes it) has its changes on today's live bar. Kept in memory per vault for
- * as long as the bars, quotes and syncs (`marketVersion`), `prices`, the list and the aliases stay the same,
+ * wherever `withQuote` takes it) has its changes and custom formula columns on today's live bar.
+ * Kept in memory per vault for as long as the bars, quotes and syncs (`marketVersion` and
+ * referenced symbol versions), `prices`, the list/benches, aliases and `columns` stay the same,
  * and written to the `stats` table when computed; a quote round and a daily sync compute it ahead,
  * so a page view reads no bars. `status` is set for a row whose price is a quote, its session only
  * while the quote is current; a synthetic row has none.
  */
 export function overviewStats(vault: string, cfg: Config, symbols = listSymbols()): Record<string, { stats: Stats; status: SymbolStatus | null }> {
   const quotes = readQuotes();
-  const keys = allItems(cfg).map((i) => i.key);
-  const stamp = JSON.stringify([marketVersion(), cfg.prices, keys, cfg.aliases]);
+  const items = allItems(cfg);
+  const refKeys = new Set<string>();
+  const addRef = (key: string) => {
+    if (!isValidKey(key)) return;
+    try {
+      for (const k of operands(key, cfg.aliases)) refKeys.add(k);
+    } catch {
+      // reported where the symbol is shown
+    }
+  };
+  for (const item of items) {
+    addRef(item.key);
+    if (item.bench) addRef(item.bench);
+  }
+  const brokenCols = new Set<string>();
+  for (const col of cfg.columns) {
+    try {
+      compile(col.formula, { aliases: cfg.aliases }).refs.forEach(addRef);
+    } catch {
+      brokenCols.add(col.id);
+    }
+  }
+  const versions = [...refKeys].sort().map((k) => {
+    const s = symbols[k];
+    const q = quotes[k];
+    return [k, s?.syncedAt ?? null, s?.lastT ?? null, q?.fetchedAt ?? null, q?.price ?? null];
+  });
+  const stamp = JSON.stringify([marketVersion(), cfg.prices, items.map((i) => [i.key, i.bench]), cfg.aliases, cfg.columns, versions]);
   let cache = state.overview.get(vault);
   if (cache?.stamp !== stamp) {
-    const read = liveReader(quotes);
+    const rawRead = liveReader(quotes);
+    const rawDaily = new Map<string, Bar[]>();
+    const read: DailyReader = (k) => {
+      let bars = rawDaily.get(k);
+      if (!bars) {
+        bars = rawRead(k);
+        rawDaily.set(k, bars);
+      }
+      return bars;
+    };
     cache = { stamp, rows: {} };
-    for (const key of keys) {
+    for (const { key } of items) {
       const bars = loadDaily(key, cfg.prices, cfg, read);
       const stats = computeStats(bars, { currency: symbols[key]?.currency ?? null });
-      if (stats) cache.rows[key] = { stats, quotedAt: quotedAt(lastInputs(key, bars, cfg.aliases, read), quotes, (k) => symbols[k]) };
+      if (!stats) continue;
+      if (cfg.columns.length > 0) {
+        const seriesCache: SeriesCache = new Map();
+        const columns: Record<string, number | null> = {};
+        for (const col of cfg.columns) {
+          columns[col.id] = brokenCols.has(col.id) ? null : evalColumn(key, col.formula, col.tf, cfg, seriesCache, read);
+        }
+        stats.columns = columns;
+      }
+      cache.rows[key] = { stats, quotedAt: quotedAt(lastInputs(key, bars, cfg.aliases, read), quotes, (k) => symbols[k]) };
     }
     state.overview.set(vault, cache);
     writeStats(vault, Object.fromEntries(Object.entries(cache.rows).map(([key, row]) => [key, row.stats])));

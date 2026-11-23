@@ -46,6 +46,11 @@ indicators:                    # 公式指标，图表页可开关
   - { id: dev40, label: 均线乖离, pane: sub, formula: "(close / sma(close, 40) - 1) * 100" }
   - { id: vs_bench, label: 对基准比价, pane: sub, formula: "close / close(bench)" }
 
+# columns:                     # 总览自定义公式列（最多 6 列），可在总览顶部「公式列」里增删改排；tf 默认 D，format：number | pct | ratio
+#   - { id: dev200w, label: 距200W, formula: "(close / sma(close, 200) - 1) * 100", tf: W, format: pct }
+#   - { id: rsi_m, label: 月RSI, formula: "rsi(close, 14)", tf: M, format: number }
+#   - { id: vol_r, label: 量比, formula: "volume / sma(volume, 20)", tf: W, format: ratio }
+
 datasets: {}                   # 自定义数据集：名字 → git 地址或本机目录，key 写 data:名字/序列，见 docs/usage.md「自定义数据集」
 #  gpu: https://github.com/you/gpu-prices
 
