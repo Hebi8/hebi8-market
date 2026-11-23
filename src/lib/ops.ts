@@ -4,18 +4,19 @@
  * the tools in `src/lib/mcp/tools.ts` are thin shells around them, and both refuse a viewer that
  * may not write before calling in. Errors are thrown with the message the person reads.
  */
-import { isMap, isScalar, isSeq, type Document, type YAMLMap } from "yaml";
+import { isAlias, isMap, isNode, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { compile } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
 import { defaultCheck, type AlertCheck, type AlertCond, type AlertCondition, type AlertTrigger } from "./alert-conds";
 import { adoptConditionState, alertIndex, editAlerts, forgetAlerts, runAlerts, serializeAlerts, setAlertsEnabled } from "./alerts";
-import { aliasOf, findItem, parseAlert, resolveKey, type FormulaDef } from "./config";
+import { COLUMN_ID, MAX_COLUMNS, RESERVED_COLUMN_IDS, isColumnFormat, newColumnId, type ColumnDef, type ColumnFormat } from "./columns";
+import { aliasOf, findItem, parseAlert, parseColumn, resolveKey, type FormulaDef } from "./config";
 import { liveReader } from "./quotes";
 import { isCJK } from "./search";
 import { isTimeframe, isValidKey, type Timeframe } from "./symbols";
 import { syncOne } from "./sync";
 import { operands } from "./synth";
-import { JOURNAL_TEMPLATE, editGroups, flowNode, groupNode, readConfig, readJournal, readNote, seqOf, setList, updateConfig, writeJournal, writeNote } from "./vault";
+import { JOURNAL_TEMPLATE, editGroups, flowNode, groupNode, own, readConfig, readJournal, readNote, seqOf, setList, unshare, updateConfig, writeJournal, writeNote } from "./vault";
 import type { Viewer } from "./viewer";
 import type { WatchlistOp } from "./watchlist";
 import { isWeekId } from "./week";
@@ -162,6 +163,158 @@ export function deleteIndicator({ dir }: Viewer, id: string): void {
   });
 }
 
+// ---------------------------------------------------------------------------- overview columns
+
+export interface ColumnInput {
+  /** Existing column id when editing; omit to create a new column with an auto-generated unique id */
+  id?: string;
+  label: string;
+  formula: string;
+  tf?: Timeframe;
+  format?: ColumnFormat;
+}
+
+/** Resolve `columns` as its own YAML sequence node (materializing any YAML alias or shared anchor). */
+function ownColumns(doc: Document, create: boolean): YAMLSeq | null {
+  if (!isMap(doc.contents)) {
+    if (!create) return null;
+    const seq = doc.createNode([]) as YAMLSeq;
+    seq.flow = false;
+    doc.set("columns", seq);
+    return seq;
+  }
+  const existing = own(doc, doc.contents, "columns");
+  if (isSeq(existing)) return existing;
+  if (!create) return null;
+  const seq = doc.createNode([]) as YAMLSeq;
+  seq.flow = false;
+  doc.contents.set("columns", seq);
+  return seq;
+}
+
+function columnNodeId(doc: Document, item: unknown, index: number): string | null {
+  const resolved = isAlias(item) ? item.resolve(doc) : item;
+  try {
+    const value = isNode(resolved) ? resolved.toJS(doc) : resolved;
+    return parseColumn(value, index).id;
+  } catch {
+    return null;
+  }
+}
+
+function columnIndex(doc: Document, seq: YAMLSeq, id: string): number {
+  const active = Math.min(seq.items.length, MAX_COLUMNS);
+  for (let i = 0; i < active; i++) {
+    if (columnNodeId(doc, seq.items[i], i) === id) return i;
+  }
+  return -1;
+}
+
+/**
+ * Create (when `id` is omitted) or edit (when `id` is provided) an overview formula column in the
+ * viewer's yaml, keeping comments and order. Editing a column that omitted `id` in yaml persists
+ * its matched id so future edits and sorting stay stable; editing a column that no longer exists
+ * throws instead of resurrecting it.
+ */
+export function saveColumn({ dir }: Viewer, input: ColumnInput): ColumnDef {
+  const label = str(input.label);
+  const formula = str(input.formula);
+  const tf = input.tf ?? "D";
+  const format = input.format ?? "number";
+  if (!label) throw new Error("请填写列标题");
+  if (label.length > 40) throw new Error("列标题最多 40 个字符");
+  if (!formula) throw new Error("公式为空");
+  if (!isTimeframe(tf)) throw new Error("无效的周期");
+  if (!isColumnFormat(format)) throw new Error("无效的展示格式");
+  const isEdit = input.id !== undefined;
+  const rawId = str(input.id);
+  if (isEdit) {
+    if (!rawId || !COLUMN_ID.test(rawId)) throw new Error("id 只能用字母、数字、下划线、横线");
+    if (RESERVED_COLUMN_IDS.has(rawId)) throw new Error(`id「${rawId}」为保留名称，请换一个`);
+  }
+
+  let saved: ColumnDef | null = null;
+  updateConfig(dir, (doc, current) => {
+    try {
+      compile(formula, { aliases: current.aliases });
+    } catch (err) {
+      throw new Error(describeError(err));
+    }
+    if (isEdit) {
+      const seq = ownColumns(doc, false);
+      const index = seq ? columnIndex(doc, seq, rawId) : -1;
+      if (!seq || index < 0) throw new Error("这个公式列已经不在 hebi8.yaml 里了");
+      const node = own(doc, seq, index);
+      if (isMap(node)) {
+        if (!node.has("id")) node.items.unshift(doc.createPair("id", rawId));
+        else if (str((node.toJS(doc) as { id?: unknown }).id) !== rawId) setField(doc, node, "id", rawId);
+        setField(doc, node, "label", label);
+        setField(doc, node, "formula", formula);
+        setField(doc, node, "tf", tf);
+        setField(doc, node, "format", format);
+        saved = parseColumn(node.toJS(doc), index);
+      } else {
+        const entry: ColumnDef = { id: rawId, label, formula, tf, format };
+        seq.items[index] = flowNode(doc, entry);
+        saved = entry;
+      }
+      return;
+    }
+    if (current.columns.length >= MAX_COLUMNS) throw new Error(`最多保留 ${MAX_COLUMNS} 个公式列`);
+    const seq = ownColumns(doc, true)!;
+    seq.flow = false;
+    const id = newColumnId(current.columns.map((c) => c.id));
+    const entry: ColumnDef = { id, label, formula, tf, format };
+    seq.add(flowNode(doc, entry));
+    saved = entry;
+  });
+  return saved!;
+}
+
+export function deleteColumn({ dir }: Viewer, id: string): void {
+  const target = str(id);
+  if (!target) return;
+  updateConfig(dir, (doc) => {
+    const seq = ownColumns(doc, false);
+    if (!seq) return;
+    const index = columnIndex(doc, seq, target);
+    if (index < 0) return;
+    own(doc, seq, index);
+    seq.delete(index);
+  });
+}
+
+export function reorderColumns({ dir }: Viewer, ids: string[]): void {
+  const order = (Array.isArray(ids) ? ids : []).map(str).filter(Boolean);
+  updateConfig(dir, (doc) => {
+    const seq = ownColumns(doc, false);
+    if (!seq) return;
+    const activeCount = Math.min(seq.items.length, MAX_COLUMNS);
+    if (activeCount < 2) return;
+    for (let i = 0; i < activeCount; i++) {
+      const node = seq.items[i];
+      if (isNode(node)) unshare(doc, node);
+    }
+    const head = seq.items.slice(0, activeCount);
+    const tail = seq.items.slice(activeCount);
+    const entries = head.map((node, i) => ({ id: columnNodeId(doc, node, i), node }));
+    const byId = new Map(entries.filter((e): e is { id: string; node: unknown } => e.id !== null).map((e) => [e.id, e.node]));
+    const next: unknown[] = [];
+    const placed = new Set<unknown>();
+    for (const id of order) {
+      const node = byId.get(id);
+      if (node && !placed.has(node)) {
+        placed.add(node);
+        next.push(node);
+      }
+    }
+    for (const { node } of entries) {
+      if (!placed.has(node)) next.push(node);
+    }
+    seq.items = [...next, ...tail];
+  });
+}
+
 // ---------------------------------------------------------------------------- alerts
 
 export interface AlertInput {
@@ -195,15 +348,15 @@ export type AlertOrigin = "page" | "agent";
 
 const AGENT_EDITS_WATCHLIST = "这条对全部自选的警报不是草稿，agent 不能改：不带 id 另存一条新的（会存成草稿），旧的继续生效，用户确认新的之后再删旧的";
 
-/** Set one field of a yaml map; a scalar is changed in place so the comment on its line stays. */
+/** Set one field of a yaml map; unshares anchors/aliases first, and updates a scalar in place to keep its comment. */
 function setField(doc: Document, map: YAMLMap, field: string, value: unknown): void {
-  const old = map.get(field, true);
+  const old = own(doc, map, field);
   if (isScalar(old) && (value === null || typeof value !== "object")) {
     old.value = value;
     return;
   }
   const node = flowNode(doc, value);
-  if (old && typeof old === "object" && "comment" in old) node.comment = old.comment;
+  if (isNode(old)) node.comment = old.comment;
   map.set(field, node);
 }
 

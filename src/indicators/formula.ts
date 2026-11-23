@@ -10,6 +10,9 @@
  * symbol (an alias or a quoted key) aligned to this symbol's bars; `bench` is the configured benchmark.
  */
 
+import { isSynthetic, isValidKey } from "@/lib/symbols";
+import { parseSynth } from "@/lib/synth";
+
 export type Series = number[];
 type Value = Series | number;
 
@@ -644,6 +647,79 @@ class Parser {
   }
 }
 
+const BINARY: Record<ArithOp, (a: number, b: number) => number> = {
+  "+": (a, b) => a + b,
+  "-": (a, b) => a - b,
+  "*": (a, b) => a * b,
+  "/": (a, b) => a / b,
+  "^": (a, b) => a ** b,
+};
+
+const COMPARE: Record<CmpOp, (a: number, b: number) => boolean> = {
+  ">": (a, b) => a > b,
+  "<": (a, b) => a < b,
+  ">=": (a, b) => a >= b,
+  "<=": (a, b) => a <= b,
+  "==": (a, b) => a === b,
+  "!=": (a, b) => a !== b,
+};
+
+const SCALAR_FNS = new Set(["abs", "sqrt", "log", "exp", "max", "min"]);
+
+/** Constant scalar value of an AST node when it cannot depend on any series; null if series-valued. */
+function evalConst(node: Node): number | null {
+  switch (node.kind) {
+    case "num":
+      return node.value;
+    case "neg": {
+      const v = evalConst(node.arg);
+      return v === null ? null : -v;
+    }
+    case "not": {
+      const v = evalConst(node.arg);
+      return v === null ? null : Number.isNaN(v) ? NaN : v !== 0 ? 0 : 1;
+    }
+    case "bin": {
+      const l = evalConst(node.left);
+      const r = evalConst(node.right);
+      return l === null || r === null ? null : BINARY[node.op](l, r);
+    }
+    case "cmp": {
+      const l = evalConst(node.left);
+      const r = evalConst(node.right);
+      return l === null || r === null ? null : Number.isNaN(l) || Number.isNaN(r) ? NaN : COMPARE[node.op](l, r) ? 1 : 0;
+    }
+    case "logic": {
+      const l = evalConst(node.left);
+      const r = evalConst(node.right);
+      if (l === null || r === null) return null;
+      if (Number.isNaN(l) || Number.isNaN(r)) return NaN;
+      return (node.op === "and" ? truthy(l) && truthy(r) : truthy(l) || truthy(r)) ? 1 : 0;
+    }
+    case "call": {
+      if (!SCALAR_FNS.has(node.name)) return null;
+      const args = node.args.map(evalConst);
+      if (args.some((a) => a === null)) return null;
+      const out = FUNCTIONS[node.name].run(args as number[], { len: 0, bars: [] });
+      return typeof out === "number" ? out : null;
+    }
+    case "var":
+    case "ref":
+      return null;
+  }
+}
+
+function checkRefKey(key: string, aliases: Record<string, string> | undefined, pos: number): void {
+  if (!isValidKey(key)) throw new FormulaError(`无效的标的 key「${key}」`, pos);
+  if (isSynthetic(key)) {
+    try {
+      parseSynth(key.slice(1), aliases ?? {});
+    } catch (err) {
+      throw new FormulaError(err instanceof Error ? err.message : String(err), pos);
+    }
+  }
+}
+
 function check(node: Node, known: Set<string>, opts: CompileOptions, refs: Set<string>): string | null {
   let benchKey: string | null = null;
   const resolveBench = (pos: number): string => {
@@ -669,12 +745,13 @@ function check(node: Node, known: Set<string>, opts: CompileOptions, refs: Set<s
         if (!n.quoted && n.target === "bench") {
           n.key = resolveBench(n.pos);
         } else if (n.quoted) {
-          if (!/^[a-z]+:.+/.test(n.target)) throw new FormulaError(`无效的标的 key「${n.target}」`, n.pos);
+          checkRefKey(n.target, opts.aliases, n.pos);
           n.key = n.target;
           refs.add(n.key);
         } else {
-          const key = opts.aliases?.[n.target];
+          const key = opts.aliases && Object.hasOwn(opts.aliases, n.target) ? opts.aliases[n.target] : undefined;
           if (!key) throw new FormulaError(`未知别名「${n.target}」`, n.pos);
+          checkRefKey(key, opts.aliases, n.pos);
           n.key = key;
           refs.add(key);
         }
@@ -694,6 +771,13 @@ function check(node: Node, known: Set<string>, opts: CompileOptions, refs: Set<s
         const [min, max] = typeof fn.arity === "number" ? [fn.arity, fn.arity] : fn.arity;
         if (n.args.length < min || n.args.length > max) throw new FormulaError(`${fn.hint}：参数个数不对`, n.pos);
         n.args.forEach(visit);
+        for (const w of fn.windows ?? []) {
+          if (w >= n.args.length) continue;
+          const v = evalConst(n.args[w]);
+          if (v === null || !Number.isInteger(v) || v < 1) {
+            throw new FormulaError(`${fn.hint}：n 必须是正整数`, n.pos);
+          }
+        }
       }
     }
   };
@@ -728,23 +812,6 @@ function refSeries(refs: Record<string, RefSeries>, key: string, field: Field, l
   const column = refs[key]?.[FIELD_COLUMN[field]];
   return column ? column.map((v) => (v === null ? NaN : v)) : new Array(len).fill(NaN);
 }
-
-const BINARY: Record<ArithOp, (a: number, b: number) => number> = {
-  "+": (a, b) => a + b,
-  "-": (a, b) => a - b,
-  "*": (a, b) => a * b,
-  "/": (a, b) => a / b,
-  "^": (a, b) => a ** b,
-};
-
-const COMPARE: Record<CmpOp, (a: number, b: number) => boolean> = {
-  ">": (a, b) => a > b,
-  "<": (a, b) => a < b,
-  ">=": (a, b) => a >= b,
-  "<=": (a, b) => a <= b,
-  "==": (a, b) => a === b,
-  "!=": (a, b) => a !== b,
-};
 
 /** Evaluate every statement; returns one series per plotted line (NaN where undefined). */
 export function evaluate(program: Program, input: EvalInput): Series[] {

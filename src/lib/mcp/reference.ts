@@ -33,7 +33,7 @@ A formula is evaluated over a whole series of bars of one symbol on one timefram
 
 - Arithmetic \`+ - * / ^\`, parentheses, numbers.
 - Comparisons \`> < >= <= == !=\` and \`and\`, \`or\`, \`not\` give 0/1 series. Precedence: \`not\` > comparison > \`and\` > \`or\`, all below arithmetic.
-- Statements are separated by \`;\` or newlines; \`name = expr\` names a line so later statements can use it; \`#\` starts a comment. A chart indicator plots every statement; a scan, a test and an alert use the last one.
+- Statements are separated by \`;\` or newlines; \`name = expr\` names a line so later statements can use it; \`#\` starts a comment. A chart indicator plots every statement; an overview column, a scan, a test and an alert use the last one.
 - Another symbol: \`close(QQQ)\`, \`high("yahoo:BRK-B")\`. The argument is an alias from the user's yaml or a quoted full key; \`open\`, \`high\`, \`low\`, \`close\` and \`volume\` all take one. The other symbol is aligned to this symbol's trading days and forward filled.
 - \`bench\` (same as \`close(bench)\`) is the benchmark configured for the symbol being evaluated; a symbol without one makes the formula an error on that symbol.
 - Where there are not enough bars yet (the first 199 bars of \`sma(close, 200)\`) the formula has no value.

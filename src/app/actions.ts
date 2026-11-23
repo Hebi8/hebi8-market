@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { isMap, isScalar, type Document, type YAMLMap, type YAMLSeq } from "yaml";
 import { CHART_STYLES, USAGE_LIMITS, parseLineStyles, resolveKey, type ChartPrefs, type LineOverride, type FormulaDef, type UsageLimits } from "@/lib/config";
 import * as ops from "@/lib/ops";
-import type { AddSymbolInput, AlertInput } from "@/lib/ops";
+import type { AddSymbolInput, AlertInput, ColumnInput } from "@/lib/ops";
 import { CHANGE_PERIODS, MAX_PERIODS } from "@/lib/periods";
 import type { Translation } from "@/lib/profile";
 import { translateDescription } from "@/lib/profiles";
@@ -166,6 +166,20 @@ export async function saveIndicator(def: FormulaDef): Promise<ActionResult> {
 
 export async function deleteIndicator(id: string): Promise<ActionResult> {
   return attempt((viewer) => ops.deleteIndicator(viewer, id));
+}
+
+export async function saveColumn(input: ColumnInput): Promise<ActionResult> {
+  return attempt((viewer) => {
+    ops.saveColumn(viewer, input);
+  });
+}
+
+export async function deleteColumn(id: string): Promise<ActionResult> {
+  return attempt((viewer) => ops.deleteColumn(viewer, id));
+}
+
+export async function reorderColumns(ids: string[]): Promise<ActionResult> {
+  return attempt((viewer) => ops.reorderColumns(viewer, ids));
 }
 
 /**

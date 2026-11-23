@@ -102,3 +102,22 @@ export function evalRule(
     return { now: null, prev: null, error: describeError(err) };
   }
 }
+
+/** One numeric formula on the last bar of `tf`, as an overview column shows it; null when missing, non-finite or errored. */
+export function evalColumn(
+  key: string,
+  formula: string,
+  tf: Timeframe,
+  cfg: Config,
+  cache: SeriesCache = new Map(),
+  read: DailyReader = readDaily,
+): number | null {
+  try {
+    const { bars, line } = runFormula(key, formula, tf, cfg, read, cache);
+    const v = bars.length > 0 ? line.at(-1) : undefined;
+    if (v === undefined || !Number.isFinite(v)) return null;
+    return v === 0 ? 0 : v;
+  } catch {
+    return null;
+  }
+}

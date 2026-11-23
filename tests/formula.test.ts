@@ -39,9 +39,25 @@ describe("compile", () => {
     ['"yahoo:SPY" + 1', "字符串只能用在"],
     ["close(NOPE)", "未知别名「NOPE」"],
     ["close(sma(close, 2))", "应是别名"],
+    ['close("yaho:SPY")', "无效的标的 key"],
+    ['close("data:bad")', "无效的标的 key"],
+    ['close("=yahoo:SPY/NOPE")', "未知别名「NOPE」"],
+    ["sma(close, 0)", "n 必须是正整数"],
+    ["sma(close, -3)", "n 必须是正整数"],
+    ["sma(close, 2.5)", "n 必须是正整数"],
+    ["sma(close, close)", "n 必须是正整数"],
+    ["a = 5; sma(close, a)", "n 必须是正整数"],
+    ["macd(close, 0, 26)", "n 必须是正整数"],
+    ["ref(close, 0)", "n 必须是正整数"],
+    ["atr(0)", "n 必须是正整数"],
   ])("rejects %j", (source, message) => {
     expect(() => compile(source)).toThrow(FormulaError);
     expect(() => compile(source)).toThrow(message);
+  });
+
+  it("allows constant scalar expressions for window arguments", () => {
+    expect(run("sma(close, 1 + 1)", bars([1, 2, 3, 4]))[0]).toEqual([NaN, 1.5, 2.5, 3.5]);
+    expect(run("sma(close, max(1, 2))", bars([1, 2, 3, 4]))[0]).toEqual([NaN, 1.5, 2.5, 3.5]);
   });
 
   it("reports the position of the problem", () => {

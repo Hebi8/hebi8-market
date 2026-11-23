@@ -6,6 +6,7 @@
  * Descriptions are written for the agent; errors are the ones the page shows, as they are.
  */
 import { z } from "zod";
+import { compileFormula } from "@/indicators/formula-indicators";
 import { ALERT_CONDS, type AlertCond, type AlertCondition } from "../alert-conds";
 import { alertBadges, alertViews } from "../alert-view";
 import { adoptConditionState, alertKeys, readState, stateId } from "../alerts";
@@ -72,7 +73,7 @@ export const TOOLS: Tool[] = [
   tool({
     name: "overview",
     description:
-      "The user's watchlist as the overview page shows it: groups, and for each symbol its key, alias, name, benchmark, latest price (from the latest quote when there is one, with its session), percentage changes over 1W…5Y, distance from the all-time-high close, position in the 52-week range, the alerts that currently hold or fired on it, and its sync error if any. Also when daily bars were last synced and will be next. Start here.",
+      "The user's watchlist as the overview page shows it: groups, and for each symbol its key, alias, name, benchmark, latest price (from the latest quote when there is one, with its session), percentage changes over 1W…5Y, distance from the all-time-high close, position in the 52-week range, custom formula column values (when configured in `columns`, with column definitions at the top level), the alerts that currently hold or fired on it, and its sync error if any. Also when daily bars were last synced and will be next. Start here.",
     input: {},
     run: ({ dir, vault }) => {
       const cfg = readConfig(dir);
@@ -80,9 +81,16 @@ export const TOOLS: Tool[] = [
       const stats = overviewStats(vault, cfg, symbols);
       const badges = alertBadges(vault, cfg);
       const failed = allItems(cfg).flatMap((i) => (symbols[i.key]?.syncError ? [{ key: i.key, error: symbols[i.key].syncError }] : []));
+      const columns = cfg.columns.length
+        ? cfg.columns.map((c) => {
+            const error = compileFormula(c.formula, { aliases: cfg.aliases }).error;
+            return { id: c.id, label: c.label, tf: c.tf, format: c.format, formula: c.formula, ...(error ? { error } : {}) };
+          })
+        : undefined;
       return {
         prices: cfg.prices === "total" ? "total return (dividends folded in)" : "split-adjusted",
         change_periods_on_page: cfg.periods,
+        ...(columns ? { columns } : {}),
         groups: cfg.groups.map((g) => ({
           name: g.name,
           symbols: g.symbols.map((item) => {
@@ -90,6 +98,14 @@ export const TOOLS: Tool[] = [
             const s = stats[item.key]?.stats;
             const quote = stats[item.key]?.status;
             const holding = (badges[item.key] ?? []).filter((b) => b.state === "fresh" || b.state === "on");
+            const colValues = cfg.columns.length
+              ? Object.fromEntries(
+                  cfg.columns.map((c) => {
+                    const raw = s?.columns && Object.hasOwn(s.columns, c.id) ? s.columns[c.id] : null;
+                    return [c.id, typeof raw === "number" && Number.isFinite(raw) ? num(raw) : null];
+                  }),
+                )
+              : undefined;
             return {
               key: item.key,
               alias: aliasOf(cfg.aliases, item.key),
@@ -103,6 +119,7 @@ export const TOOLS: Tool[] = [
               change_pct: s ? Object.fromEntries(CHANGE_PERIODS.map((p) => [p.key, pct(s.changes[p.key])])) : null,
               from_high_pct: s ? pct(s.ddAth) : null,
               range_52w_pct: s ? pct(s.pos52) : null,
+              ...(colValues ? { columns: colValues } : {}),
               alerts: holding.length ? holding.map((b) => ({ id: b.id, label: b.label, status: b.status })) : undefined,
               sync_error: row?.syncError ?? undefined,
             };
