@@ -466,6 +466,45 @@ describe("period close (check: close across D / 3D / W / M / Q / Y)", () => {
     expect(periodClosed("=BTC/SPY", day("2026-01-05"), "W", cfg, undefined, true, utc("2026-01-10T00:05:00"))).toBe(false);
   });
 
+  it("blocks weekend forward-fill on =BTC/SPY and close / close(SPY) when Friday SPY sync failed", async () => {
+    const { periodClosed, refPeriodClosed } = await import("@/lib/bars");
+    const { runAlerts } = await import("@/lib/alerts");
+    const { readConfig } = await import("@/lib/vault");
+
+    writeYaml([
+      { id: "btc-spy-synth", key: "=BTC/SPY", when: "close > 1.05", tf: "D", trigger: "bar", check: "close" },
+      { id: "btc-spy-ref", key: "BTC", when: "close / close(SPY) > 1.05", tf: "D", trigger: "bar", check: "close" },
+    ]);
+    const vault = { id: "", dir: root };
+    const cryptoCal = { kind: "crypto", timezone: "UTC", hours: "24x7" };
+
+    // Thursday 2026-01-08 baseline (both 100 -> ratio 1.0, false)
+    await seedSymbol(SPY, [bar("2026-01-08", 100)], US_CAL, utc("2026-01-09T00:05:00"));
+    await seedSymbol(BTC, [bar("2026-01-08", 100)], cryptoCal, utc("2026-01-09T00:05:00"));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(utc("2026-01-09T00:05:00"));
+    expect(await runAlerts(vault, () => readConfig(root), "sync")).toEqual([]);
+
+    // Saturday 2026-01-10 BTC daily bar closes at 110 (synced Sun 00:05 UTC), while SPY's Friday 2026-01-09 sync failed
+    // (cache stops at Thursday 100; ratio against stale Thursday SPY would be 1.10 > 1.05).
+    await seedSymbol(BTC, [bar("2026-01-08", 100), bar("2026-01-09", 100), bar("2026-01-10", 110)], cryptoCal, utc("2026-01-11T00:05:00"));
+    await seedSymbol(SPY, [bar("2026-01-08", 100)], US_CAL, utc("2026-01-09T18:00:00"), "timeout");
+    vi.setSystemTime(utc("2026-01-11T00:05:00"));
+    const cfg = readConfig(root);
+    expect(periodClosed("=BTC/SPY", day("2026-01-10"), "D", cfg, undefined, true, utc("2026-01-11T00:05:00"))).toBe(false);
+    expect(refPeriodClosed(SPY, day("2026-01-10"), "D", cfg, undefined, true, utc("2026-01-11T00:05:00"))).toBe(false);
+    expect(await runAlerts(vault, () => readConfig(root), "sync")).toEqual([]);
+
+    // Once SPY Friday sync succeeds at 102 (real Saturday ratio 110 / 102 = 1.078 > 1.05), both close and fire with Friday's price
+    await seedSymbol(SPY, [bar("2026-01-08", 100), bar("2026-01-09", 102)], US_CAL, utc("2026-01-11T00:10:00"), null);
+    vi.setSystemTime(utc("2026-01-11T00:10:00"));
+    expect(periodClosed("=BTC/SPY", day("2026-01-10"), "D", cfg, undefined, true, utc("2026-01-11T00:10:00"))).toBe(true);
+    expect(refPeriodClosed(SPY, day("2026-01-10"), "D", cfg, undefined, true, utc("2026-01-11T00:10:00"))).toBe(true);
+    const events = await runAlerts(vault, () => readConfig(root), "sync");
+    expect(events.map((e) => e.rule).sort()).toEqual(["alert:btc-spy-ref", "alert:btc-spy-synth"]);
+    expect(events.find((e) => e.rule === "alert:btc-spy-synth")!.close).toBeCloseTo(110 / 102, 6);
+  });
+
   it("handles ES Thanksgiving holiday-merged daily close and prevents cross-market synthetic =JP/SPY forward-fill while SPY is open", async () => {
     const { closedSeries, periodClosed } = await import("@/lib/bars");
     const { runAlerts } = await import("@/lib/alerts");

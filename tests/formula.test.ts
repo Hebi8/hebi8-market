@@ -385,13 +385,24 @@ describe("formulaTemplate", () => {
     expect(serverW.line[1]).toBe(100 / 3);
     expect(clientW[1]).toBe(100 / 3);
 
-    // Exact equality with unrounded ref ratio agrees on both server and client
-    const eqSource = "yearopen == open(JP) / open(SPY)";
-    const serverD = runFormula("=JP/SPY", eqSource, "D", cfg, read);
-    const chartD = loadChart("=JP/SPY", "D", "split", ["yahoo:7203.T", "yahoo:SPY"], cfg, read);
-    const tplD = formulaTemplate(def("eq", eqSource, "sub"), compile(eqSource, { aliases: cfg.aliases }), chartD.refs, chartD.yearOpens);
-    const clientD = (await tplD.calc(chartD.bars as KLineData[], tplD as never)).map((pt) => pt.v0 ?? NaN);
-    expect(serverD.line[0]).toBe(1);
-    expect(clientD[0]).toBe(1);
+    // Non-terminating fraction 2 / 3 tests full float parity across OHLC, refs, and yearOpens:
+    // if loadChart rounded close to 0.66666667 while keeping yearopen at 0.6666666666666666,
+    // `close > yearopen` would diverge (0 on server vs 1 on client).
+    const jpTwoThirds = [makeBar("2026-01-02", 2, 2), makeBar("2026-01-05", 2, 2)];
+    const spyTwoThirds = [makeBar("2026-01-02", 3, 3), makeBar("2026-01-05", 3, 3)];
+    const readTwoThirds = (key: string) => (key === "yahoo:7203.T" ? jpTwoThirds : key === "yahoo:SPY" ? spyTwoThirds : []);
+    for (const tf of ["D", "Y"] as Timeframe[]) {
+      const chart = loadChart("=JP/SPY", tf, "split", ["yahoo:7203.T", "yahoo:SPY"], cfg, readTwoThirds);
+      for (const [source, expected] of [
+        ["close > yearopen", 0],
+        ["yearopen == open(JP) / open(SPY)", 1],
+      ] as const) {
+        const server = runFormula("=JP/SPY", source, tf, cfg, readTwoThirds);
+        const tpl = formulaTemplate(def("eq", source, "sub"), compile(source, { aliases: cfg.aliases }), chart.refs, chart.yearOpens);
+        const client = (await tpl.calc(chart.bars as KLineData[], tpl as never)).map((pt) => pt.v0 ?? NaN);
+        expect(server.line[0]).toBe(expected);
+        expect(client[0]).toBe(expected);
+      }
+    }
   });
 });

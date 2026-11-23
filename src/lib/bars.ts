@@ -91,7 +91,8 @@ function realRangeClosed(
 /**
  * Whether a real symbol (secondary synthetic operand or formula ref) is final through
  * `[start, endExclusive)` as of `now`. When it has no trading scheduled in that range
- * (weekend / holiday), its forward-filled last bar before `endExclusive` must be final.
+ * (weekend / holiday), its most recent scheduled trading day before `endExclusive` must
+ * be closed and synced so a failed pre-weekend sync cannot silently forward-fill an older bar.
  */
 function operandClosedUntil(
   key: string,
@@ -106,6 +107,8 @@ function operandClosedUntil(
   const calWeekends = tradesWeekends(key, cfg, read);
   const res = realRangeClosed(key, start, endExclusive, isDaily, read, calWeekends, now, naturalEnd);
   if (res !== null) return res;
+  const prior = realRangeClosed(key, start - 14 * DAY, endExclusive, false, read, calWeekends, now, naturalEnd);
+  if (prior !== null) return prior;
   const used = read(key).findLast((b) => b.t < endExclusive);
   return !used || realDayFinal(key, used.t, now);
 }
@@ -292,9 +295,6 @@ export function loadRefs(bars: Bar[], weekends: boolean, keys: string[], tf: Tim
   return refs;
 }
 
-/** Trim float noise from adjusted prices to keep the payload small. */
-const round = (x: number) => Number(x.toPrecision(8));
-
 export interface ChartData {
   daily: Bar[];
   /** How its 3D bars count days (`tradesWeekends`) */
@@ -315,12 +315,12 @@ export function loadChart(key: string, tf: Timeframe, prices: Prices, withKeys: 
   const benchCloses = bench ? refs[bench]?.c : undefined;
   const bars = series.map((b, i) => ({
     timestamp: b.t * 1000,
-    open: round(b.o),
-    high: round(b.h),
-    low: round(b.l),
-    close: round(b.c),
+    open: b.o,
+    high: b.h,
+    low: b.l,
+    close: b.c,
     volume: b.v ?? undefined,
-    bench: benchCloses?.[i] != null ? round(benchCloses[i]!) : undefined,
+    bench: benchCloses?.[i] ?? undefined,
   }));
   const yearOpens = computeYearOpens(daily);
   return { daily, weekends, bars, refs, yearOpens };
