@@ -385,7 +385,7 @@ function conditionAsAlert(raw: unknown, taken: Set<string>): Record<string, unkn
 }
 
 /** 「收盘价上穿 130,000」, 「5 根 K 线内上涨 3%」, or the formula with its timeframe. */
-/** 「日线收盘」 or 「盘中价格」 when it is not what an alert of its kind does anyway. */
+/** 「K 线收盘」 or 「盘中价格」 when it is not what an alert of its kind does anyway. */
 export function checkNote(a: Pick<AlertDef, "key" | "check">): string | null {
   return a.check === defaultCheck(a.key) ? null : ALERT_CHECKS[a.check];
 }
@@ -420,7 +420,7 @@ export function parseAlert(raw: unknown, i: number, aliases: Record<string, stri
     if (d[flag] !== undefined && typeof d[flag] !== "boolean") throw new ConfigError(`${where}：${flag} 应为 true 或 false`);
   }
   const check = d.check ?? defaultCheck(key);
-  if (check !== "price" && check !== "close") throw new ConfigError(`${where}：check 应为 price（盘中价格）或 close（日线收盘）`);
+  if (check !== "price" && check !== "close") throw new ConfigError(`${where}：check 应为 price（盘中价格）或 close（K 线收盘）`);
   const tf = when && isTimeframe(d.tf) ? d.tf : ("D" as const);
   const own = text(d.id);
   if (own && !/^[A-Za-z0-9_-]+$/.test(own)) throw new ConfigError(`${where}：id「${own}」只能用字母、数字、下划线、横线`);

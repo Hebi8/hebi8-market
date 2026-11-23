@@ -26,7 +26,12 @@ export function compileFormula(source: string, opts: CompileOptions): { program:
 type Point = Record<string, number | undefined>;
 
 /** KLineChart template for a compiled formula; `refs` are the aligned symbols it reads. */
-export function formulaTemplate(def: FormulaDef, program: Program, refs: Record<string, RefSeries>): IndicatorTemplate<Point> {
+export function formulaTemplate(
+  def: FormulaDef,
+  program: Program,
+  refs: Record<string, RefSeries>,
+  yearOpens?: Record<number, number>,
+): IndicatorTemplate<Point> {
   return {
     name: formulaIndicatorName(def.id),
     shortName: def.label,
@@ -36,7 +41,7 @@ export function formulaTemplate(def: FormulaDef, program: Program, refs: Record<
     calcParams: [],
     figures: program.outputs.map((title, i) => ({ key: `v${i}`, title: `${title}: `, type: "line" })),
     calc: (dataList) => {
-      const lines = evaluate(program, { bars: dataList, refs });
+      const lines = evaluate(program, { bars: dataList, refs, yearOpens });
       return dataList.map((_, i) => {
         const point: Point = {};
         lines.forEach((line, j) => {

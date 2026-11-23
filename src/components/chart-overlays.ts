@@ -25,7 +25,7 @@ import { BOX_HANDLES, boxHandleAt, channelHandles, dragBoxBy, dragChannel, drawa
 import { FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
 import { hasOutline, isSeeThrough, outlineOf } from "./chart-gestures";
 import { measureLines, pct, priceChangeText, volumeBetween } from "./measure";
-import { tradingDayOffset, tradingDayTimestamp } from "./drawing-time";
+import { tradingDayOffset, tradingDayTimestamp, yearOffset, yearTimestamp } from "./drawing-time";
 
 type Params = OverlayCreateFiguresCallbackParams<unknown>;
 type Figures = OverlayFigure[];
@@ -50,7 +50,7 @@ export function setOverlayChart(chart: Chart | null, scales: typeof scaleOf = ()
   activeChart = chart;
   scaleOf = scales;
   weekendsOf = weekends;
-  if (chart) patchDailyTime(chart);
+  if (chart) patchBarTime(chart);
 }
 
 const DASHED = { style: "dashed", dashedValue: [4, 4] } as const;
@@ -261,23 +261,24 @@ interface ChartStore {
 }
 const storeOf = (chart: Chart) => (chart as unknown as { getChartStore: () => ChartStore }).getChartStore();
 
-/** Patch the store itself so drawings, the time axis and crosshair share the same daily calendar. */
-function patchDailyTime(chart: Chart) {
+/** Patch the store itself so drawings, the time axis and crosshair share the same daily/yearly UTC calendar. */
+function patchBarTime(chart: Chart) {
   const store = storeOf(chart);
   const anchorAt = (value: number, time: boolean) => {
     const period = chart.getPeriod();
     const bars = chart.getDataList();
-    if (period?.type !== "day" || !bars.length) return null;
+    if ((period?.type !== "day" && period?.type !== "year") || !bars.length) return null;
     const last = bars.length - 1;
     const index = value < (time ? bars[0].timestamp : 0) ? 0 : value > (time ? bars[last].timestamp : last) ? last : null;
-    return index === null ? null : { index, timestamp: bars[index].timestamp, span: period.span, weekends: weekendsOf() };
+    return index === null ? null : { type: period.type, index, timestamp: bars[index].timestamp, span: period.span, weekends: weekendsOf() };
   };
   for (const method of ["timestampToDataIndex", "timestampToFloatIndex"] as const) {
     const original = store[method];
     store[method] = (timestamp) => {
       const anchor = anchorAt(timestamp, true);
       if (!anchor) return original.call(store, timestamp);
-      const offset = tradingDayOffset(anchor.timestamp, timestamp, anchor.weekends) / anchor.span;
+      const raw = anchor.type === "year" ? yearOffset(anchor.timestamp, timestamp) : tradingDayOffset(anchor.timestamp, timestamp, anchor.weekends);
+      const offset = raw / anchor.span;
       return anchor.index + (method === "timestampToDataIndex" ? Math.floor(offset) : offset);
     };
   }
@@ -286,7 +287,8 @@ function patchDailyTime(chart: Chart) {
     store[method] = (index) => {
       const anchor = anchorAt(index, false);
       if (!anchor) return original.call(store, index);
-      return tradingDayTimestamp(anchor.timestamp, (index - anchor.index) * anchor.span, anchor.weekends);
+      const delta = (index - anchor.index) * anchor.span;
+      return anchor.type === "year" ? yearTimestamp(anchor.timestamp, delta) : tradingDayTimestamp(anchor.timestamp, delta, anchor.weekends);
     };
   }
 }

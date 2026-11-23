@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
   const { config, error } = readConfigSafe(resolveViewer(request.cookies.get(SESSION_COOKIE)?.value).dir);
   if (!config) return NextResponse.json({ error }, { status: 500 });
   const query = chartQuery(request.nextUrl.searchParams, config);
-  if (!query) return NextResponse.json({ error: "need ?key=<source:ticker>&tf=D|3D|W|M|Q&prices=split|total" }, { status: 400 });
+  if (!query) return NextResponse.json({ error: "need ?key=<source:ticker>&tf=D|3D|W|M|Q|Y&prices=split|total" }, { status: 400 });
   const { key, tf, prices, withKeys } = query;
 
   const item = findItem(config, key);
@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 400 });
   }
-  const { daily, weekends, bars, refs } = chart;
+  const { daily, weekends, bars, refs, yearOpens } = chart;
   if (daily.length === 0) {
     const why = isSynthetic(key) ? synthNoData(key, config, (k) => getSymbol(k)?.syncError ?? null) : (row?.syncError ?? "暂无数据，等待同步");
     return NextResponse.json({ error: why }, { status: 404 });
@@ -56,6 +56,7 @@ export async function GET(request: NextRequest) {
     bars,
     refs,
     weekends,
+    yearOpens,
   };
   // per person (names, benchmarks and synthetic aliases come from their yaml), so never reused
   return NextResponse.json(body, { headers: { "Cache-Control": "no-store" } });

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { KLineData } from "klinecharts";
 import { compile, evaluate, FormulaError, type OhlcvBar, type RefSeries } from "@/indicators/formula";
 import { formulaTemplate } from "@/indicators/formula-indicators";
+import { loadChart } from "@/lib/bars";
+import { runFormula } from "@/lib/conditions";
+import { normalizeConfig } from "@/lib/config";
+import type { Bar } from "@/lib/series";
+import type { Timeframe } from "@/lib/symbols";
 
 const bars = (closes: number[], extra: Partial<OhlcvBar>[] = []): OhlcvBar[] =>
   closes.map((close, i) => ({ open: close, high: close + 1, low: close - 1, close, volume: 10, ...extra[i] }));
@@ -161,6 +167,106 @@ describe("evaluate", () => {
     expect(() => run("sma(close, close)", data)).toThrow("n 必须是正整数");
     expect(() => run("ref(close, 0)", data)).toThrow("n 必须是正整数");
   });
+
+  it("provides year, month and yearopen from UTC timestamps, with optional yearOpens overrides", () => {
+    const dated: OhlcvBar[] = [
+      { timestamp: Date.UTC(2025, 11, 29), open: 95, high: 102, low: 94, close: 100 },
+      { timestamp: Date.UTC(2025, 11, 31), open: 99, high: 103, low: 98, close: 101 },
+      { timestamp: Date.UTC(2026, 0, 5), open: 105, high: 110, low: 104, close: 108 },
+      { timestamp: Date.UTC(2026, 5, 15), open: 120, high: 125, low: 118, close: 122 },
+      { timestamp: Date.UTC(2027, 0, 4), open: 130, high: 135, low: 128, close: 132 },
+    ];
+    expect(run("year", dated)[0]).toEqual([2025, 2025, 2026, 2026, 2027]);
+    expect(run("month", dated)[0]).toEqual([12, 12, 1, 6, 1]);
+    // without yearOpens override: falls back to the first bar's open for each UTC year
+    expect(run("yearopen", dated)[0]).toEqual([95, 95, 105, 105, 130]);
+    // with explicit yearOpens override: uses exact calendar-year open, and returns NaN for any year absent from the map
+    expect(evaluate(compile("yearopen"), { bars: dated, yearOpens: { 2025: 80, 2026: 102 } })[0]).toEqual([80, 80, 102, 102, NaN]);
+    // bars without timestamps yield NaN
+    expect(run("year", data)[0].every(Number.isNaN)).toBe(true);
+    expect(run("month", data)[0].every(Number.isNaN)).toBe(true);
+    expect(run("yearopen", data)[0].every(Number.isNaN)).toBe(true);
+  });
+
+  it("computes macd, macdsignal and macdhist consistently with ema, including cross-symbol refs and validation", () => {
+    const closes = Array.from({ length: 45 }, (_, i) => 100 + Math.sin(i / 3) * 10 + i * 0.5);
+    const series = bars(closes);
+
+    // default parameters (12, 26, 9) match explicit ema composition bit-for-bit
+    const [m, sig, hist, manualM, manualSig, manualHist] = run(
+      [
+        "macd(close)",
+        "macdsignal(close)",
+        "macdhist(close)",
+        "m = ema(close, 12) - ema(close, 26)",
+        "s = ema(m, 9)",
+        "m - s",
+      ].join("\n"),
+      series,
+    );
+    expect(m).toEqual(manualM);
+    expect(sig).toEqual(manualSig);
+    expect(hist).toEqual(manualHist);
+    // warm-up: macd starts at index 25 (slow - 1); signal & hist start at index 25 + 8 = 33
+    expect(m.slice(0, 25).every(Number.isNaN)).toBe(true);
+    expect(Number.isFinite(m[25])).toBe(true);
+    expect(sig.slice(0, 33).every(Number.isNaN)).toBe(true);
+    expect(Number.isFinite(sig[33])).toBe(true);
+    expect(hist.slice(0, 33).every(Number.isNaN)).toBe(true);
+    expect(Number.isFinite(hist[33])).toBe(true);
+
+    // custom parameters
+    const [cm, cs, ch, cManualM, cManualS, cManualH] = run(
+      "macd(close, 3, 6); macdsignal(close, 3, 6, 4); macdhist(close, 3, 6, 4); a = ema(close, 3) - ema(close, 6); b = ema(a, 4); a - b",
+      series,
+    );
+    expect(cm).toEqual(cManualM);
+    expect(cs).toEqual(cManualS);
+    expect(ch).toEqual(cManualH);
+
+    // cross-symbol reference with leading nulls
+    const spxCloses = [null, null, ...closes.slice(2).map((v) => v * 10)];
+    const refs: Record<string, RefSeries> = { "yahoo:^GSPC": { c: spxCloses } };
+    const [refM, refS, refH, expM, expS, expH] = run(
+      [
+        "macd(close(SPX), 3, 5)",
+        "macdsignal(close(SPX), 3, 5, 3)",
+        "macdhist(close(SPX), 3, 5, 3)",
+        "x = ema(close(SPX), 3) - ema(close(SPX), 5)",
+        "y = ema(x, 3)",
+        "x - y",
+      ].join("\n"),
+      series,
+      refs,
+      { aliases: { SPX: "yahoo:^GSPC" } },
+    );
+    expect(refM).toEqual(expM);
+    expect(refS).toEqual(expS);
+    expect(refH).toEqual(expH);
+    // 2 leading nulls shift warm-up by 2: slow=5 -> index 6, signal=3 -> index 8
+    expect(refM.slice(0, 6).every(Number.isNaN)).toBe(true);
+    expect(Number.isFinite(refM[6])).toBe(true);
+    expect(refS.slice(0, 8).every(Number.isNaN)).toBe(true);
+    expect(Number.isFinite(refS[8])).toBe(true);
+
+    // optional trailing defaults work like change()/roc()
+    expect(run("macd(close, 8)", series)[0]).toEqual(run("macd(close, 8, 26)", series)[0]);
+    expect(run("macdhist(close, 3, 6)", series)[0]).toEqual(run("macdhist(close, 3, 6, 9)", series)[0]);
+
+    // arity and window parameter validation
+    expect(() => compile("macd()")).toThrow("参数个数不对");
+    expect(() => compile("macd(close, 12, 26, 9)")).toThrow("参数个数不对");
+    expect(() => compile("macdsignal()")).toThrow("参数个数不对");
+    expect(() => compile("macdsignal(close, 12, 26, 9, 1)")).toThrow("参数个数不对");
+    expect(() => compile("macdhist()")).toThrow("参数个数不对");
+    expect(() => compile("macdhist(close, 12, 26, 9, 1)")).toThrow("参数个数不对");
+    expect(() => run("macd(close, 0, 26)", series)).toThrow("n 必须是正整数");
+    expect(() => run("macd(close, 12, -1)", series)).toThrow("n 必须是正整数");
+    expect(() => run("macd(close, 1.5, 26)", series)).toThrow("n 必须是正整数");
+    expect(() => run("macd(close, close, 26)", series)).toThrow("n 必须是正整数");
+    expect(() => run("macdsignal(close, 12, 26, 0)", series)).toThrow("n 必须是正整数");
+    expect(() => run("macdhist(close, 12, 26, 2.5)", series)).toThrow("n 必须是正整数");
+  });
 });
 
 describe("formulaTemplate", () => {
@@ -198,5 +304,105 @@ describe("formulaTemplate", () => {
       template as never,
     );
     expect(result).toEqual([{ v0: undefined }, { v0: 7 }]);
+  });
+
+  it("matches server runFormula across all timeframes including 3D/W straddling a year boundary", async () => {
+    // 2025-12-29 (Mon) .. 2026-01-02 (Fri) is one weekly bucket stamped 2025-12-29,
+    // yet 2026-01-02 is the first trading day of 2026 (open 123). Both server and chart
+    // must give yearopen = 123 for all 2026 bars on D, 3D, W, M, Q and Y.
+    const day = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 1000;
+    const makeBar = (iso: string, o: number, c: number): Bar => ({ t: day(iso), o, h: Math.max(o, c) + 1, l: Math.min(o, c) - 1, c, v: 100, adj: 1 });
+    const stockDaily: Bar[] = [
+      makeBar("2025-01-02", 80, 82),
+      makeBar("2025-06-02", 90, 92),
+      makeBar("2025-12-29", 95, 96),
+      makeBar("2025-12-30", 96, 98),
+      makeBar("2025-12-31", 98, 100),
+      makeBar("2026-01-02", 123, 125),
+      makeBar("2026-01-05", 130, 132),
+      makeBar("2026-01-06", 132, 135),
+      makeBar("2026-01-07", 135, 134),
+      makeBar("2026-01-08", 134, 138),
+      makeBar("2026-01-09", 138, 140),
+      makeBar("2026-02-02", 141, 145),
+      makeBar("2026-04-01", 146, 150),
+    ];
+    const spxDaily: Bar[] = stockDaily.map((b, i) => ({ ...b, o: 500 + i * 2, h: 502 + i * 2, l: 499 + i * 2, c: 501 + i * 2 }));
+    const cfg = normalizeConfig({ aliases: { AAPL: "yahoo:AAPL", SPX: "yahoo:^GSPC" } });
+    const read = (key: string) => (key === "yahoo:AAPL" ? stockDaily : key === "yahoo:^GSPC" ? spxDaily : []);
+
+    const formulas = [
+      "year",
+      "month",
+      "yearopen",
+      "close / yearopen - 1",
+      "macd(close, 2, 4)",
+      "macdsignal(close, 2, 4, 2)",
+      "macdhist(close(SPX), 2, 4, 2)",
+    ];
+    const tfs: Timeframe[] = ["D", "3D", "W", "M", "Q", "Y"];
+
+    for (const tf of tfs) {
+      const chart = loadChart("yahoo:AAPL", tf, "split", ["yahoo:^GSPC"], cfg, read);
+      for (const source of formulas) {
+        const server = runFormula("yahoo:AAPL", source, tf, cfg, read);
+        const program = compile(source, { aliases: cfg.aliases });
+        const tpl = formulaTemplate(def("cmp", source, "sub"), program, chart.refs, chart.yearOpens);
+        const client = (await tpl.calc(chart.bars as KLineData[], tpl as never)).map((pt) => pt.v0 ?? NaN);
+        expect(client.length).toBe(server.line.length);
+        for (let i = 0; i < server.line.length; i++) {
+          if (Number.isNaN(server.line[i])) expect(Number.isNaN(client[i])).toBe(true);
+          else expect(client[i]).toBeCloseTo(server.line[i], 6);
+        }
+        // explicitly verify 2026 bars on W and 3D use Jan 2's open (123), not Jan 5's open (130)
+        if (source === "yearopen" && (tf === "W" || tf === "3D")) {
+          const i2026 = server.bars.findIndex((b) => new Date(b.t * 1000).getUTCFullYear() === 2026);
+          expect(i2026).toBeGreaterThan(-1);
+          expect(server.line[i2026]).toBe(123);
+          expect(client[i2026]).toBe(123);
+        }
+      }
+    }
+  });
+
+  it("keeps full precision for yearOpens and returns NaN on a leading cross-year bucket without prior-year history", async () => {
+    const day = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 1000;
+    const makeBar = (iso: string, o: number, c: number): Bar => ({ t: day(iso), o, h: Math.max(o, c), l: Math.min(o, c), c, v: 10, adj: 1 });
+    // History begins on 2026-01-02 (Friday), whose weekly bucket starts 2025-12-29 (no 2025 daily bars exist).
+    // Repeating fraction 100 / 3 tests that loadChart does not truncate yearOpens to 8 significant digits.
+    const jpDaily = [makeBar("2026-01-02", 100, 102), makeBar("2026-01-05", 105, 106)];
+    const spyDaily = [makeBar("2026-01-02", 3, 3), makeBar("2026-01-05", 3, 3)];
+    const cfg = normalizeConfig({ aliases: { JP: "yahoo:7203.T", SPY: "yahoo:SPY" } });
+    const read = (key: string) => (key === "yahoo:7203.T" ? jpDaily : key === "yahoo:SPY" ? spyDaily : []);
+
+    // On W, first bar is stamped 2025-12-29 (no 2025 data -> yearopen is NaN, NOT 2026's 100/3); second bar is 2026-01-05 (100/3)
+    const serverW = runFormula("=JP/SPY", "yearopen", "W", cfg, read);
+    const chartW = loadChart("=JP/SPY", "W", "split", [], cfg, read);
+    const tplW = formulaTemplate(def("yo", "yearopen", "sub"), compile("yearopen"), chartW.refs, chartW.yearOpens);
+    const clientW = (await tplW.calc(chartW.bars as KLineData[], tplW as never)).map((pt) => pt.v0 ?? NaN);
+    expect(Number.isNaN(serverW.line[0])).toBe(true);
+    expect(Number.isNaN(clientW[0])).toBe(true);
+    expect(serverW.line[1]).toBe(100 / 3);
+    expect(clientW[1]).toBe(100 / 3);
+
+    // Non-terminating fraction 2 / 3 tests full float parity across OHLC, refs, and yearOpens:
+    // if loadChart rounded close to 0.66666667 while keeping yearopen at 0.6666666666666666,
+    // `close > yearopen` would diverge (0 on server vs 1 on client).
+    const jpTwoThirds = [makeBar("2026-01-02", 2, 2), makeBar("2026-01-05", 2, 2)];
+    const spyTwoThirds = [makeBar("2026-01-02", 3, 3), makeBar("2026-01-05", 3, 3)];
+    const readTwoThirds = (key: string) => (key === "yahoo:7203.T" ? jpTwoThirds : key === "yahoo:SPY" ? spyTwoThirds : []);
+    for (const tf of ["D", "Y"] as Timeframe[]) {
+      const chart = loadChart("=JP/SPY", tf, "split", ["yahoo:7203.T", "yahoo:SPY"], cfg, readTwoThirds);
+      for (const [source, expected] of [
+        ["close > yearopen", 0],
+        ["yearopen == open(JP) / open(SPY)", 1],
+      ] as const) {
+        const server = runFormula("=JP/SPY", source, tf, cfg, readTwoThirds);
+        const tpl = formulaTemplate(def("eq", source, "sub"), compile(source, { aliases: cfg.aliases }), chart.refs, chart.yearOpens);
+        const client = (await tpl.calc(chart.bars as KLineData[], tpl as never)).map((pt) => pt.v0 ?? NaN);
+        expect(server.line[0]).toBe(expected);
+        expect(client[0]).toBe(expected);
+      }
+    }
   });
 });

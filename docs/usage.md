@@ -34,7 +34,7 @@ hebi8/market 各项功能的完整操作说明。项目概览和快速开始见 
 
 ## 图表
 
-基于 [KLineChart](https://github.com/klinecharts/KLineChart)，布局和快捷键照搬 TradingView：顶栏是商品搜索、`+` 比较商品、`日 3日 周 月 季`、图表类型、`fx 指标`、刷新、全屏；左边画线工具栏；图内左上角图例（OHLC、各指标和对比的数值，悬停出现隐藏 / 设置 / 移除）；右边自选列表和笔记；底栏是 `1年 3年 5年 10年 全部` 范围按钮和 `ADJ`（含分红）、`%`、`log`、`自动`。内置指标、代码指标和公式指标都在「指标」弹窗里开关，参数在图例的设置里改，按周期保存。设置的「样式」页给指标画的每条线单独选颜色、线宽和线型（指标有几条线就有几行），所有周期通用，存在 `hebi8.yaml` 的 `chart.styles`；公式指标在公式编辑器上方切到「样式」。
+基于 [KLineChart](https://github.com/klinecharts/KLineChart)，布局和快捷键照搬 TradingView：顶栏是商品搜索、`+` 比较商品、`日 3日 周 月 季 年`、图表类型、`fx 指标`、刷新、全屏；左边画线工具栏；图内左上角图例（OHLC、各指标和对比的数值，悬停出现隐藏 / 设置 / 移除）；右边自选列表和笔记；底栏是 `1年 3年 5年 10年 全部` 范围按钮和 `ADJ`（含分红）、`%`、`log`、`自动`。内置指标、代码指标和公式指标都在「指标」弹窗里开关，参数在图例的设置里改，按周期保存。设置的「样式」页给指标画的每条线单独选颜色、线宽和线型（指标有几条线就有几行），所有周期通用，存在 `hebi8.yaml` 的 `chart.styles`；公式指标在公式编辑器上方切到「样式」。
 
 「3日」是 TradingView 的 3D：每 3 个交易日一根，从一个固定的日子起数（周末也交易的加密货币按日历日每 3 天一根），所以新的一天不会让以前的 K 线重新分组，比较的商品也按同样的日子分组；遇到节假日那一根少一天。警报和公式的周期也能选 3 日。
 
@@ -161,7 +161,7 @@ date,open,high,low,close,volume
 ### 什么时候判断
 
 - **一个标的的警报**：照搬 TradingView 的警报。自选里的标的（和警报用到的标的）都会定时取最新价（加密和正在交易的市场每 5 分钟，盘前盘后和休市每小时，开盘后的第一轮就取），把它当作今天还没收完的日线来判断；这根 K 线只在内存里，库里只有日线。日线同步收尾时也判断一遍。
-- **判断时机**（对话框里的「盘中价格 / 日线收盘」，yaml 里的 `check: price | close`）：盘中价格就是上面这种，每次取到最新价都判断；日线收盘只在日线同步后判断，而且只看已经收盘的日线（当天还没走完的那根不算）。一个标的的警报默认盘中价格，对全部自选的默认日线收盘，都可以改成另一种。
+- **判断时机**（对话框里的「盘中价格 / K 线收盘」，yaml 里的 `check: price | close`）：盘中价格就是上面这种，每次取到最新价都判断；K 线收盘只在日线同步后判断，而且只看所选周期已经收盘完成的 K 线（当天未走完的日线，以及本周 / 本月 / 本季 / 本年 / 本 3 日还没收完的当期 K 线都不算，直到该周期最后一个交易日收盘）。一个标的的警报默认盘中价格，对全部自选的默认 K 线收盘，都可以改成另一种。
 - **对全部自选的警报**（不写 `key`）：每次定时同步或点「刷新」之后对每个自选标的检查，在界面上新建或改过时立刻按日线算一遍。公式**从不成立变成成立**的那一刻推送；规则第一次出现（新加的规则、新加的标的、删过缓存库）只记下当前状态；同一根 K 线只推一次，周线公式在本周内来回真假也只响一次。只能用公式或涨跌 %。
 
 ### 在 yaml 里写
@@ -185,7 +185,7 @@ alerts:
 | `moving_up_pct` / `moving_down_pct` | 上涨 % / 下跌 % | `{ pct, bars }` | 最近 `bars` 根日线内涨跌超过 `pct`% |
 
 - `trigger`：`once`（默认）触发后把这条写成 `enabled: false`（注释保留）；`bar` 每根日线最多一次。`enabled: false` 是暂停。
-- `check`：`price`（盘中价格）或 `close`（日线收盘），不写就是默认值（有 `key` 的 `price`，没有的 `close`）。
+- `check`：`price`（盘中价格）或 `close`（K 线收盘），不写就是默认值（有 `key` 的 `price`，没有的 `close`）。
   已触发的 `once` 手改 yaml 的 `enabled: true` 不会重新启用；重新启用请用界面上的恢复。
 - `when` 公式「新成立才推送」，`tf` 默认 D；要明确的上穿下穿写 `cross(close, X)`。`label` 省了按条件自动生成。
 - 以前的 `conditions: [{ id, label, formula, tf, notify }]` 照样能读，当作对全部自选的警报（`tf` 默认 W，没标 `notify` 的不推送）；第一次在界面上建、改、暂停或删除警报时，它们会被搬进 `alerts`。
@@ -243,10 +243,10 @@ close(QQQ) / close("yahoo:SPY")
 
 | 类别 | 可用 |
 |---|---|
-| 变量 | `open` `high` `low` `close` `volume` `bench` `hl2` `hlc3` `tr` |
+| 变量 | `open` `high` `low` `close` `volume` `bench` `hl2` `hlc3` `tr` `year` `month` `yearopen`（UTC 公历年份、1–12 月份、该年首个交易日开盘价） |
 | 别的标的 | `close(QQQ)`（别名）、`close("yahoo:QQQ")`、`close(bench)`；open / high / low / volume 同理，按本标的交易日对齐并前向填充 |
 | 运算 | `+ - * / ^`、括号；比较 `> < >= <= == !=`；逻辑 `and or not`（结果是 0/1，优先级 not > 比较 > and > or，都低于算术） |
-| 滚动窗口 | `sma(x, n)` `ema(x, n)` `std(x, n)` `sum(x, n)` `highest(x, n)` `lowest(x, n)` `rsi(x, n)` `atr(n)` `corr(a, b, n)` `pctrank(x, n)` |
+| 滚动窗口 | `sma(x, n)` `ema(x, n)` `std(x, n)` `sum(x, n)` `highest(x, n)` `lowest(x, n)` `rsi(x, n)` `macd(x, fast=12, slow=26)` `macdsignal(x, fast=12, slow=26, signal=9)` `macdhist(x, fast=12, slow=26, signal=9)` `atr(n)` `corr(a, b, n)` `pctrank(x, n)` |
 | 前值比较 | `ref(x, n)` `change(x, n=1)` `roc(x, n=1)` `cross(a, b)` `barssince(cond)` |
 | 其他 | `iff(cond, a, b)` `cummax(x)` `cummin(x)` `max(a, b)` `min(a, b)` `abs` `sqrt` `log` `exp` |
 

@@ -29,3 +29,27 @@ export function tradingDayOffset(anchor: number, timestamp: number, weekends: bo
   const end = tradingDayTimestamp(anchor, whole + 1, false);
   return whole + (timestamp - start) / (end - start);
 }
+
+/** Integer offsets land on UTC years from `anchor`; fractions interpolate across that year's real length. */
+export function yearTimestamp(anchor: number, offset: number): number {
+  const a = new Date(anchor);
+  const [y0, m, day] = [a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate()];
+  const rem = anchor - Date.UTC(y0, m, day);
+  const at = (n: number) => Date.UTC(y0 + n, m, day) + rem;
+  const whole = Math.floor(offset);
+  const start = at(whole);
+  return Math.round(start + (offset - whole) * (at(whole + 1) - start));
+}
+
+/** The inverse, in UTC years from `anchor`. */
+export function yearOffset(anchor: number, timestamp: number): number {
+  const a = new Date(anchor);
+  const [y0, m, day] = [a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate()];
+  const rem = anchor - Date.UTC(y0, m, day);
+  const at = (n: number) => Date.UTC(y0 + n, m, day) + rem;
+  let whole = new Date(timestamp).getUTCFullYear() - y0;
+  if (timestamp < at(whole)) whole--;
+  else if (timestamp >= at(whole + 1)) whole++;
+  const start = at(whole);
+  return whole + (timestamp - start) / (at(whole + 1) - start);
+}

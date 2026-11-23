@@ -373,7 +373,7 @@ export function ChartView({
   );
   const hasBench = Boolean(bench);
   const templates = useMemo(
-    () => compiled.flatMap((f) => (f.program && enabled.includes(f.def.id) ? [formulaTemplate(f.def, f.program, data?.refs ?? {})] : [])),
+    () => compiled.flatMap((f) => (f.program && enabled.includes(f.def.id) ? [formulaTemplate(f.def, f.program, data?.refs ?? {}, data?.yearOpens)] : [])),
     [compiled, enabled, data],
   );
   // a preview lasts as long as the settings dialog it came from
@@ -1090,6 +1090,7 @@ export function ChartView({
                 templates={templates}
                 compare={compareWithHidden}
                 refs={data?.refs ?? {}}
+                yearOpens={data?.yearOpens}
                 overlays={chartState.overlays}
                 onOverlaysChange={onOverlaysChange}
                 drawTool={drawTool}

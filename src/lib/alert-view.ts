@@ -17,7 +17,7 @@ export interface AlertView {
   /** Display name of the symbol, or 全部自选 */
   name: string;
   label: string;
-  /** In plain words: 「收盘价大于 1」, or the formula with its timeframe, then 「日线收盘」 or 「盘中价格」 when that is not the default; shown under the name whatever the name is */
+  /** In plain words: 「收盘价大于 1」, or the formula with its timeframe, then 「K 线收盘」 or 「盘中价格」 when that is not the default; shown under the name whatever the name is */
   summary: string;
   /** The label as written, null when generated */
   ownLabel: string | null;
@@ -106,7 +106,7 @@ export interface AlertBadge {
   title: string;
 }
 
-/** How an alert fires, in words: 「全部自选 · 日线收盘 · 每根 K 线最多一次 · 推送」 */
+/** How an alert fires, in words: 「全部自选 · K 线收盘 · 每根 K 线最多一次 · 推送」 */
 export function alertScope(a: Pick<AlertDef, "key" | "trigger" | "notify" | "check">): string {
   return [a.key ? null : WATCHLIST, ALERT_CHECKS[a.check], a.trigger === "once" ? "仅一次" : "每根 K 线最多一次", a.notify ? "推送到通知通道" : "只在总览显示"].filter(Boolean).join(" · ");
 }

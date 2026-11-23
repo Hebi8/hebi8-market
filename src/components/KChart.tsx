@@ -20,6 +20,7 @@ import {
   type OverlayCreate,
   type OverlayFigure,
   type PaneOptions,
+  type Period,
   type Point,
   type Styles,
   type YAxisOverride,
@@ -70,6 +71,8 @@ interface KChartProps {
   templates: IndicatorTemplate<Record<string, number | undefined>>[];
   compare: (CompareEntry & { hidden?: boolean })[];
   refs: Record<string, RefSeries>;
+  /** First daily bar's open per UTC calendar year, patched in place when `tail` updates */
+  yearOpens?: Record<number, number>;
   overlays: OverlaySpec[];
   onOverlaysChange: (overlays: OverlaySpec[]) => void;
   /** Overlay name of the active drawing tool (or `MEASURE_TOOL`), null when not drawing */
@@ -125,16 +128,17 @@ interface ChartEvents {
   pinchStartEvent: () => boolean;
 }
 
-const PERIODS = {
+const PERIODS: Record<Timeframe, Period> = {
   D: { type: "day", span: 1 },
   "3D": { type: "day", span: 3 },
   W: { type: "week", span: 1 },
   M: { type: "month", span: 1 },
   Q: { type: "month", span: 3 },
-} as const;
+  Y: { type: "year", span: 1 },
+};
 
-/** How many bars the initial view should fit: ~2 years of days, ~3 years of 3D bars, ~5 years of weeks, all months. */
-const INITIAL_BARS: Record<Timeframe, number> = { D: 500, "3D": 250, W: 260, M: Infinity, Q: Infinity };
+/** How many bars the initial view should fit: ~2 years of days, ~3 years of 3D bars, ~5 years of weeks, all months/quarters/years. */
+const INITIAL_BARS: Record<Timeframe, number> = { D: 500, "3D": 250, W: 260, M: Infinity, Q: Infinity, Y: Infinity };
 
 function initialBarSpace(width: number, tf: Timeframe, total: number): number {
   const plotWidth = Math.max(200, width - 80); // minus the y-axis
@@ -335,6 +339,11 @@ function patchRefs(refs: Record<string, RefSeries>, at: number, points: BarsTail
   }
 }
 
+/** Record the year's opening price from a tail update into the map formula indicators read. */
+function patchYearOpen(yearOpens: Record<number, number> | undefined, timestamp: number, yearOpen: number | undefined): void {
+  if (yearOpens && yearOpen !== undefined) yearOpens[new Date(timestamp).getUTCFullYear()] = yearOpen;
+}
+
 /** Points without repeats in a row (two clicks on one spot). */
 function distinctPoints(points: Partial<Point>[]): Partial<Point>[] {
   return points.filter((p, i) => i === 0 || p.timestamp !== points[i - 1].timestamp || p.value !== points[i - 1].value);
@@ -427,6 +436,7 @@ export function KChart({
   templates,
   compare,
   refs,
+  yearOpens,
   tail,
   clock,
   overlays,
@@ -1315,6 +1325,7 @@ export function KChart({
     const last = list.at(-1);
     if (!tail || !last || !pushBarRef.current || tail.bar.timestamp < last.timestamp) return;
     patchRefs(refs, tail.bar.timestamp > last.timestamp ? list.length : list.length - 1, tail.refs);
+    patchYearOpen(yearOpens, tail.bar.timestamp, tail.yearOpen);
     pushBarRef.current(tail.bar as KLineData);
     scheduleLegend();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new tail moves the bar; refs belong to the bars it follows

@@ -2,7 +2,7 @@ import type { Timeframe } from "./symbols";
 import { DAY } from "./time";
 
 export interface Bar {
-  /** Unix seconds at UTC midnight of the trading day (or of the 3D/week/month/quarter start) */
+  /** Unix seconds at UTC midnight of the trading day (or of the 3D/week/month/quarter/year start) */
   t: number;
   o: number;
   h: number;
@@ -57,13 +57,42 @@ export function bucketStart(t: number, tf: Timeframe, weekends = false): number 
     const daysSinceMonday = (date.getUTCDay() + 6) % 7;
     return t - daysSinceMonday * DAY;
   }
+  if (tf === "Y") return Date.UTC(date.getUTCFullYear(), 0, 1) / 1000;
   const month = date.getUTCMonth();
   return Date.UTC(date.getUTCFullYear(), tf === "Q" ? Math.floor(month / 3) * 3 : month, 1) / 1000;
 }
 
 /**
- * Aggregate ascending daily bars into 3D, weekly (Monday-start), monthly or quarterly bars. `weekends`
- * says how 3D counts days: the symbol's own way, or for another symbol compared on a chart the chart's.
+ * First day (unix seconds at UTC midnight) of the bucket after the one containing `t`.
+ * Together with `bucketStart`, defines the half-open period `[start, nextStart)`.
+ */
+export function nextBucketStart(t: number, tf: Timeframe, weekends = false): number {
+  const start = bucketStart(t, tf, weekends);
+  if (tf === "D") return start + DAY;
+  if (tf === "3D") {
+    let next = start + DAY;
+    while (threeDayStart(next, weekends) === start) next += DAY;
+    return next;
+  }
+  if (tf === "W") return start + 7 * DAY;
+  const date = new Date(start * 1000);
+  if (tf === "Y") return Date.UTC(date.getUTCFullYear() + 1, 0, 1) / 1000;
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + (tf === "Q" ? 3 : 1), 1) / 1000;
+}
+
+/** First daily bar's open per UTC calendar year, keyed by Gregorian year (e.g. `2026`). */
+export function yearOpens(daily: Bar[]): Record<number, number> {
+  const out: Record<number, number> = {};
+  for (const bar of daily) {
+    const y = new Date(bar.t * 1000).getUTCFullYear();
+    if (!(y in out)) out[y] = bar.o;
+  }
+  return out;
+}
+
+/**
+ * Aggregate ascending daily bars into 3D, weekly (Monday-start), monthly, quarterly or yearly bars.
+ * `weekends` says how 3D counts days: the symbol's own way, or for another symbol compared on a chart the chart's.
  */
 export function aggregate(daily: Bar[], tf: Timeframe, weekends = hasWeekendBars(daily)): Bar[] {
   if (tf === "D") return daily;
