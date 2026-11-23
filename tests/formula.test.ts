@@ -180,8 +180,8 @@ describe("evaluate", () => {
     expect(run("month", dated)[0]).toEqual([12, 12, 1, 6, 1]);
     // without yearOpens override: falls back to the first bar's open for each UTC year
     expect(run("yearopen", dated)[0]).toEqual([95, 95, 105, 105, 130]);
-    // with yearOpens override (e.g. 2026-01-02 fell inside week 2025-12-29): uses exact calendar-year open
-    expect(evaluate(compile("yearopen"), { bars: dated, yearOpens: { 2025: 80, 2026: 102 } })[0]).toEqual([80, 80, 102, 102, 130]);
+    // with explicit yearOpens override: uses exact calendar-year open, and returns NaN for any year absent from the map
+    expect(evaluate(compile("yearopen"), { bars: dated, yearOpens: { 2025: 80, 2026: 102 } })[0]).toEqual([80, 80, 102, 102, NaN]);
     // bars without timestamps yield NaN
     expect(run("year", data)[0].every(Number.isNaN)).toBe(true);
     expect(run("month", data)[0].every(Number.isNaN)).toBe(true);
@@ -363,5 +363,35 @@ describe("formulaTemplate", () => {
         }
       }
     }
+  });
+
+  it("keeps full precision for yearOpens and returns NaN on a leading cross-year bucket without prior-year history", async () => {
+    const day = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 1000;
+    const makeBar = (iso: string, o: number, c: number): Bar => ({ t: day(iso), o, h: Math.max(o, c), l: Math.min(o, c), c, v: 10, adj: 1 });
+    // History begins on 2026-01-02 (Friday), whose weekly bucket starts 2025-12-29 (no 2025 daily bars exist).
+    // Repeating fraction 100 / 3 tests that loadChart does not truncate yearOpens to 8 significant digits.
+    const jpDaily = [makeBar("2026-01-02", 100, 102), makeBar("2026-01-05", 105, 106)];
+    const spyDaily = [makeBar("2026-01-02", 3, 3), makeBar("2026-01-05", 3, 3)];
+    const cfg = normalizeConfig({ aliases: { JP: "yahoo:7203.T", SPY: "yahoo:SPY" } });
+    const read = (key: string) => (key === "yahoo:7203.T" ? jpDaily : key === "yahoo:SPY" ? spyDaily : []);
+
+    // On W, first bar is stamped 2025-12-29 (no 2025 data -> yearopen is NaN, NOT 2026's 100/3); second bar is 2026-01-05 (100/3)
+    const serverW = runFormula("=JP/SPY", "yearopen", "W", cfg, read);
+    const chartW = loadChart("=JP/SPY", "W", "split", [], cfg, read);
+    const tplW = formulaTemplate(def("yo", "yearopen", "sub"), compile("yearopen"), chartW.refs, chartW.yearOpens);
+    const clientW = (await tplW.calc(chartW.bars as KLineData[], tplW as never)).map((pt) => pt.v0 ?? NaN);
+    expect(Number.isNaN(serverW.line[0])).toBe(true);
+    expect(Number.isNaN(clientW[0])).toBe(true);
+    expect(serverW.line[1]).toBe(100 / 3);
+    expect(clientW[1]).toBe(100 / 3);
+
+    // Exact equality with unrounded ref ratio agrees on both server and client
+    const eqSource = "yearopen == open(JP) / open(SPY)";
+    const serverD = runFormula("=JP/SPY", eqSource, "D", cfg, read);
+    const chartD = loadChart("=JP/SPY", "D", "split", ["yahoo:7203.T", "yahoo:SPY"], cfg, read);
+    const tplD = formulaTemplate(def("eq", eqSource, "sub"), compile(eqSource, { aliases: cfg.aliases }), chartD.refs, chartD.yearOpens);
+    const clientD = (await tplD.calc(chartD.bars as KLineData[], tplD as never)).map((pt) => pt.v0 ?? NaN);
+    expect(serverD.line[0]).toBe(1);
+    expect(clientD[0]).toBe(1);
   });
 });

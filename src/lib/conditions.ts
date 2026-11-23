@@ -1,6 +1,6 @@
 import { compile, evaluate, type OhlcvBar, type Program } from "@/indicators/formula";
 import { describeError } from "@/indicators/formula-indicators";
-import { closedReader, loadDaily, loadRefs, tradesWeekends, trimClosed, type DailyReader } from "./bars";
+import { loadDaily, loadRefs, refPeriodClosed, tradesWeekends, trimClosed, type DailyReader } from "./bars";
 import { findItem, type Config } from "./config";
 import { aggregate, yearOpens as computeYearOpens, type Bar } from "./series";
 import type { ConditionResult } from "./stats";
@@ -17,7 +17,7 @@ export const toOhlcv = (bars: Bar[]): OhlcvBar[] =>
  */
 export const holds = (v: number | undefined): boolean | null => (v === undefined || Number.isNaN(v) ? null : v !== 0);
 
-/** Options for `runFormula` / `evalRule`. With `closed`, unfinished bars of `tf` as of `now` are dropped and refs read closed daily bars. */
+/** Options for `runFormula` / `evalRule`. With `closed`, trailing bars where the main symbol or any referenced symbol has not closed that period are dropped. */
 export interface FormulaOptions {
   closed?: boolean;
   now?: number;
@@ -56,25 +56,31 @@ export function runFormula(
   read: DailyReader = readDaily,
   cache: SeriesCache = new Map(),
   opts: FormulaOptions = {},
-): { bars: Bar[]; daily: Bar[]; weekends: boolean; line: number[] } {
+): { bars: Bar[]; daily: Bar[]; weekends: boolean; refs: string[]; line: number[] } {
   const program = compileFor(formula, cfg, findItem(cfg, key)?.bench ?? null);
   const now = opts.now ?? Date.now();
-  const effectiveRead = opts.closed ? closedReader(now, read) : read;
   let entry = cache.get(tf);
   if (!entry) {
-    const daily = loadDaily(key, cfg.prices, cfg, effectiveRead);
-    const weekends = tradesWeekends(key, cfg, effectiveRead);
+    const daily = loadDaily(key, cfg.prices, cfg, read);
+    const weekends = tradesWeekends(key, cfg, read);
     const series = aggregate(daily, tf, weekends);
-    const bars = opts.closed ? trimClosed(key, series, tf, cfg, effectiveRead, weekends, now) : series;
+    const bars = opts.closed ? trimClosed(key, series, tf, cfg, read, weekends, now) : series;
     entry = { daily, bars, weekends, yearOpens: computeYearOpens(daily) };
     cache.set(tf, entry);
   }
-  const refs = loadRefs(entry.bars, entry.weekends, program.refs, tf, cfg.prices, cfg, effectiveRead);
+  let bars = entry.bars;
+  if (opts.closed && program.refs.length > 0) {
+    let end = bars.length;
+    while (end > 0 && !program.refs.every((r) => refPeriodClosed(r, bars[end - 1].t, tf, cfg, read, entry.weekends, now))) end--;
+    if (end !== bars.length) bars = bars.slice(0, end);
+  }
+  const refs = loadRefs(bars, entry.weekends, program.refs, tf, cfg.prices, cfg, read);
   return {
-    bars: entry.bars,
+    bars,
     daily: entry.daily,
     weekends: entry.weekends,
-    line: evaluate(program, { bars: toOhlcv(entry.bars), refs, yearOpens: entry.yearOpens }).at(-1)!,
+    refs: program.refs,
+    line: evaluate(program, { bars: toOhlcv(bars), refs, yearOpens: entry.yearOpens }).at(-1)!,
   };
 }
 

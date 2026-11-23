@@ -260,11 +260,17 @@ function macdLine(x: Series, fast: number, slow: number): Series {
 }
 
 function yearOpenSeries(bars: OhlcvBar[], yearOpens?: Record<number, number>): Series {
+  if (yearOpens !== undefined) {
+    return bars.map((d) => {
+      if (!Number.isFinite(d.timestamp)) return NaN;
+      const v = yearOpens[new Date(d.timestamp!).getUTCFullYear()];
+      return Number.isFinite(v) ? v : NaN;
+    });
+  }
   const first = new Map<number, number>();
   return bars.map((d) => {
     if (!Number.isFinite(d.timestamp)) return NaN;
     const y = new Date(d.timestamp!).getUTCFullYear();
-    if (yearOpens && Number.isFinite(yearOpens[y])) return yearOpens[y];
     if (!first.has(y)) first.set(y, d.open);
     return first.get(y)!;
   });

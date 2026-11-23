@@ -222,7 +222,7 @@ export const TOOLS: Tool[] = [
         keys = group.symbols.map((s) => s.key);
       } else keys = allItems(cfg).map((i) => i.key);
       const now = Date.now();
-      const { rows, uncached } = scan(cfg, keys, args.formula, args.tf, readerFor(args.check, now), { closed: args.check === "close", now });
+      const { rows, uncached } = scan(cfg, keys, args.formula, args.tf, readerFor(args.check), { closed: args.check === "close", now });
       return {
         tf: args.tf,
         check: args.check,
@@ -250,7 +250,7 @@ export const TOOLS: Tool[] = [
     run: ({ dir }, args) => {
       const cfg = readConfig(dir);
       const now = Date.now();
-      const t = testFormula(cfg, keyOf(cfg, args.key), args.formula, args.tf, args.bars, readerFor(args.check, now), { closed: args.check === "close", now });
+      const t = testFormula(cfg, keyOf(cfg, args.key), args.formula, args.tf, args.bars, readerFor(args.check), { closed: args.check === "close", now });
       return {
         key: t.key,
         name: t.name,

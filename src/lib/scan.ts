@@ -6,18 +6,18 @@
  */
 import { describeError } from "@/indicators/formula-indicators";
 import type { AlertCheck } from "./alert-conds";
-import { closedReader, type DailyReader } from "./bars";
+import type { DailyReader } from "./bars";
 import { compileFor, holds, runFormula, type FormulaOptions } from "./conditions";
 import type { Config } from "./config";
 import { fmtDate } from "./format";
 import { nameOf } from "./names";
 import { liveReader } from "./quotes";
 import type { Bar } from "./series";
-import { getSymbol } from "./store";
+import { getSymbol, readDaily } from "./store";
 import { isSynthetic, TF_LABELS, type Timeframe } from "./symbols";
 
-/** The bars an alert with this `check` is judged on: with today's unfinished bar, or closed bars only. */
-export const readerFor = (check: AlertCheck, now = Date.now()): DailyReader => (check === "close" ? closedReader(now) : liveReader());
+/** The daily reader an alert with this `check` starts from: live quotes for `price`, raw cached daily bars for `close` (trimmed by `periodClosed`). */
+export const readerFor = (check: AlertCheck): DailyReader => (check === "close" ? readDaily : liveReader());
 
 /**
  * A formula's value as a reply can carry it. JSON has no infinity, so an infinite value (a

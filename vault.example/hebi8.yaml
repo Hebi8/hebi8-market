@@ -57,7 +57,7 @@ datasets: {}                   # 自定义数据集：名字 → git 地址或�
 #         moving_up_pct 上涨 % / moving_down_pct 下跌 %（value 是 { pct, bars }）
 #   trigger：once 仅一次（默认，触发后写成 enabled: false）/ bar 每根 K 线一次；也可以不写 cond，写 when 公式，tf 默认 D
 # 不写 key 的对全部自选生效，每次日线同步后判断，在成立的标的上显示，只能用涨跌 % 或 when 公式
-# check：判断时机。price 盘中价格（有 key 的默认）每次取到最新价都判断；close 日线收盘（没 key 的默认）只在同步后看已收盘的日线
+# check：判断时机。price 盘中价格（有 key 的默认）每次取到最新价都判断；close K 线收盘（没 key 的默认）只在同步后看该周期已收盘的 K 线
 # notify: false 只在总览显示、不推送
 # agent 经 MCP（设置页「Agent 接入」）建的带 by: agent；它建的对全部自选的警报还带 draft: true，是待确认的草稿：
 #   不判断也不推送，在页面上点「确认」（或者把 draft: true 这一项删掉）才生效，不想要就删掉整条
@@ -70,7 +70,7 @@ datasets: {}                   # 自定义数据集：名字 → git 地址或�
 alerts: []
 
 chart:                         # 全局图表偏好（UI 改动会写回这里）
-  tf: W                        # D | 3D | W | M | Q
+  tf: W                        # D | 3D | W | M | Q | Y
   log: true
   style: candle_solid          # candle_solid | candle_up_stroke | ohlc | area
   indicators: [MA, VOL]        # 默认开启的指标名（内置 / 代码 / 公式 id）

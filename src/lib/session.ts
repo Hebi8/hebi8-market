@@ -92,6 +92,9 @@ function nextUtcBucket(now: number, tf: Timeframe, weekends: boolean): number {
 
 /** Unix seconds at UTC midnight of a day. */
 const secondsOf = (p: Parts) => Date.UTC(p.y, p.m - 1, p.d) / 1000;
+/** Closing instant (ms) of a session ending at `end` on `day`; `00:00` means end of that day (`24:00`). */
+const closeUtc = (day: Parts, end: { hh: number; mm: number }, timezone: string) =>
+  zonedToUtc(end.hh === 0 && end.mm === 0 ? dayOf(day, 1) : { ...day, ...end }, timezone);
 
 /** How far ahead the next trading day is looked for: longer than any run of holidays. */
 const LOOKAHEAD_DAYS = 14;
@@ -115,35 +118,37 @@ function isDayOff({ holidays, corrections }: TradingCalendar, day: Parts): boole
 }
 
 /**
- * When the bar of `tf` covering `[startDay, nextStartDay)` closes on `calendar`, and which daily
- * bar day (`day`, unix seconds at UTC midnight) carries that close; null when the period has no
- * trading days on `calendar` (e.g. a full-holiday week).
+ * Latest trading bar day in `[start, endExclusive)` (unix seconds, UTC midnight) and its closing
+ * instant (ms) on `calendar`; null when `calendar` has no trading in that range.
  *
  * For exchanges with known `hours`, sessions are grouped by the daily bar day they produce
- * (`barDayOf`, so holiday-merged overnight sessions like CME `1700F2` stay with their bucket).
- * Without known `hours`, weekdays count as trading days unless `weekends` is true.
+ * (`barDayOf`, so holiday-merged overnight sessions like CME `1700F2` stay with their bar day).
+ * Without known `hours`, weekdays count as trading days unless `calendarWeekends` is true.
  */
-export function periodClose(startDay: number, tf: Timeframe, calendar: TradingCalendar, weekends = false): PeriodClose | null {
-  const start = bucketStart(startDay, tf, weekends);
-  if (tf === "D") return { day: start, closeAt: dayCloseAt(start, calendar) };
-  const next = nextBucketStart(start, tf, weekends);
-  if (calendar.hours === "24x7") return { day: next - DAY, closeAt: next * 1000 };
+export function latestCloseInRange(
+  start: number,
+  endExclusive: number,
+  calendar: TradingCalendar,
+  calendarWeekends = false,
+): PeriodClose | null {
+  if (endExclusive <= start) return null;
+  if (calendar.hours === "24x7") return { day: endExclusive - DAY, closeAt: endExclusive * 1000 };
   if (calendar.hours) {
     const timezone = calendar.timezone ?? "UTC";
-    const nextParts = dayOf(partsIn(new Date(next * 1000), "UTC"));
-    for (let d = dayOf(nextParts, OVERNIGHT_CARRY_DAYS); secondsOf(d) >= start; d = dayOf(d, -1)) {
+    const endParts = dayOf(partsIn(new Date(endExclusive * 1000), "UTC"));
+    for (let d = dayOf(endParts, OVERNIGHT_CARRY_DAYS); secondsOf(d) >= start; d = dayOf(d, -1)) {
       const end = closeOn(calendar, d);
       if (!end) continue;
       const barDay = secondsOf(barDayOf(calendar, d));
-      if (bucketStart(barDay, tf, weekends) === start) {
-        return { day: barDay, closeAt: zonedToUtc({ ...d, ...end }, timezone) };
+      if (barDay >= start && barDay < endExclusive) {
+        return { day: barDay, closeAt: closeUtc(d, end, timezone) };
       }
     }
     return null;
   }
-  for (let t = next - DAY; t >= start; t -= DAY) {
+  for (let t = endExclusive - DAY; t >= start; t -= DAY) {
     const d = dayOf(partsIn(new Date(t * 1000), "UTC"));
-    if (!weekends) {
+    if (!calendarWeekends) {
       const dow = weekday(d);
       if (dow === 0 || dow === 6) continue;
     }
@@ -151,6 +156,26 @@ export function periodClose(startDay: number, tf: Timeframe, calendar: TradingCa
     return { day: t, closeAt: dayCloseAt(t, calendar) };
   }
   return null;
+}
+
+/**
+ * When the bar of `tf` covering `[startDay, nextStartDay)` closes on `calendar`, and which daily
+ * bar day (`day`, unix seconds at UTC midnight) carries that close; null when the period has no
+ * trading days on `calendar` (e.g. a weekend for `D`, or a full-holiday week).
+ *
+ * `weekends` controls the 3D bucket grid; `calendarWeekends` is this symbol's own weekend-trading
+ * fallback when `calendar.hours` is unknown (defaults to `weekends`).
+ */
+export function periodClose(
+  startDay: number,
+  tf: Timeframe,
+  calendar: TradingCalendar,
+  weekends = false,
+  calendarWeekends = weekends,
+): PeriodClose | null {
+  const start = bucketStart(startDay, tf, weekends);
+  const next = nextBucketStart(start, tf, weekends);
+  return latestCloseInRange(start, next, calendar, calendarWeekends);
 }
 
 /**
@@ -170,7 +195,7 @@ export function barCloseAt(tf: Timeframe, now: number, clock: SessionClock, week
   if (session !== "open" || !hours || !timezone) return null;
   const closeAt = (day: Parts) => {
     const end = closeOn(clock, day);
-    return end ? zonedToUtc({ ...day, ...end }, timezone) : null;
+    return end ? closeUtc(day, end, timezone) : null;
   };
   // the session is the quote's: counted from when it was taken, so a close that has passed since ends the countdown
   let day = dayOf(partsIn(new Date(quotedAt), timezone));
@@ -181,15 +206,20 @@ export function barCloseAt(tf: Timeframe, now: number, clock: SessionClock, week
 
 /**
  * When the daily bar of trading day `t` (unix seconds at UTC midnight) is complete (ms): the end
- * of the UTC day around the clock, the close of that day's session at an exchange (the earlier one
- * on a half day), and the end of the day on the exchange's calendar while its hours are not known.
- * A bar on a day the calendar calls a holiday did trade: its regular hours count.
+ * of the UTC day around the clock, the close of the last session that produces bar day `t`
+ * (covering half days and holiday-merged overnight sessions like CME `1700F2`), and the end of
+ * the day on the exchange's calendar while its hours are not known.
+ * A bar on a day the calendar calls a holiday with no merged session did trade: its regular hours count.
  */
 export function dayCloseAt(t: number, calendar: TradingCalendar): number {
   if (calendar.hours === "24x7") return (t + 86400) * 1000;
+  if (calendar.hours) {
+    const scheduled = latestCloseInRange(t, t + DAY, calendar, true);
+    if (scheduled) return scheduled.closeAt;
+  }
   const day = dayOf(partsIn(new Date(t * 1000), "UTC"));
   const end = closeOn(calendar, day) ?? closeOn({ ...calendar, holidays: null, corrections: null }, day);
-  return zonedToUtc(end ? { ...day, ...end } : dayOf(day, 1), calendar.timezone ?? "UTC");
+  return end ? closeUtc(day, end, calendar.timezone ?? "UTC") : zonedToUtc(dayOf(day, 1), calendar.timezone ?? "UTC");
 }
 
 /**

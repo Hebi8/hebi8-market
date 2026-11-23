@@ -335,6 +335,12 @@ describe("the countdown to the bar's close", () => {
     // hours not synced yet: once the day is over on the exchange's calendar
     expect(iso(dayCloseAt(friday, plain(null, "America/New_York")))).toBe("2026-10-10T04:00");
     expect(iso(dayCloseAt(friday, plain(null, null)))).toBe("2026-10-10T00:00");
+    // 0000-0000 ends at the end of the day (24:00), not the start (00:00)
+    expect(iso(dayCloseAt(friday, plain("0000-0000", "UTC")))).toBe("2026-10-10T00:00");
+    // ES holiday-merged overnight sessions: Thanksgiving bar (Thu 11-26) closes Fri 11-27 12:15 Chicago (18:15 UTC);
+    // July 4 observed bar (Fri 07-03) closes Mon 07-06 16:00 Chicago (21:00 UTC)
+    expect(iso(dayCloseAt(Date.UTC(2026, 10, 26) / 1000, ES))).toBe("2026-11-27T18:15");
+    expect(iso(dayCloseAt(Date.UTC(2026, 6, 3) / 1000, ES))).toBe("2026-07-06T21:00");
   });
 
   it("formats like TradingView", () => {
@@ -400,8 +406,12 @@ describe("periodClose", () => {
     expect(fmt(periodClose(sec("2026-12-21"), "W", NASDAQ, false))).toEqual({ day: "2026-12-24", closeAt: "2026-12-24T18:00" });
     // 3D (Tue-Thu across Thanksgiving): Wed 2026-11-25
     expect(fmt(periodClose(sec("2026-11-24"), "3D", NASDAQ, false))).toEqual({ day: "2026-11-25", closeAt: "2026-11-25T21:00" });
-    // ES holiday-merged Thanksgiving 3D (Tue-Thu): barDay Thu closes Fri 12:15 CST (18:15 UTC)
+    // ES holiday-merged Thanksgiving daily and 3D (Tue-Thu): barDay Thu closes Fri 12:15 CST (18:15 UTC)
+    expect(fmt(periodClose(sec("2026-11-26"), "D", ES, false))).toEqual({ day: "2026-11-26", closeAt: "2026-11-27T18:15" });
     expect(fmt(periodClose(sec("2026-11-24"), "3D", ES, false))).toEqual({ day: "2026-11-26", closeAt: "2026-11-27T18:15" });
+    // Weekend or unmerged holiday on D has no scheduled session -> null
+    expect(periodClose(sec("2026-10-10"), "D", NASDAQ, false)).toBeNull();
+    expect(periodClose(sec("2026-11-26"), "D", NASDAQ, false)).toBeNull();
     // Month / Quarter / Year
     expect(fmt(periodClose(sec("2026-10-01"), "M", NASDAQ, false))).toEqual({ day: "2026-10-30", closeAt: "2026-10-30T20:00" });
     expect(fmt(periodClose(sec("2026-10-01"), "Q", NASDAQ, false))).toEqual({ day: "2026-12-31", closeAt: "2026-12-31T21:00" });

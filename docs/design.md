@@ -391,10 +391,10 @@ date,open,high,low,close,volume
 | `close` | K 线收盘 | 只在日线同步收尾时 | 只看所选周期 `tf` 已经收盘完成的 K 线（日线截掉未收盘的当日，3D / 周 / 月 / 季 / 年线截掉尚未走完的当期） |
 
 - 默认值：写了 `key` 的是 `price`，没写的是 `close`，等于默认值时不写进 yaml（所以以前的 yaml 一个字不用改）。两种警报都可以改成另一种：对全部自选选「盘中价格」，就每轮对每个自选标的判断（自选都在轮询里）；盯一个标的选「K 线收盘」，它的标的不为它进轮询。
-- 「已经收盘」怎么判断（`session.ts` 的 `dayCloseAt()` / `periodClose()`，`bars.ts` 的 `closedReader()` / `periodClosed()` / `trimClosed()` / `closedSeries()`）：
-  - **日线（`tf === "D"`）**：全天交易的（`hours` 是 `24x7`）到那个 UTC 日结束；交易所的到那一天的收盘时刻（交易日历里那天的时段，半日市就是提前的那个时刻，§2.6；交易所时区）；`hours` 还没同步出来的，到交易所日历上那一天结束；`data:` 数据集的行是发布出来的值，全部算已收盘；合成标的看各操作数用到的那根。
-  - **更高周期（`3D / W / M / Q / Y`）**：按 `[startDay, nextBucketStart)` 查该标的的交易日历（`periodClose`），倒序找到桶内最后一个交易日 `lastTradingDay`（没有时段时非周末市场按工作日、周末市场按自然日；全周期都是假日返回 `null` 不视为已收），直到 `dayCloseAt(lastTradingDay, calendar) <= now` 且缓存日线已覆盖到该收盘日（或无同步错误且自然周期已过）才算收线。美股周五 16:00 ET 收盘后周六清晨同步即收周线，遇 Good Friday 等假日则周四收盘即收周线；加密 `24x7` 要到周日 24:00 UTC 后才收周线；`data:` 数据集以 `nextBucketStart <= now`（UTC 自然周期结束）为准；合成标的（如 `=BTC/SPY`）要求桶内全部操作数均已收线（遇某操作数整桶休市则检查它上一根已用日线已收）。
-  - 公式引用的别的标的（`loadRefs`、`close(QQQ)`、`bench`）同样经 `closedReader` 只读已收盘日线并对齐到主标的的已收盘周期序列。`alert_state.seen` 只记入已参与求值的最后已收盘周期内各操作数的最后交易日，避免未收完的周期污染单调性检查；通知摘要里的收盘价也取被判定的已收盘 K 线收盘价。
+- 「已经收盘」怎么判断（`session.ts` 的 `latestCloseInRange()` / `dayCloseAt()` / `periodClose()`，`bars.ts` 的 `periodClosed()` / `refPeriodClosed()` / `trimClosed()` / `closedSeries()`）：
+  - **统一收线模型（`D / 3D / W / M / Q / Y`）**：按 `[startDay, nextBucketStart)` 查该标的的交易日历（`calendarOfRow` 将 `kind` 为 `crypto`/`cryptocurrency` 统一归为 `24x7`；`latestCloseInRange` 按 `barDayOf` 倒序找归属该桶的最后一段交易时段，自然覆盖半日市、Good Friday 等假日提前收周，以及 ES 感恩节等跨假日合并时段在日线与多日线上的真实收盘时刻；无时段时按该标的自身是否周末交易回退；全周期休市返回 `null`）。非 `data:` 标的必须同时满足：`close.closeAt <= now`、记录的 `syncedAt >= close.closeAt`（防止盘中提前写入的半截日线在收盘后同步失败时误当终值）、且缓存日线已覆盖到 `close.day`（非 `24x7` 标的若无 `syncError` 且自然周期已过也放行，避免未录假日永久卡住）。`data:` 数据集日线常闭、更高周期以 `nextBucketStart <= now` 为准。
+  - **合成标的**：先基于未裁剪的缓存日线合成，再由 `trimClosed` 按桶截掉未收完的尾部，避免未收盘操作数被提前删掉而静默触发昨日价格前填（如 `=JP/SPY` 在 JP 已收、SPY 盘中时）。第一操作数决定桶内的交易日，因此要求：① 第一操作数在该桶已收线；② 其余操作数按各自日历在第一操作数桶内最后交易日（含）之前已收线（遇整段休市则要求其前向填充的上一根日线已收）。例如 `=SPY/BTC` 周线在 SPY 与 BTC 均收完周五后即不可变、不必等周一；`=BTC/SPY` 照常等 BTC 周日收完。
+  - **跨标的公式引用（`program.refs`）**：在 `check: close` 下（`runFormula(..., { closed: true })`），除主标的收线外，还通过 `refPeriodClosed` 等待公式引用的所有已缓存标的在同一周期桶上收线（同日历标的如 `DJI` + `close(DJT)` 零延迟；跨市场如 `SPY` 周线 + `close(BTC)` 等到 BTC 周日收盘后以不可变终值判断，保证与事后 `test_formula` 一致）。`alert_state.seen` 同时记入主标的及公式引用标的在最后已收盘桶内的最后交易日，防止单调性漏洞；通知摘要里的收盘价也取被判定的已收盘周期 K 线收盘价。
 
 `when` 就是布尔公式，能用别名、`close(X)`、`bench`，tf 默认 D。
 

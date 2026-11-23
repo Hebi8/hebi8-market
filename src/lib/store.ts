@@ -61,9 +61,9 @@ const toRow = (r: RawRow): SymbolRow => ({
   lastT: r.last_t,
 });
 
-/** A symbol's trading calendar as far as its source gave one; nulls for a symbol that is not cached. */
+/** A symbol's trading calendar as far as its source gave one; nulls for a symbol that is not cached. Crypto always trades 24x7 regardless of source placeholder hours like Yahoo's `0000-0000`. */
 export const calendarOfRow = (row: SymbolRow | null | undefined): TradingCalendar => ({
-  hours: row?.hours ?? null,
+  hours: row?.kind === "crypto" || row?.kind === "cryptocurrency" ? "24x7" : (row?.hours ?? null),
   timezone: row?.timezone ?? null,
   holidays: row?.holidays ?? null,
   corrections: row?.corrections ?? null,
