@@ -2,15 +2,17 @@
 
 import { revalidatePath } from "next/cache";
 import { isMap, isScalar, type Document, type YAMLMap, type YAMLSeq } from "yaml";
-import { CHART_STYLES, USAGE_LIMITS, parseLineStyles, resolveKey, type ChartPrefs, type LineOverride, type FormulaDef, type UsageLimits } from "@/lib/config";
+import { normalizeTimeframes } from "@/components/drawing-spec";
+import { isPresetFibTemplate, type FibTemplate } from "@/components/fib";
+import { CHART_STYLES, USAGE_LIMITS, parseFibTemplate, parseLineStyles, resolveKey, type ChartPrefs, type LineOverride, type FormulaDef, type UsageLimits } from "@/lib/config";
 import * as ops from "@/lib/ops";
-import type { AddSymbolInput, AlertInput } from "@/lib/ops";
+import type { AddSymbolInput, AlertInput, ColumnInput } from "@/lib/ops";
 import { CHANGE_PERIODS, MAX_PERIODS } from "@/lib/periods";
 import type { Translation } from "@/lib/profile";
 import { translateDescription } from "@/lib/profiles";
 import type { Prices } from "@/lib/series";
 import { getSymbol } from "@/lib/store";
-import { isSynthetic, isTimeframe, isValidKey } from "@/lib/symbols";
+import { isSynthetic, isTimeframe, isValidKey, type Timeframe } from "@/lib/symbols";
 import { operands } from "@/lib/synth";
 import { syncAll, syncOne } from "@/lib/sync";
 import {
@@ -18,9 +20,11 @@ import {
   locateEntry,
   readChartState,
   readConfig,
+  removeFibTemplate,
   setList,
   setScalar,
   updateConfig,
+  upsertFibTemplate,
   writeChartState,
   writeJournal,
   writeNote,
@@ -168,6 +172,20 @@ export async function deleteIndicator(id: string): Promise<ActionResult> {
   return attempt((viewer) => ops.deleteIndicator(viewer, id));
 }
 
+export async function saveColumn(input: ColumnInput): Promise<ActionResult> {
+  return attempt((viewer) => {
+    ops.saveColumn(viewer, input);
+  });
+}
+
+export async function deleteColumn(id: string): Promise<ActionResult> {
+  return attempt((viewer) => ops.deleteColumn(viewer, id));
+}
+
+export async function reorderColumns(ids: string[]): Promise<ActionResult> {
+  return attempt((viewer) => ops.reorderColumns(viewer, ids));
+}
+
 /**
  * One change to a chart's drawings and comparisons, applied to what the file has when it runs, so
  * changes sent one after another (Server Actions run in order) each build on the one before,
@@ -186,7 +204,21 @@ export async function editChartState(key: string, change: ChartChange): Promise<
       const overlays = (Array.isArray(change.overlays) ? change.overlays : []).flatMap((o) => {
         if (typeof o?.name !== "string" || !Array.isArray(o.points)) return [];
         const points = o.points.filter((p) => Number.isFinite(p?.timestamp) && Number.isFinite(p?.value)).map((p) => ({ timestamp: p.timestamp, value: p.value }));
-        return [{ name: o.name, points, ...(o.styles ? { styles: o.styles } : {}), ...(o.lock ? { lock: true } : {}), ...(o.hidden ? { hidden: true } : {}), ...(o.extendData !== undefined ? { extendData: o.extendData } : {}), ...(typeof o.tvId === "string" ? { tvId: o.tvId } : {}), ...(o.scale === "log" || o.scale === "linear" ? { scale: o.scale } : {}) }];
+        const timeframes = Array.isArray(o.timeframes) ? normalizeTimeframes(o.timeframes.filter((t): t is Timeframe => isTimeframe(t))) : undefined;
+        return [
+          {
+            name: o.name,
+            points,
+            ...(o.styles ? { styles: o.styles } : {}),
+            ...(o.lock ? { lock: true } : {}),
+            ...(o.hidden ? { hidden: true } : {}),
+            ...(o.extendData !== undefined ? { extendData: o.extendData } : {}),
+            ...(typeof o.tvId === "string" ? { tvId: o.tvId } : {}),
+            ...(o.scale === "log" || o.scale === "linear" ? { scale: o.scale } : {}),
+            ...(typeof o.pane === "string" && o.pane ? { pane: o.pane } : {}),
+            ...(timeframes ? { timeframes } : {}),
+          },
+        ];
       });
       writeChartState(dir, key, { ...readChartState(dir, key), overlays });
       return;
@@ -215,7 +247,7 @@ export async function editChartState(key: string, change: ChartChange): Promise<
 }
 
 export async function setChartPrefs(
-  partial: Partial<Omit<ChartPrefs, "panes" | "styles">> & { prices?: Prices; panes?: Record<string, "main" | "sub" | null>; styles?: Record<string, LineOverride[] | null> },
+  partial: Partial<Omit<ChartPrefs, "panes" | "styles" | "fibTemplates">> & { prices?: Prices; panes?: Record<string, "main" | "sub" | null>; styles?: Record<string, LineOverride[] | null> },
 ): Promise<ActionResult> {
   return attempt(({ dir }) => {
     updateConfig(dir, (doc) => {
@@ -262,6 +294,25 @@ export async function setChartPrefs(
         setScalar(doc, ["prices"], partial.prices);
       }
     });
+  });
+}
+
+/** Save or replace a personal Fibonacci template under `chart.fibTemplates` in the viewer's yaml. */
+export async function saveFibTemplate(input: FibTemplate): Promise<ActionResult> {
+  return attempt(({ dir }) => {
+    const tpl = parseFibTemplate(input);
+    if (!tpl) throw new Error("模板名称不能为空（最多 40 字），且至少启用 1 个档位");
+    if (isPresetFibTemplate(tpl.name)) throw new Error(`「${tpl.name}」是内置预设，请换一个名称`);
+    updateConfig(dir, (doc) => upsertFibTemplate(doc, tpl));
+  });
+}
+
+/** Remove a personal Fibonacci template from `chart.fibTemplates`; drops the key when empty. */
+export async function deleteFibTemplate(name: string): Promise<ActionResult> {
+  return attempt(({ dir }) => {
+    const target = str(name);
+    if (!target) throw new Error("缺少模板名称");
+    updateConfig(dir, (doc) => removeFibTemplate(doc, target));
   });
 }
 

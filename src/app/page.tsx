@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
+import type { OverviewColumn } from "@/components/ColumnsDialog";
 import { ConfigErrorView } from "@/components/ConfigErrorView";
 import { Overview, type OverviewData, type OverviewRow } from "@/components/Overview";
+import { compileFormula } from "@/indicators/formula-indicators";
 import { alertBadges, alertViews } from "@/lib/alert-view";
 import { benchLabel, nameOf } from "@/lib/names";
 import { overviewStats } from "@/lib/quotes";
@@ -27,11 +29,16 @@ export default async function Home() {
   if (firstRun) void syncAll().catch(() => undefined);
   // alerts are personal like notes: a visitor sees none
   const badges = viewer.canWrite ? alertBadges(viewer.vault, config) : {};
+  const columns: OverviewColumn[] = config.columns.map((c) => ({
+    ...c,
+    error: compileFormula(c.formula, { aliases: config.aliases }).error,
+  }));
 
   const groups = config.groups.map((g) => ({
     name: g.name,
     items: g.symbols.map((item): OverviewRow => {
       const row = symbols[item.key];
+      const itemStats = stats[item.key]?.stats ?? null;
       return {
         key: item.key,
         name: nameOf(config, item.key, row?.name),
@@ -41,7 +48,13 @@ export default async function Home() {
         currency: row?.currency ?? null,
         bench: item.bench,
         benchLabel: item.bench ? benchLabel(config, item.bench, symbols[item.bench]?.name) : null,
-        stats: stats[item.key]?.stats ?? null,
+        stats: itemStats,
+        columns: Object.fromEntries(
+          config.columns.map((c) => {
+            const raw = itemStats?.columns && Object.hasOwn(itemStats.columns, c.id) ? itemStats.columns[c.id] : null;
+            return [c.id, typeof raw === "number" && Number.isFinite(raw) ? raw : null];
+          }),
+        ),
         quote: stats[item.key]?.status ?? null,
         syncError: row?.syncError ?? null,
         badges: badges[item.key] ?? [],
@@ -54,6 +67,7 @@ export default async function Home() {
   const data: OverviewData = {
     groups,
     periods: config.periods,
+    columns,
     updown: config.updown,
     alerts: viewer.canWrite ? alertViews(viewer.vault, config, symbols) : [],
     aliases: config.aliases,

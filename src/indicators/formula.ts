@@ -10,10 +10,15 @@
  * symbol (an alias or a quoted key) aligned to this symbol's bars; `bench` is the configured benchmark.
  */
 
+import { isSynthetic, isValidKey } from "@/lib/symbols";
+import { parseSynth } from "@/lib/synth";
+
 export type Series = number[];
 type Value = Series | number;
 
 export interface OhlcvBar {
+  /** Bar timestamp in UTC milliseconds (matching KLineChart's KLineData.timestamp) */
+  timestamp?: number;
   open: number;
   high: number;
   low: number;
@@ -34,6 +39,8 @@ export interface RefSeries {
 export interface EvalInput {
   bars: OhlcvBar[];
   refs?: Record<string, RefSeries>;
+  /** First daily bar's open per UTC calendar year, so 3D and weekly series align with daily/monthly/yearly `yearopen`. */
+  yearOpens?: Record<number, number>;
 }
 
 export class FormulaError extends Error {
@@ -104,6 +111,9 @@ export const SERIES_VARS: Record<string, string> = {
   hl2: "(high + low) / 2",
   hlc3: "(high + low + close) / 3",
   tr: "真实波幅",
+  year: "当前 K 线的 UTC 年份（如 2026）",
+  month: "当前 K 线的 UTC 月份（1–12）",
+  yearopen: "该公历年首个交易日的开盘价",
 };
 
 const isSeries = (v: Value): v is Series => Array.isArray(v);
@@ -246,6 +256,29 @@ function trueRange(bars: OhlcvBar[]): Series {
   });
 }
 
+function macdLine(x: Series, fast: number, slow: number): Series {
+  const f = ema(x, fast);
+  const s = ema(x, slow);
+  return f.map((v, i) => v - s[i]);
+}
+
+function yearOpenSeries(bars: OhlcvBar[], yearOpens?: Record<number, number>): Series {
+  if (yearOpens !== undefined) {
+    return bars.map((d) => {
+      if (!Number.isFinite(d.timestamp)) return NaN;
+      const v = yearOpens[new Date(d.timestamp!).getUTCFullYear()];
+      return Number.isFinite(v) ? v : NaN;
+    });
+  }
+  const first = new Map<number, number>();
+  return bars.map((d) => {
+    if (!Number.isFinite(d.timestamp)) return NaN;
+    const y = new Date(d.timestamp!).getUTCFullYear();
+    if (!first.has(y)) first.set(y, d.open);
+    return first.get(y)!;
+  });
+}
+
 interface Ctx {
   len: number;
   bars: OhlcvBar[];
@@ -328,6 +361,28 @@ export const FUNCTIONS: Record<string, FnSpec> = {
     },
   },
   rsi: { arity: 2, windows: [1], hint: "rsi(x, n) 相对强弱指数", run: ([x, n], { len }) => rsi(toSeries(x, len), n as number) },
+  macd: {
+    arity: [1, 3],
+    windows: [1, 2],
+    hint: "macd(x, fast=12, slow=26) MACD 线（快慢 EMA 之差）",
+    run: ([x, fast = 12, slow = 26], { len }) => macdLine(toSeries(x, len), fast as number, slow as number),
+  },
+  macdsignal: {
+    arity: [1, 4],
+    windows: [1, 2, 3],
+    hint: "macdsignal(x, fast=12, slow=26, signal=9) MACD 信号线",
+    run: ([x, fast = 12, slow = 26, signal = 9], { len }) => ema(macdLine(toSeries(x, len), fast as number, slow as number), signal as number),
+  },
+  macdhist: {
+    arity: [1, 4],
+    windows: [1, 2, 3],
+    hint: "macdhist(x, fast=12, slow=26, signal=9) MACD 柱（MACD 线减信号线）",
+    run: ([x, fast = 12, slow = 26, signal = 9], { len }) => {
+      const line = macdLine(toSeries(x, len), fast as number, slow as number);
+      const sig = ema(line, signal as number);
+      return line.map((v, i) => v - sig[i]);
+    },
+  },
   atr: { arity: 1, windows: [0], hint: "atr(n) 平均真实波幅", run: ([n], { bars }) => rma(trueRange(bars), n as number) },
   corr: {
     arity: 3,
@@ -592,6 +647,79 @@ class Parser {
   }
 }
 
+const BINARY: Record<ArithOp, (a: number, b: number) => number> = {
+  "+": (a, b) => a + b,
+  "-": (a, b) => a - b,
+  "*": (a, b) => a * b,
+  "/": (a, b) => a / b,
+  "^": (a, b) => a ** b,
+};
+
+const COMPARE: Record<CmpOp, (a: number, b: number) => boolean> = {
+  ">": (a, b) => a > b,
+  "<": (a, b) => a < b,
+  ">=": (a, b) => a >= b,
+  "<=": (a, b) => a <= b,
+  "==": (a, b) => a === b,
+  "!=": (a, b) => a !== b,
+};
+
+const SCALAR_FNS = new Set(["abs", "sqrt", "log", "exp", "max", "min"]);
+
+/** Constant scalar value of an AST node when it cannot depend on any series; null if series-valued. */
+function evalConst(node: Node): number | null {
+  switch (node.kind) {
+    case "num":
+      return node.value;
+    case "neg": {
+      const v = evalConst(node.arg);
+      return v === null ? null : -v;
+    }
+    case "not": {
+      const v = evalConst(node.arg);
+      return v === null ? null : Number.isNaN(v) ? NaN : v !== 0 ? 0 : 1;
+    }
+    case "bin": {
+      const l = evalConst(node.left);
+      const r = evalConst(node.right);
+      return l === null || r === null ? null : BINARY[node.op](l, r);
+    }
+    case "cmp": {
+      const l = evalConst(node.left);
+      const r = evalConst(node.right);
+      return l === null || r === null ? null : Number.isNaN(l) || Number.isNaN(r) ? NaN : COMPARE[node.op](l, r) ? 1 : 0;
+    }
+    case "logic": {
+      const l = evalConst(node.left);
+      const r = evalConst(node.right);
+      if (l === null || r === null) return null;
+      if (Number.isNaN(l) || Number.isNaN(r)) return NaN;
+      return (node.op === "and" ? truthy(l) && truthy(r) : truthy(l) || truthy(r)) ? 1 : 0;
+    }
+    case "call": {
+      if (!SCALAR_FNS.has(node.name)) return null;
+      const args = node.args.map(evalConst);
+      if (args.some((a) => a === null)) return null;
+      const out = FUNCTIONS[node.name].run(args as number[], { len: 0, bars: [] });
+      return typeof out === "number" ? out : null;
+    }
+    case "var":
+    case "ref":
+      return null;
+  }
+}
+
+function checkRefKey(key: string, aliases: Record<string, string> | undefined, pos: number): void {
+  if (!isValidKey(key)) throw new FormulaError(`无效的标的 key「${key}」`, pos);
+  if (isSynthetic(key)) {
+    try {
+      parseSynth(key.slice(1), aliases ?? {});
+    } catch (err) {
+      throw new FormulaError(err instanceof Error ? err.message : String(err), pos);
+    }
+  }
+}
+
 function check(node: Node, known: Set<string>, opts: CompileOptions, refs: Set<string>): string | null {
   let benchKey: string | null = null;
   const resolveBench = (pos: number): string => {
@@ -617,12 +745,13 @@ function check(node: Node, known: Set<string>, opts: CompileOptions, refs: Set<s
         if (!n.quoted && n.target === "bench") {
           n.key = resolveBench(n.pos);
         } else if (n.quoted) {
-          if (!/^[a-z]+:.+/.test(n.target)) throw new FormulaError(`无效的标的 key「${n.target}」`, n.pos);
+          checkRefKey(n.target, opts.aliases, n.pos);
           n.key = n.target;
           refs.add(n.key);
         } else {
-          const key = opts.aliases?.[n.target];
+          const key = opts.aliases && Object.hasOwn(opts.aliases, n.target) ? opts.aliases[n.target] : undefined;
           if (!key) throw new FormulaError(`未知别名「${n.target}」`, n.pos);
+          checkRefKey(key, opts.aliases, n.pos);
           n.key = key;
           refs.add(key);
         }
@@ -642,6 +771,13 @@ function check(node: Node, known: Set<string>, opts: CompileOptions, refs: Set<s
         const [min, max] = typeof fn.arity === "number" ? [fn.arity, fn.arity] : fn.arity;
         if (n.args.length < min || n.args.length > max) throw new FormulaError(`${fn.hint}：参数个数不对`, n.pos);
         n.args.forEach(visit);
+        for (const w of fn.windows ?? []) {
+          if (w >= n.args.length) continue;
+          const v = evalConst(n.args[w]);
+          if (v === null || !Number.isInteger(v) || v < 1) {
+            throw new FormulaError(`${fn.hint}：n 必须是正整数`, n.pos);
+          }
+        }
       }
     }
   };
@@ -677,26 +813,9 @@ function refSeries(refs: Record<string, RefSeries>, key: string, field: Field, l
   return column ? column.map((v) => (v === null ? NaN : v)) : new Array(len).fill(NaN);
 }
 
-const BINARY: Record<ArithOp, (a: number, b: number) => number> = {
-  "+": (a, b) => a + b,
-  "-": (a, b) => a - b,
-  "*": (a, b) => a * b,
-  "/": (a, b) => a / b,
-  "^": (a, b) => a ** b,
-};
-
-const COMPARE: Record<CmpOp, (a: number, b: number) => boolean> = {
-  ">": (a, b) => a > b,
-  "<": (a, b) => a < b,
-  ">=": (a, b) => a >= b,
-  "<=": (a, b) => a <= b,
-  "==": (a, b) => a === b,
-  "!=": (a, b) => a !== b,
-};
-
 /** Evaluate every statement; returns one series per plotted line (NaN where undefined). */
 export function evaluate(program: Program, input: EvalInput): Series[] {
-  const { bars, refs = {} } = input;
+  const { bars, refs = {}, yearOpens } = input;
   const len = bars.length;
   const env = new Map<string, Value>();
   const cache = new Map<string, Series>();
@@ -711,6 +830,12 @@ export function evaluate(program: Program, input: EvalInput): Series[] {
         return bars.map((d) => d.volume ?? NaN);
       case "tr":
         return trueRange(bars);
+      case "year":
+        return bars.map((d) => (Number.isFinite(d.timestamp) ? new Date(d.timestamp!).getUTCFullYear() : NaN));
+      case "month":
+        return bars.map((d) => (Number.isFinite(d.timestamp) ? new Date(d.timestamp!).getUTCMonth() + 1 : NaN));
+      case "yearopen":
+        return yearOpenSeries(bars, yearOpens);
       case "bench":
         return program.benchKey ? refSeries(refs, program.benchKey, "close", len) : new Array(len).fill(NaN);
       default:

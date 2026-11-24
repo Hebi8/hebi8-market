@@ -6,6 +6,7 @@
  * Descriptions are written for the agent; errors are the ones the page shows, as they are.
  */
 import { z } from "zod";
+import { compileFormula } from "@/indicators/formula-indicators";
 import { ALERT_CONDS, type AlertCond, type AlertCondition } from "../alert-conds";
 import { alertBadges, alertViews } from "../alert-view";
 import { adoptConditionState, alertKeys, readState, stateId } from "../alerts";
@@ -45,11 +46,11 @@ function tool<S extends z.ZodRawShape>(def: { name: string; description: string;
 }
 
 const KEY = "an alias from the user's yaml (`BTC`), a full key `source:ticker` (`yahoo:NVDA`, `binance:BTCUSDT`, `tv:TVC:GOLD`, `data:gpu/4090-xianyu`) or a synthetic `=expression` (`=BTC/GOLD`)";
-const tf = z.enum(TIMEFRAMES).default("D").describe("Timeframe: D daily (default), 3D three trading days, W weekly, M monthly, Q quarterly. There is nothing below daily.");
+const tf = z.enum(TIMEFRAMES).default("D").describe("Timeframe: D daily (default), 3D three trading days, W weekly, M monthly, Q quarterly, Y yearly. There is nothing below daily.");
 const check = z
   .enum(["price", "close"])
   .default("price")
-  .describe("Which bars to read. `price` (default): with today's unfinished daily bar built from the latest quote, as alerts with `check: price` see them. `close`: closed daily bars only, as alerts with `check: close` see them.");
+  .describe("Which bars to read. `price` (default): with today's unfinished bar built from the latest quote, as alerts with `check: price` see them. `close`: closed bars of `tf` only (unfinished trailing bar dropped), as alerts with `check: close` see them.");
 
 const iso = (ms: number | null | undefined) => (ms ? new Date(ms).toISOString() : null);
 const pct = (v: number | null | undefined) => (v == null ? null : Math.round(v * 10000) / 100);
@@ -72,7 +73,7 @@ export const TOOLS: Tool[] = [
   tool({
     name: "overview",
     description:
-      "The user's watchlist as the overview page shows it: groups, and for each symbol its key, alias, name, benchmark, latest price (from the latest quote when there is one, with its session), percentage changes over 1W…5Y, distance from the all-time-high close, position in the 52-week range, the alerts that currently hold or fired on it, and its sync error if any. Also when daily bars were last synced and will be next. Start here.",
+      "The user's watchlist as the overview page shows it: groups, and for each symbol its key, alias, name, benchmark, latest price (from the latest quote when there is one, with its session), percentage changes over 1W…5Y, distance from the all-time-high close, position in the 52-week range, custom formula column values (when configured in `columns`, with column definitions at the top level), the alerts that currently hold or fired on it, and its sync error if any. Also when daily bars were last synced and will be next. Start here.",
     input: {},
     run: ({ dir, vault }) => {
       const cfg = readConfig(dir);
@@ -80,9 +81,16 @@ export const TOOLS: Tool[] = [
       const stats = overviewStats(vault, cfg, symbols);
       const badges = alertBadges(vault, cfg);
       const failed = allItems(cfg).flatMap((i) => (symbols[i.key]?.syncError ? [{ key: i.key, error: symbols[i.key].syncError }] : []));
+      const columns = cfg.columns.length
+        ? cfg.columns.map((c) => {
+            const error = compileFormula(c.formula, { aliases: cfg.aliases }).error;
+            return { id: c.id, label: c.label, tf: c.tf, format: c.format, formula: c.formula, ...(error ? { error } : {}) };
+          })
+        : undefined;
       return {
         prices: cfg.prices === "total" ? "total return (dividends folded in)" : "split-adjusted",
         change_periods_on_page: cfg.periods,
+        ...(columns ? { columns } : {}),
         groups: cfg.groups.map((g) => ({
           name: g.name,
           symbols: g.symbols.map((item) => {
@@ -90,6 +98,14 @@ export const TOOLS: Tool[] = [
             const s = stats[item.key]?.stats;
             const quote = stats[item.key]?.status;
             const holding = (badges[item.key] ?? []).filter((b) => b.state === "fresh" || b.state === "on");
+            const colValues = cfg.columns.length
+              ? Object.fromEntries(
+                  cfg.columns.map((c) => {
+                    const raw = s?.columns && Object.hasOwn(s.columns, c.id) ? s.columns[c.id] : null;
+                    return [c.id, typeof raw === "number" && Number.isFinite(raw) ? num(raw) : null];
+                  }),
+                )
+              : undefined;
             return {
               key: item.key,
               alias: aliasOf(cfg.aliases, item.key),
@@ -103,6 +119,7 @@ export const TOOLS: Tool[] = [
               change_pct: s ? Object.fromEntries(CHANGE_PERIODS.map((p) => [p.key, pct(s.changes[p.key])])) : null,
               from_high_pct: s ? pct(s.ddAth) : null,
               range_52w_pct: s ? pct(s.pos52) : null,
+              ...(colValues ? { columns: colValues } : {}),
               alerts: holding.length ? holding.map((b) => ({ id: b.id, label: b.label, status: b.status })) : undefined,
               sync_error: row?.syncError ?? undefined,
             };
@@ -123,7 +140,7 @@ export const TOOLS: Tool[] = [
   tool({
     name: "get_bars",
     description:
-      "OHLCV bars of one symbol from the cache, oldest first, the newest `limit` of them. Daily bars are the smallest unit (no intraday bars); 3D, W, M and Q are aggregated from them (dated by the first day of the period) and their last bar is the period so far. The last daily bar is today's unfinished one when a quote is newer than the last sync; `last_daily_bar.closed` says whether that bar's trading day is over (the exchange has closed, or the UTC day ended for crypto), whatever its price came from. Prices follow the user's `prices` setting. Only cached symbols have bars: every watched symbol, its benchmark and anything an alert or formula refers to; add_symbol caches a new one.",
+      "OHLCV bars of one symbol from the cache, oldest first, the newest `limit` of them. Daily bars are the smallest unit (no intraday bars); 3D, W, M, Q and Y are aggregated from them (dated by the first day of the period) and their last bar is the period so far. The last daily bar is today's unfinished one when a quote is newer than the last sync; `last_daily_bar.closed` says whether that bar's trading day is over (the exchange has closed, or the UTC day ended for crypto), whatever its price came from. Prices follow the user's `prices` setting. Only cached symbols have bars: every watched symbol, its benchmark and anything an alert or formula refers to; add_symbol caches a new one.",
     input: {
       key: z.string().describe(`The symbol: ${KEY}`),
       tf,
@@ -221,7 +238,8 @@ export const TOOLS: Tool[] = [
         if (!group) throw new Error(`没有「${args.group}」这个分组`);
         keys = group.symbols.map((s) => s.key);
       } else keys = allItems(cfg).map((i) => i.key);
-      const { rows, uncached } = scan(cfg, keys, args.formula, args.tf, readerFor(args.check));
+      const now = Date.now();
+      const { rows, uncached } = scan(cfg, keys, args.formula, args.tf, readerFor(args.check), { closed: args.check === "close", now });
       return {
         tf: args.tf,
         check: args.check,
@@ -248,7 +266,8 @@ export const TOOLS: Tool[] = [
     },
     run: ({ dir }, args) => {
       const cfg = readConfig(dir);
-      const t = testFormula(cfg, keyOf(cfg, args.key), args.formula, args.tf, args.bars, readerFor(args.check));
+      const now = Date.now();
+      const t = testFormula(cfg, keyOf(cfg, args.key), args.formula, args.tf, args.bars, readerFor(args.check), { closed: args.check === "close", now });
       return {
         key: t.key,
         name: t.name,
@@ -372,7 +391,7 @@ export const TOOLS: Tool[] = [
         .optional()
         .describe("For `cond`: a price level; `[low, high]` for entering / exiting / inside / outside; `{ pct, bars }` for moving_up_pct / moving_down_pct"),
       trigger: z.enum(["once", "bar"]).default("once").describe("`once`: fires once and switches itself off (default). `bar`: at most once per daily bar. The whole watchlist is always `bar`."),
-      check: z.enum(["price", "close"]).optional().describe("`price`: judged on the live price after every quote round. `close`: only on closed daily bars after a sync. Default: price with `key`, close without."),
+      check: z.enum(["price", "close"]).optional().describe("`price`: judged on the live price after every quote round. `close`: only on closed bars of `tf` after a daily sync. Default: price with `key`, close without."),
       label: z.string().max(80).optional().describe("The name shown on the overview and in the message; generated from the condition when omitted"),
       notify: z.boolean().default(true).describe("false: only shown on the overview, never pushed"),
     },
@@ -393,7 +412,7 @@ export const TOOLS: Tool[] = [
         "agent",
       );
       const alert = readConfig(viewer.dir).alerts.find((a) => a.id === saved.id);
-      return { id: saved.id, label: alert?.label, status: saved.draft ? "draft" : "active", message: saved.draft ? SAVED_DRAFT : `Active: judged ${alert?.check === "close" ? "after each daily sync on closed daily bars" : "after every quote round on the live price"}.` };
+      return { id: saved.id, label: alert?.label, status: saved.draft ? "draft" : "active", message: saved.draft ? SAVED_DRAFT : `Active: judged ${alert?.check === "close" ? "after each daily sync on closed bars" : "after every quote round on the live price"}.` };
     },
   }),
 

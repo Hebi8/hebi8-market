@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregate, align, applyPrices, bucketStart, closeAtOrBefore, dedupeBars, type Bar } from "@/lib/series";
+import { aggregate, align, applyPrices, bucketStart, closeAtOrBefore, dedupeBars, nextBucketStart, yearOpens, type Bar } from "@/lib/series";
 
 const day = (iso: string) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 1000;
 const bar = (iso: string, c: number, extra: Partial<Bar> = {}): Bar => ({
@@ -29,6 +29,22 @@ describe("bucketStart", () => {
     expect(bucketStart(day("2026-06-30"), "Q")).toBe(day("2026-04-01"));
     expect(bucketStart(day("2026-12-31"), "Q")).toBe(day("2026-10-01"));
   });
+
+  it("years start on January 1 UTC", () => {
+    expect(bucketStart(day("2026-01-01"), "Y")).toBe(day("2026-01-01"));
+    expect(bucketStart(day("2026-07-15"), "Y")).toBe(day("2026-01-01"));
+    expect(bucketStart(day("2026-12-31"), "Y")).toBe(day("2026-01-01"));
+  });
+
+  it("computes the next bucket start for every timeframe", () => {
+    expect(nextBucketStart(day("2026-10-07"), "D")).toBe(day("2026-10-08"));
+    expect(nextBucketStart(day("2026-10-08"), "3D", false)).toBe(day("2026-10-13")); // Thu, Fri, Mon -> Tue
+    expect(nextBucketStart(day("2026-10-08"), "3D", true)).toBe(day("2026-10-11"));
+    expect(nextBucketStart(day("2026-10-07"), "W")).toBe(day("2026-10-12"));
+    expect(nextBucketStart(day("2026-12-15"), "M")).toBe(day("2027-01-01"));
+    expect(nextBucketStart(day("2026-10-15"), "Q")).toBe(day("2027-01-01"));
+    expect(nextBucketStart(day("2026-06-01"), "Y")).toBe(day("2027-01-01"));
+  });
 });
 
 describe("aggregate", () => {
@@ -55,6 +71,23 @@ describe("aggregate", () => {
       [day("2026-07-01"), 9, 13, 8, 12, 150],
       [day("2026-10-01"), 12, 15, 9, 14, 35],
     ]);
+  });
+
+  it("builds yearly OHLCV and tracks first daily open per calendar year", () => {
+    const multi = [
+      bar("2024-06-03", 100, { o: 98, h: 110, l: 95, v: 40, adj: 0.8 }),
+      bar("2024-12-31", 120, { o: 115, h: 125, l: 90, v: 60, adj: 0.9 }),
+      bar("2025-01-02", 130, { o: 122, h: 135, l: 120, v: 50, adj: 1 }),
+      bar("2025-12-31", 150, { o: 145, h: 155, l: 118, v: 70, adj: 1 }),
+      bar("2026-01-02", 160, { o: 152, h: 165, l: 150, v: 30, adj: 1 }),
+    ];
+    expect(aggregate(multi, "Y")).toEqual([
+      { t: day("2024-01-01"), o: 98, h: 125, l: 90, c: 120, v: 100, adj: 0.9 },
+      { t: day("2025-01-01"), o: 122, h: 155, l: 118, c: 150, v: 120, adj: 1 },
+      { t: day("2026-01-01"), o: 152, h: 165, l: 150, c: 160, v: 30, adj: 1 },
+    ]);
+    expect(aggregate(multi.map((b) => ({ ...b, v: null })), "Y")[0].v).toBeNull();
+    expect(yearOpens(multi)).toEqual({ 2024: 98, 2025: 122, 2026: 152 });
   });
 
   it("keeps volume null when the source has none", () => {

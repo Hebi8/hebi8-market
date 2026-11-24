@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { FIB_DEFAULTS, FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "@/components/fib";
+import {
+  FIB_DEFAULTS,
+  FIB_LEVELS,
+  FIB_PRESETS,
+  activeFibLevels,
+  applyFibTemplate,
+  cleanFibSettings,
+  fibBands,
+  fibLevelsOf,
+  fibPrice,
+  fibSettingsOf,
+  fibSpan,
+  fibTemplateFrom,
+  isDefaultFibLevels,
+  isPresetFibTemplate,
+  normalizeFibLevels,
+} from "@/components/fib";
 
 describe("fibonacci levels", () => {
   it("has TradingView's default levels in order, past 1 too", () => {
@@ -86,5 +102,89 @@ describe("fibonacci geometry", () => {
       { y: 450, height: 30, color: "orange" },
     ]);
     expect(fibBands(FIB_LEVELS.map((l, i) => ({ ...l, y: i }))).length).toBe(FIB_LEVELS.length - 1);
+  });
+});
+
+describe("custom fibonacci levels and templates", () => {
+  it("ships 默认, 精简回撤 and Rule of 7 built-in presets", () => {
+    expect(FIB_PRESETS.map((p) => p.name)).toEqual(["默认", "精简回撤", "Rule of 7"]);
+    const compact = FIB_PRESETS.find((p) => p.name === "精简回撤")!;
+    expect(compact.levels.map((l) => l.level)).toEqual([0, 0.382, 0.5, 0.618, 0.786, 1, 1.618]);
+    const r7 = FIB_PRESETS.find((p) => p.name === "Rule of 7")!;
+    expect(r7.levels.map((l) => l.level)).toEqual([0, 1, 1.75, 2.333, 3.5, 7]);
+    expect(isPresetFibTemplate("Rule of 7")).toBe(true);
+    expect(isPresetFibTemplate("我的模板")).toBe(false);
+  });
+
+  it("sorts active custom levels ascending, skips disabled ones, and falls back to defaults when none are enabled", () => {
+    const custom = [
+      { level: 1.618, color: "#2962ff" },
+      { level: 0.236, color: "#f23645", enabled: false },
+      { level: -0.272, color: "#00bcd4" },
+      { level: 0.618, color: "#089981" },
+    ];
+    expect(activeFibLevels({ levels: custom }).map((l) => l.level)).toEqual([-0.272, 0.618, 1.618]);
+    expect(activeFibLevels({})).toEqual(FIB_LEVELS);
+    expect(activeFibLevels({ levels: [{ level: 0.5, color: "#4caf50", enabled: false }] })).toEqual(FIB_LEVELS);
+  });
+
+  it("omits levels when matching defaults, and keeps backward compatibility on legacy extendData", () => {
+    expect(isDefaultFibLevels(undefined)).toBe(true);
+    expect(isDefaultFibLevels(FIB_LEVELS.map((l) => ({ ...l })))).toBe(true);
+    expect(isDefaultFibLevels(FIB_LEVELS.map((l, i) => (i === 1 ? { ...l, enabled: false } : { ...l })))).toBe(false);
+
+    const def = applyFibTemplate(FIB_PRESETS[0]);
+    expect(def).toEqual(FIB_DEFAULTS);
+    expect("levels" in def).toBe(false);
+
+    const r7 = applyFibTemplate(FIB_PRESETS[2]);
+    expect(r7.levels?.map((l) => l.level)).toEqual([0, 1, 1.75, 2.333, 3.5, 7]);
+
+    // Legacy object with no levels field still resolves cleanly
+    expect(fibSettingsOf({ background: false, transparency: 70 })).toEqual({ ...FIB_DEFAULTS, background: false, transparency: 70 });
+    expect(fibLevelsOf(fibSettingsOf(undefined)).map((l) => l.level)).toEqual(FIB_LEVELS.map((l) => l.level));
+    // All-disabled levels in corrupt extendData are dropped so the drawing stays visible
+    expect("levels" in fibSettingsOf({ levels: [{ level: 0.5, color: "#4caf50", enabled: false }] })).toBe(false);
+  });
+
+  it("normalizes levels and round-trips personal templates via fibTemplateFrom / applyFibTemplate", () => {
+    expect(normalizeFibLevels([{ level: "0.5", color: "#ABC" }, { level: "bad", color: "#111" }, { level: 1, color: "nope", enabled: false }])).toEqual([
+      { level: 0.5, color: "#aabbcc" },
+      { level: 1, color: "#787b86", enabled: false },
+    ]);
+
+    const settings = cleanFibSettings({
+      ...FIB_DEFAULTS,
+      background: false,
+      transparency: 90,
+      extendRight: true,
+      reverse: true,
+      levels: [
+        { level: 0, color: "#787b86" },
+        { level: 1, color: "#787b86" },
+        { level: 1.75, color: "#2962ff" },
+      ],
+    });
+    const tpl = fibTemplateFrom("  我的规则  ", settings, { color: "#ff9800", size: 2, dash: "dashed" });
+    expect(tpl).toEqual({
+      name: "我的规则",
+      levels: [
+        { level: 0, color: "#787b86" },
+        { level: 1, color: "#787b86" },
+        { level: 1.75, color: "#2962ff" },
+      ],
+      background: false,
+      transparency: 90,
+      extendRight: true,
+      reverse: true,
+      color: "#ff9800",
+      size: 2,
+      dash: "dashed",
+    });
+    expect(applyFibTemplate(tpl)).toEqual(settings);
+
+    // Explicit solid dash is preserved so a solid template resets a dashed Fib drawing back to solid
+    const solidTpl = fibTemplateFrom("实线模板", settings, { color: "#2962ff", size: 1, dash: "solid" });
+    expect(solidTpl.dash).toBe("solid");
   });
 });

@@ -651,7 +651,7 @@ describe("quote polling", () => {
     it("a close alert does not look at a daily bar whose day is still going; a price alert does", async () => {
       const { runAlerts, readState, stateId } = await import("@/lib/alerts");
       const { readConfig } = await import("@/lib/vault");
-      const { writeBars } = await import("@/lib/store");
+      const { markSynced, writeBars } = await import("@/lib/store");
       const today = Math.floor(Date.now() / 1000 / DAY) * DAY;
       // the sync brought today's bar of the UTC day so far: 200, after yesterday's 101
       writeBars(BTC, [{ ...bar(101), t: today - DAY }, { ...bar(200), t: today }], "replace");
@@ -672,11 +672,13 @@ describe("quote polling", () => {
       expect(row("key-close")).toMatchObject({ state: 0, firedAt: null });
       expect(row("all-close")).toMatchObject({ state: 0, firedAt: null });
 
-      // the UTC day is over: the same bar is a close now
+      // the UTC day is over and synced: the bar is a close now
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime((today + DAY) * 1000 + 60_000);
+      markSynced(BTC, {});
       await runAlerts(vault, load);
       vi.useRealTimers();
+      markSynced(BTC, {});
       expect(row("key-close")).toMatchObject({ state: 1, firedBar: today, firedAt: expect.any(Number) });
       expect(row("all-close")).toMatchObject({ state: 1, firedBar: today, firedAt: expect.any(Number) });
       logs.mockRestore();
@@ -806,7 +808,7 @@ describe("quote polling", () => {
     it("a close alert reads the other symbols of its formula up to their own last close", async () => {
       const { runAlerts, readState, stateId } = await import("@/lib/alerts");
       const { readConfig } = await import("@/lib/vault");
-      const { writeBars } = await import("@/lib/store");
+      const { markSynced, writeBars } = await import("@/lib/store");
       const { getDb } = await import("@/lib/db");
       const GOLD = "tv:TVC:GOLD";
       const oct7 = Date.UTC(2026, 9, 7) / 1000;
@@ -817,11 +819,15 @@ describe("quote polling", () => {
       meta.run("Asia/Tokyo", "0900-1500", SPY);
       writeBars(SPY, [{ ...bar(100), t: oct7 - DAY }, { ...bar(101), t: oct7 }], "replace");
       writeBars(GOLD, [{ ...bar(50), t: oct7 - DAY }, { ...bar(999), t: oct7 }], "replace");
+      markSynced(SPY, {});
+      markSynced(GOLD, {});
       const vault = await watching([`{ id: ref, key: ${SPY}, when: 'close > close("${GOLD}")', check: close, trigger: bar }`]);
       await runAlerts(vault, () => readConfig(root));
       vi.useRealTimers();
       meta.run("America/New_York", null, SPY);
-      // 101 against yesterday's 50, not against the 999 of a day that is not over
+      markSynced(SPY, {});
+      markSynced(GOLD, {});
+      // Oct 7 waits for GOLD to close, so only closed Oct 6 (100 > 50) is evaluated, never against GOLD's unclosed 999
       expect(readState("").get(stateId("alert:ref", SPY))).toMatchObject({ state: 1 });
     });
 
@@ -858,12 +864,13 @@ describe("quote polling", () => {
       const day = await status("D", `&with=${encodeURIComponent(SPY)}`);
       expect(day).toMatchObject({ session: "always", quotedAt: quote.fetchedAt });
       // `prev` lets a chart that stopped before Tuesday see that it missed a bar
-      expect(day.tail).toEqual({ bar: { timestamp: wednesday, open: 102, high: 151, low: 98, close: 150, volume: 7, bench: 410 }, prev: wednesday - DAY * 1000, refs: { [SPY]: { o: 410, h: 410, l: 410, c: 410, v: 1 } }, lastDay: wednesday, weekends: false });
-      // the week and the month so far: Monday's open, the range of all three days, the quote's close
+      expect(day.tail).toEqual({ bar: { timestamp: wednesday, open: 102, high: 151, low: 98, close: 150, volume: 7, bench: 410 }, prev: wednesday - DAY * 1000, refs: { [SPY]: { o: 410, h: 410, l: 410, c: 410, v: 1 } }, lastDay: wednesday, weekends: false, yearOpen: 100 });
+      // the week, month, quarter and year so far: Monday's open, the range of all three days, the quote's close
       const week = { open: 100, high: 151, low: 98, close: 150, volume: 9, bench: 410 };
-      expect((await status("W")).tail).toMatchObject({ bar: { timestamp: T0 * 1000, ...week }, prev: null, lastDay: wednesday });
+      expect((await status("W")).tail).toMatchObject({ bar: { timestamp: T0 * 1000, ...week }, prev: null, lastDay: wednesday, yearOpen: 100 });
       expect((await status("M")).tail).toMatchObject({ bar: { timestamp: Date.UTC(2026, 0, 1), ...week }, lastDay: wednesday });
       expect((await status("Q")).tail).toMatchObject({ bar: { timestamp: Date.UTC(2026, 0, 1), ...week }, lastDay: wednesday });
+      expect((await status("Y")).tail).toMatchObject({ bar: { timestamp: Date.UTC(2026, 0, 1), ...week }, lastDay: wednesday, yearOpen: 100 });
       expect((await GET(new NextRequest("http://h/api/status?key=nope"))).status).toBe(400);
     });
 

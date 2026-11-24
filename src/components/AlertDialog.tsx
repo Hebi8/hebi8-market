@@ -31,7 +31,7 @@ export function AlertLoginDialog({ onClose }: { onClose: () => void }) {
 
 /**
  * 新建警报 / 编辑警报, TradingView's dialog: the symbol (or 全部自选), 条件 with the value inputs
- * that condition needs, 判断时机 (盘中价格 | 日线收盘), 触发 (仅一次 | 每根 K 线一次), an optional name
+ * that condition needs, 判断时机 (盘中价格 | K 线收盘), 触发 (仅一次 | 每根 K 线一次), an optional name
  * whose placeholder is the generated one, and whether it is pushed. The chart and the overview open the same dialog.
  */
 export function AlertDialog({
@@ -256,7 +256,7 @@ export function AlertDialog({
           </label>
         </Field>
         <p className="text-[11px] text-muted">
-          {check === "price" ? "每 5 分钟取一次最新价判断（休市时每小时），今天还没收完的日线也算。" : "每次日线同步后判断，只看已经收盘的日线。"}
+          {check === "price" ? "每 5 分钟取一次最新价判断（休市时每小时），今天还没收完的 K 线也算。" : "每次日线同步后判断，只看已经收盘的 K 线（未走完的当期不算）。"}
           {all ? "对每个自选标的分别判断，总览上在成立的标的旁显示这个名字。" : "总览上这个标的旁显示这个名字。"}
         </p>
         {alert?.draft && <p className="text-[11px] text-muted">这条警报还在等确认：保存后仍是草稿，在警报面板或总览顶部点「确认」才开始判断。</p>}

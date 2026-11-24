@@ -2,18 +2,20 @@
  * Alerts (§2.5, §2.6): the `alerts` list, on one symbol or (without a key) on every watched one.
  * `check: price` ones are judged after every 5-minute quote round on daily bars whose last one is
  * today's unfinished bar, and again when a daily sync ends; `check: close` ones only when a daily
- * sync ends, on the daily bars that are complete. State lives in the `alert_state` table, per
- * vault, so a restart does not repeat a message, event conditions compare with the previous
- * check, and the overview can tell which alerts fired when.
+ * sync ends, on bars of the alert's timeframe whose period has closed. State lives in the
+ * `alert_state` table, per vault, so a restart does not repeat a message, event conditions compare
+ * with the previous check, and the overview can tell which alerts fired when.
  */
 import { isMap, isScalar, isSeq, type Document, type YAMLMap, type YAMLSeq } from "yaml";
+import { describeError } from "@/indicators/formula-indicators";
 import { crossed, observe, ALERT_CONDS, type AlertCondition, type AlertTrigger } from "./alert-conds";
-import { closedReader, lastInputs, loadDaily, type DailyReader } from "./bars";
-import { evalRule, type SeriesCache } from "./conditions";
+import { closedSeries, lastInputs, loadDaily, type DailyReader } from "./bars";
+import { holds, runFormula, type SeriesCache } from "./conditions";
 import { allItems, conditionId, isLive, parseAlert, type AlertDef, type Config } from "./config";
 import { getDb } from "./db";
 import { nameOf } from "./names";
 import { channelNames, channelsFor, deliver, formatDigest, type AlertEvent } from "./notify";
+import { nextBucketStart, type Bar } from "./series";
 import type { ConditionResult } from "./stats";
 import { listSymbols, readDaily } from "./store";
 import { isTimeframe, type Timeframe } from "./symbols";
@@ -73,9 +75,9 @@ interface Check {
   once: boolean;
   /** Off: a firing is recorded for the overview but not pushed */
   notify: boolean;
-  /** The bars it was judged on, for the price in the message */
-  read: DailyReader;
-  /** How far those bars go: the day of each input of the last one, by key (`lastInputs`) */
+  /** Close of the last bar this check judged, for the notification message */
+  close: number | null;
+  /** How far those bars go: the day of each input of the last daily bar in the evaluated series, by key (`lastInputs`) */
   seen: Record<string, number>;
   decide: (row: StateRow | undefined) => Decision;
 }
@@ -91,48 +93,79 @@ export const alertKeys = (alert: AlertDef, cfg: Config): string[] => (alert.key 
 
 /**
  * Every (alert, symbol) pair to judge in this pass. `check: price` alerts see the bars `live`
- * gives (a quote round's, with today's unfinished bar); `check: close` ones only the daily bars
- * that are complete.
+ * gives (a quote round's, with today's unfinished bar); `check: close` ones only bars of the
+ * alert's timeframe whose period has closed as of `now`.
  */
 function checks(cfg: Config, pass: AlertPass, live: DailyReader, who: string): Check[] {
   const out: Check[] = [];
-  const closed = closedReader();
-  // formulas on the same symbol, bars and timeframe share the loaded series
+  const now = Date.now();
+  // formulas on the same symbol, check mode and timeframe share the loaded series
   const caches = new Map<string, SeriesCache>();
-  const seen = new Map<string, Record<string, number>>();
-  const seenOf = (key: string, check: string, read: DailyReader) => {
-    const id = `${check}\u0000${key}`;
-    if (!seen.has(id)) seen.set(id, Object.fromEntries(lastInputs(key, loadDaily(key, cfg.prices, cfg, read), cfg.aliases, read).map((input) => [input.key, input.t])));
-    return seen.get(id)!;
+  const seenOf = (key: string, daily: Bar[], bars: Bar[], tf: Timeframe, weekends: boolean, refs: string[], read: DailyReader) => {
+    const last = bars.at(-1);
+    if (!last) return {};
+    const next = nextBucketStart(last.t, tf, weekends);
+    const outSeen: Record<string, number> = {};
+    const record = (sym: string, symDaily: Bar[]) => {
+      const used = symDaily.filter((b) => b.t < next);
+      for (const input of lastInputs(sym, used, cfg.aliases, read)) {
+        outSeen[input.key] = Math.max(outSeen[input.key] ?? -Infinity, input.t);
+      }
+    };
+    record(key, daily);
+    for (const refKey of refs) {
+      try {
+        record(refKey, loadDaily(refKey, cfg.prices, cfg, read));
+      } catch {
+        // uncached or broken ref has no bar day to record
+      }
+    }
+    return outSeen;
   };
   for (const alert of cfg.alerts) {
     if (!isLive(alert) || (pass === "watchlist" && alert.key) || (pass === "quotes" && alert.check !== "price")) continue;
-    const read = alert.check === "close" ? closed : live;
+    const isClose = alert.check === "close";
+    // `check: close` reads raw cached daily bars (no live quote) and lets `periodClosed` trim unfinished bars,
+    // so synthetic operands are never silently forward-filled from yesterday while today's session is open.
+    const read = isClose ? readDaily : live;
     // on the whole watchlist one line per alert, not per symbol (`bench` on a symbol without one is common)
     const failed: { key: string; error: string }[] = [];
     const fail = (key: string, error: string) => (alert.key ? log(`alert ${alert.id} on ${key}${who}: ${error}`) : failed.push({ key, error }));
     for (const key of alertKeys(alert, cfg)) {
-      const base = { rule: alert.id, key, text: alert.text, tf: alert.tf, once: alert.trigger === "once", notify: alert.notify, read, seen: seenOf(key, alert.check, read) };
+      const base = { rule: alert.id, key, text: alert.text, tf: alert.tf, once: alert.trigger === "once", notify: alert.notify };
       if (alert.when) {
         const cacheId = `${alert.check}\u0000${key}`;
         const cache = caches.get(cacheId) ?? new Map();
         caches.set(cacheId, cache);
-        const result = evalRule(key, alert.when, alert.tf, cfg, cache, read);
-        if (result.error) fail(key, result.error);
-        out.push({ ...base, decide: (row) => decide(row, result) });
+        let result: ConditionResult;
+        let close: number | null = null;
+        let barSeen: Record<string, number> = {};
+        try {
+          const ran = runFormula(key, alert.when, alert.tf, cfg, read, cache, { closed: isClose, now });
+          const t = ran.bars.at(-1)?.t;
+          result = { now: holds(ran.line.at(-1)), prev: holds(ran.line.at(-2)), ...(t !== undefined ? { t } : {}) };
+          close = ran.bars.at(-1)?.c ?? null;
+          barSeen = seenOf(key, ran.daily, ran.bars, alert.tf, ran.weekends, ran.refs, read);
+        } catch (err) {
+          const error = describeError(err);
+          fail(key, error);
+          result = { now: null, prev: null, error };
+        }
+        out.push({ ...base, close, seen: barSeen, decide: (row) => decide(row, result) });
         continue;
       }
       const condition = alert.condition!;
-      let bars;
+      let bars: Bar[];
       try {
-        bars = loadDaily(key, cfg.prices, cfg, read);
+        bars = isClose ? closedSeries(key, "D", cfg.prices, cfg, read, undefined, now) : loadDaily(key, cfg.prices, cfg, read);
       } catch (err) {
         fail(key, message(err));
         continue;
       }
-      const seen = observe(condition, bars);
+      const observed = observe(condition, bars);
       const t = bars.at(-1)?.t ?? null;
-      out.push({ ...base, decide: (row) => decideCondition(condition, alert.trigger, row, seen, t) });
+      const barSeen = seenOf(key, bars, bars, "D", false, [], read);
+      out.push({ ...base, close: bars.at(-1)?.c ?? null, seen: barSeen, decide: (row) => decideCondition(condition, alert.trigger, row, observed, t) });
     }
     if (failed.length) log(`alert ${alert.id} failed on ${failed.length} watched symbol(s)${who}, ${failed[0].key}: ${failed[0].error}`);
   }
@@ -315,13 +348,7 @@ async function judge(vault: VaultRef, loadConfig: () => Config, pass: AlertPass,
       if (!fire) continue;
       if (c.once) switchOff.push({ rule: c.rule, notify: c.notify });
       if (!c.notify) continue;
-      let close: number | null = null;
-      try {
-        close = loadDaily(c.key, cfg.prices, cfg, c.read).at(-1)?.c ?? null;
-      } catch {
-        // the name and label are enough
-      }
-      events.push({ rule: c.rule, key: c.key, name: nameOf(cfg, c.key, symbols[c.key]?.name), label: c.text, tf: c.tf, close });
+      events.push({ rule: c.rule, key: c.key, name: nameOf(cfg, c.key, symbols[c.key]?.name), label: c.text, tf: c.tf, close: c.close });
     }
     // every row an alert in the yaml covers stays, so a switched-off alert can tell 已触发 from 已停止
     const keep = new Set(cfg.alerts.flatMap((a) => alertKeys(a, cfg).map((key) => stateId(a.id, key))));

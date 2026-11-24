@@ -10,7 +10,7 @@ A map of the code and the conventions it follows, for anyone changing hebi8/mark
 
 ## Bars, sources and quotes
 
-- Daily bars are the only stored granularity (`bars` table, unix seconds at UTC midnight of the trading day, split-adjusted prices plus a dividend factor `adj`); weekly/monthly/quarterly are aggregated on read in `src/lib/series.ts`. Synthetic symbols (`=BTC/GOLD`) are computed on read in `src/lib/synth.ts`.
+- Daily bars are the only stored granularity (`bars` table, unix seconds at UTC midnight of the trading day, split-adjusted prices plus a dividend factor `adj`); 3D/weekly/monthly/quarterly/yearly bars are aggregated on read in `src/lib/series.ts`. Synthetic symbols (`=BTC/GOLD`) are computed on read in `src/lib/synth.ts`.
 - Source adapters live in `src/lib/sources/` and must map timestamps through `tradingDay()` with the exchange timezone (the `data` source is the exception: its CSV dates are already calendar days, stored as UTC midnight).
 - Every watched symbol is polled for a quote every 5 minutes (`src/lib/quotes.ts`, started from `src/instrumentation.ts`; a few batched requests per source). Alerts (`src/lib/alerts.ts`, delivery in `notify.ts`) run at the end of `syncAll` and after each quote round. Intraday prices only go to the `quotes` table and to memory (today's unfinished daily bar is built on read for the chart, the overview and the alerts), never to `bars`. Channels live in the secrets dir, never in the vault.
 

@@ -4,9 +4,10 @@
  * with the user's cookies or pasted from the browser's developer tools. Pure, so it is tested
  * without the network.
  */
+import { normalizeTimeframes } from "@/components/drawing-spec";
 import { drawingStyles, type LineDash } from "@/components/drawing-style";
-import { FIB_DEFAULTS, FIB_DRAWINGS, type FibSettings } from "@/components/fib";
-import { hash6 } from "./symbols";
+import { FIB_DEFAULTS, FIB_DRAWINGS, FIB_LEVELS, isDefaultFibLevels, type FibLevelItem, type FibSettings } from "@/components/fib";
+import { TIMEFRAMES, hash6, type Timeframe } from "./symbols";
 import { DAY, localDay } from "./time";
 import type { OverlaySpec } from "./vault";
 
@@ -33,7 +34,7 @@ export interface TvDrawing {
 
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
-/** State fields the conversion reads; the rest (levels, intervals, fonts) stays behind. */
+/** State fields the conversion reads; the rest (fonts, chart-specific UI flags) stays behind. */
 const STATE_KEYS = [
   "linecolor",
   "color",
@@ -61,7 +62,11 @@ const STATE_KEYS = [
   "stopLevel",
   "profitLevel",
   "trendline",
+  "intervalsVisibilities",
 ];
+
+const TV_FIB_TYPES = new Set(["LineToolFibRetracement", "LineToolTrendBasedFibExtension"]);
+const TV_FIB_LEVEL_KEYS = Array.from({ length: 24 }, (_, i) => `level${i + 1}`);
 
 /** `={"symbol":"NASDAQ:NVDA","adjustment":"splits"}` is how TradingView writes a symbol with options. */
 function symbolOf(raw: unknown): string | null {
@@ -95,7 +100,8 @@ export function normalizeDrawing(raw: unknown): TvDrawing | null {
     ...(Number(p.offset) ? { offset: Number(p.offset) } : {}),
     ...(typeof p.interval === "string" ? { interval: p.interval } : interval ? { interval } : {}),
   }));
-  const state = Object.fromEntries(STATE_KEYS.filter((k) => styles[k] !== undefined).map((k) => [k, styles[k]]));
+  const keys = TV_FIB_TYPES.has(type) ? [...STATE_KEYS, ...TV_FIB_LEVEL_KEYS] : STATE_KEYS;
+  const state = Object.fromEntries(keys.filter((k) => styles[k] !== undefined).map((k) => [k, styles[k]]));
   const id = typeof flat.id === "string" || typeof flat.id === "number" ? String(flat.id) : `h${hash6(type + symbol + JSON.stringify(points))}`;
   return { id, symbol, type, points, state };
 }
@@ -299,20 +305,102 @@ function stylesOf(state: Record<string, unknown>, colorKeys: string[], textSize:
 }
 
 /**
- * A Fibonacci retracement's or extension's background, extension and direction, where TradingView
- * recorded them (it keeps only what was changed from its defaults, which are this app's too):
- * `extendLines` is to the right. Undefined when none was.
+ * TradingView's 24 standard Fibonacci slots (`level1..level24`): the first 11 match `FIB_LEVELS`
+ * and start visible; slots 12..24 start hidden with TradingView's standard extension ratios.
  */
-function fibOf(state: Record<string, unknown>): FibSettings | undefined {
+const TV_FIB_DEFAULTS: readonly { level: number; color: string; visible: boolean }[] = [
+  ...FIB_LEVELS.map((l) => ({ level: l.level, color: l.color, visible: true })),
+  { level: 1.272, color: "#ff9800", visible: false },
+  { level: 1.414, color: "#f23645", visible: false },
+  { level: 2.272, color: "#ff9800", visible: false },
+  { level: 2.414, color: "#4caf50", visible: false },
+  { level: 2, color: "#089981", visible: false },
+  { level: 3, color: "#00bcd4", visible: false },
+  { level: 3.272, color: "#808080", visible: false },
+  { level: 3.414, color: "#2962ff", visible: false },
+  { level: 4, color: "#f23645", visible: false },
+  { level: 4.272, color: "#9c27b0", visible: false },
+  { level: 4.414, color: "#e91e63", visible: false },
+  { level: 4.618, color: "#ff9800", visible: false },
+  { level: 4.764, color: "#089981", visible: false },
+];
+
+const REASON_NO_FIB_LEVELS = "无可见斐波档位";
+const REASON_INTRADAY_ONLY = "仅日内周期可见";
+const REASON_UNSUPPORTED_TIMEFRAMES = "不在支持的周期范围内";
+
+/**
+ * Merge TradingView's `level1..level24` (`{ coeff, color, visible }`) slot-by-slot over
+ * `TV_FIB_DEFAULTS`. Handles both full 24-slot tables and sparse diffs (including toggling a
+ * hidden slot like `level24` without resending `coeff`). Returns an error reason when every slot
+ * ends up hidden, or `levels: undefined` when no slot changed / the visible set equals `FIB_LEVELS`.
+ */
+function fibLevelsFromTv(state: Record<string, unknown>): { ok: true; levels: FibLevelItem[] | undefined } | { ok: false; reason: string } {
+  let touched = false;
+  const slots = TV_FIB_DEFAULTS.map((d) => ({ ...d }));
+  for (let i = 0; i < slots.length; i++) {
+    const raw = state[`level${i + 1}`];
+    if (!isObj(raw)) continue;
+    touched = true;
+    const slot = slots[i];
+    if (typeof raw.coeff === "number" && Number.isFinite(raw.coeff)) slot.level = raw.coeff;
+    const color = hexColor(raw.color);
+    if (color) slot.color = color;
+    if (typeof raw.visible === "boolean") slot.visible = raw.visible;
+  }
+  if (!touched) return { ok: true, levels: undefined };
+  const visible: FibLevelItem[] = slots.filter((s) => s.visible).map(({ level, color }) => ({ level, color }));
+  if (!visible.length) return { ok: false, reason: REASON_NO_FIB_LEVELS };
+  return { ok: true, levels: isDefaultFibLevels(visible) ? undefined : visible };
+}
+
+/**
+ * A Fibonacci retracement's or extension's background, extension, direction and custom levels, where
+ * TradingView recorded them (it keeps only what was changed from its defaults, which are this app's
+ * too): `extendLines` is to the right. Returns an error when all levels were turned off.
+ */
+function fibOf(state: Record<string, unknown>): { ok: true; fib: FibSettings | undefined } | { ok: false; reason: string } {
   const { fillBackground, transparency, extendLines, extendLinesLeft, reverse } = state;
+  const parsed = fibLevelsFromTv(state);
+  if (!parsed.ok) return parsed;
   const changed: Partial<FibSettings> = {
     ...(typeof fillBackground === "boolean" ? { background: fillBackground } : {}),
     ...(typeof transparency === "number" && transparency >= 0 && transparency <= 100 ? { transparency } : {}),
     ...(typeof extendLinesLeft === "boolean" ? { extendLeft: extendLinesLeft } : {}),
     ...(typeof extendLines === "boolean" ? { extendRight: extendLines } : {}),
     ...(typeof reverse === "boolean" ? { reverse } : {}),
+    ...(parsed.levels ? { levels: parsed.levels } : {}),
   };
-  return Object.keys(changed).length ? { ...FIB_DEFAULTS, ...changed } : undefined;
+  return { ok: true, fib: Object.keys(changed).length ? { ...FIB_DEFAULTS, ...changed } : undefined };
+}
+
+const TV_INTERVAL_MAP: Record<Timeframe, { unit: "days" | "weeks" | "months"; n: number; max: number }> = {
+  D: { unit: "days", n: 1, max: 366 },
+  "3D": { unit: "days", n: 3, max: 366 },
+  W: { unit: "weeks", n: 1, max: 52 },
+  M: { unit: "months", n: 1, max: 12 },
+  Q: { unit: "months", n: 3, max: 12 },
+  Y: { unit: "months", n: 12, max: 12 },
+};
+
+/**
+ * Map TradingView's `intervalsVisibilities` (`days`/`weeks`/`months` and their From/To bounds) to
+ * this app's timeframes. Returns `undefined` when all supported timeframes are visible (or the
+ * field is absent), a non-empty subset when restricted, and `[]` when no supported timeframe
+ * matches (e.g. an intraday-only drawing).
+ */
+export function timeframesFromTv(raw: unknown): Timeframe[] | undefined {
+  if (!isObj(raw)) return undefined;
+  const num = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+  const visible = TIMEFRAMES.filter((tf) => {
+    const { unit, n, max } = TV_INTERVAL_MAP[tf];
+    if (raw[unit] === false) return false;
+    const from = num(raw[`${unit}From`], 1);
+    const to = num(raw[`${unit}To`], max);
+    return n >= from && n <= to;
+  });
+  if (visible.length === 0) return [];
+  return normalizeTimeframes(visible);
 }
 
 // ---------------------------------------------------------------------------- types
@@ -501,8 +589,17 @@ export function convertDrawing(d: TvDrawing, ctx: DrawingContext): Converted {
   if (d.state.frozen === true) overlay.lock = true;
   if (d.state.visible === false) overlay.hidden = true;
   if (kind === "text") overlay.extendData = text;
-  const fib = FIB_DRAWINGS.has(s.name) ? fibOf(d.state) : undefined;
-  if (fib) overlay.extendData = fib;
+  if (FIB_DRAWINGS.has(s.name)) {
+    const fib = fibOf(d.state);
+    if (!fib.ok) return fib;
+    if (fib.fib) overlay.extendData = fib.fib;
+  }
+  const timeframes = timeframesFromTv(d.state.intervalsVisibilities);
+  if (timeframes && timeframes.length === 0) {
+    const vis = isObj(d.state.intervalsVisibilities) ? d.state.intervalsVisibilities : {};
+    return { ok: false, reason: vis.days === false && vis.weeks === false && vis.months === false ? REASON_INTRADAY_ONLY : REASON_UNSUPPORTED_TIMEFRAMES };
+  }
+  if (timeframes) overlay.timeframes = timeframes;
   return { ok: true, overlay };
 }
 

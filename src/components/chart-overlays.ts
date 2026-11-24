@@ -22,10 +22,10 @@ import { DRAW_DONE, MEASURE_TOOL, SCALED_DRAWINGS } from "./chart-types";
 import { bendLine, bendPolygon, bendRect, fitLine, fromSpace, makeWarp, movePrices, toSpace, type PriceScale, type Warp } from "./drawing-scale";
 import { lineOf, withAlpha } from "./drawing-style";
 import { BOX_HANDLES, boxHandleAt, channelHandles, dragBoxBy, dragChannel, drawable, yAt, type ChannelHandle } from "./drawing-edit";
-import { FIB_LEVELS, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
+import { activeFibLevels, fibBands, fibPrice, fibSettingsOf, fibSpan } from "./fib";
 import { hasOutline, isSeeThrough, outlineOf } from "./chart-gestures";
 import { measureLines, pct, priceChangeText, volumeBetween } from "./measure";
-import { tradingDayOffset, tradingDayTimestamp } from "./drawing-time";
+import { tradingDayOffset, tradingDayTimestamp, yearOffset, yearTimestamp } from "./drawing-time";
 
 type Params = OverlayCreateFiguresCallbackParams<unknown>;
 type Figures = OverlayFigure[];
@@ -50,7 +50,7 @@ export function setOverlayChart(chart: Chart | null, scales: typeof scaleOf = ()
   activeChart = chart;
   scaleOf = scales;
   weekendsOf = weekends;
-  if (chart) patchDailyTime(chart);
+  if (chart) patchBarTime(chart);
 }
 
 const DASHED = { style: "dashed", dashedValue: [4, 4] } as const;
@@ -99,10 +99,13 @@ function toward(a: C, b: C, d: number): C {
 // ---------------------------------------------------------------------------- price scale
 
 const axisScale = (yAxis?: { name: string } | null): PriceScale => (yAxis?.name === "logarithm" ? "log" : "linear");
-const mainScale = () => axisScale(activeChart?.getYAxes({ paneId: "candle_pane" })[0]);
-/** The space a drawing's geometry is straight in: the scale it was drawn on, or for an older drawing the axis it is on. */
-const spaceOf = (p: Params): PriceScale => scaleOf(p.overlay.id) ?? axisScale(p.yAxis);
-const spaceById = (id: string): PriceScale => scaleOf(id) ?? mainScale();
+/** Sub-panes always use a linear y-axis, independent of the main pane's log / % mode. */
+const paneScale = (paneId?: string): PriceScale =>
+  paneId && paneId !== "candle_pane" ? "linear" : axisScale(activeChart?.getYAxes({ paneId: "candle_pane" })[0]);
+/** The space a drawing's geometry is straight in: sub-panes are always linear; main pane uses its recorded scale or the axis. */
+const spaceOf = (p: Params): PriceScale => (p.overlay.paneId !== "candle_pane" ? "linear" : (scaleOf(p.overlay.id) ?? axisScale(p.yAxis)));
+const spaceOfOverlay = (o: Pick<Overlay, "id" | "paneId">): PriceScale =>
+  o.paneId !== "candle_pane" ? "linear" : (scaleOf(o.id) ?? paneScale(o.paneId));
 
 /** Figures a template made in the axis' pixels (arrow heads, info boxes): not bent. */
 const onScreen = new WeakSet<OverlayFigure>();
@@ -125,6 +128,7 @@ function scaled(t: Template): Template {
   return {
     ...t,
     createPointFigures: (p) => {
+      if (p.overlay.paneId !== "candle_pane") return create(p);
       const scale = scaleOf(p.overlay.id);
       const yAxis = p.yAxis;
       const values = p.overlay.points.flatMap((pt) => (pt.value === undefined ? [] : [pt.value]));
@@ -261,23 +265,24 @@ interface ChartStore {
 }
 const storeOf = (chart: Chart) => (chart as unknown as { getChartStore: () => ChartStore }).getChartStore();
 
-/** Patch the store itself so drawings, the time axis and crosshair share the same daily calendar. */
-function patchDailyTime(chart: Chart) {
+/** Patch the store itself so drawings, the time axis and crosshair share the same daily/yearly UTC calendar. */
+function patchBarTime(chart: Chart) {
   const store = storeOf(chart);
   const anchorAt = (value: number, time: boolean) => {
     const period = chart.getPeriod();
     const bars = chart.getDataList();
-    if (period?.type !== "day" || !bars.length) return null;
+    if ((period?.type !== "day" && period?.type !== "year") || !bars.length) return null;
     const last = bars.length - 1;
     const index = value < (time ? bars[0].timestamp : 0) ? 0 : value > (time ? bars[last].timestamp : last) ? last : null;
-    return index === null ? null : { index, timestamp: bars[index].timestamp, span: period.span, weekends: weekendsOf() };
+    return index === null ? null : { type: period.type, index, timestamp: bars[index].timestamp, span: period.span, weekends: weekendsOf() };
   };
   for (const method of ["timestampToDataIndex", "timestampToFloatIndex"] as const) {
     const original = store[method];
     store[method] = (timestamp) => {
       const anchor = anchorAt(timestamp, true);
       if (!anchor) return original.call(store, timestamp);
-      const offset = tradingDayOffset(anchor.timestamp, timestamp, anchor.weekends) / anchor.span;
+      const raw = anchor.type === "year" ? yearOffset(anchor.timestamp, timestamp) : tradingDayOffset(anchor.timestamp, timestamp, anchor.weekends);
+      const offset = raw / anchor.span;
       return anchor.index + (method === "timestampToDataIndex" ? Math.floor(offset) : offset);
     };
   }
@@ -286,7 +291,8 @@ function patchDailyTime(chart: Chart) {
     store[method] = (index) => {
       const anchor = anchorAt(index, false);
       if (!anchor) return original.call(store, index);
-      return tradingDayTimestamp(anchor.timestamp, (index - anchor.index) * anchor.span, anchor.weekends);
+      const delta = (index - anchor.index) * anchor.span;
+      return anchor.type === "year" ? yearTimestamp(anchor.timestamp, delta) : tradingDayTimestamp(anchor.timestamp, delta, anchor.weekends);
     };
   }
 }
@@ -350,7 +356,7 @@ const onPress = (e: OverlayEvent<unknown>) => {
  */
 function settle(e: OverlayEvent<unknown>, next: Partial<Point>[], derived: Partial<Point>[] = []) {
   if (!pressed) return;
-  if (drawable([...next, ...derived], spaceById(e.overlay.id) === "log" || mainScale() === "log")) pressed.last = next;
+  if (drawable([...next, ...derived], spaceOfOverlay(e.overlay) === "log" || paneScale(e.overlay.paneId) === "log")) pressed.last = next;
   e.overlay.points = pressed.last.map((pt) => ({ ...pt }));
 }
 /** The handle being dragged (a stored point's own handle is `p0`, `p1`…), with the points when the drag began. */
@@ -367,7 +373,7 @@ function dragged(e: OverlayEvent<unknown>): { key: string; prev: Partial<Point>[
  * (`dragChannel`) is worked out there.
  */
 function channelSpace(chart: Chart, id: string, paneId: string) {
-  const scale = spaceById(id);
+  const scale = paneId !== "candle_pane" ? "linear" : (scaleOf(id) ?? paneScale(paneId));
   const filter = { paneId };
   const price = (u: number) => fromSpace(scale, u);
   return {
@@ -384,7 +390,7 @@ const boxHandles = {
   onPressedMoving: (e: OverlayEvent<unknown>) => {
     const d = dragged(e);
     const h = BOX_HANDLES.find((b) => b.key === d?.key);
-    if (d && h && pressed) settle(e, dragBoxBy(d.prev, e.overlay.points, h, pressed.value, pointerValue(e), spaceById(e.overlay.id)));
+    if (d && h && pressed) settle(e, dragBoxBy(d.prev, e.overlay.points, h, pressed.value, pointerValue(e), spaceOfOverlay(e.overlay)));
   },
 } satisfies Partial<Template>;
 const boxHandleFigures = (p: Params): Figures => handleFigures(p, BOX_HANDLES.map((h) => ({ key: h.key, c: boxHandleAt(p.coordinates, h) })));
@@ -585,7 +591,7 @@ function regression(chart: Chart, t0: number, t1: number, scale: PriceScale) {
 function snapToRegression(id: string, { points }: OverlayPerformEventParams) {
   const [a, b] = points;
   if (!activeChart || a?.timestamp === undefined || b?.timestamp === undefined) return;
-  const fit = regression(activeChart, a.timestamp, b.timestamp, spaceById(id));
+  const fit = regression(activeChart, a.timestamp, b.timestamp, scaleOf(id) ?? paneScale("candle_pane"));
   if (!fit) return;
   const [ia, ib] = a.timestamp <= b.timestamp ? [fit.i0, fit.i1] : [fit.i1, fit.i0];
   a.value = fit.price(ia);
@@ -603,10 +609,12 @@ function fibLevels(p: Params, xa: number, xb: number, prices: number[]): Figures
   const s = fibSettingsOf(p.overlay.extendData);
   const own = lineOf(p.chart, p.overlay).color;
   const [x0, x1] = fibSpan(xa, xb, s, p.bounding.width);
-  const levels = FIB_LEVELS.map(({ level, color }) => {
-    const value = fibPrice(spaceOf(p), prices, level, s.reverse);
-    return { level, value, y: p.yAxis!.convertToPixel(value), color: s.oneColor ? own : color };
-  });
+  const levels = activeFibLevels(s)
+    .map(({ level, color }) => {
+      const value = fibPrice(spaceOf(p), prices, level, s.reverse);
+      return { level, value, y: p.yAxis!.convertToPixel(value), color: s.oneColor ? own : color };
+    })
+    .filter((l) => Number.isFinite(l.value) && Number.isFinite(l.y));
   return [
     ...(s.background
       ? fibBands(levels).map(({ y, height, color }) => ({ type: "rect", attrs: { x: x0, y, width: x1 - x0, height }, styles: fillOnly(withAlpha(color, 1 - s.transparency / 100)), ignoreEvent: true }))
@@ -1175,13 +1183,17 @@ const annotation: Template[] = [
     needDefaultPointFigure: true,
     createPointFigures: (p) => {
       const [a] = p.coordinates;
-      const top = a.y - 6;
-      const end = top - 50;
+      const size = textSizeOf(p.overlay);
       const color = lineOf(p.chart, p.overlay).color;
+      const g = annotationLayout(a.y, p.bounding.height, size);
       return [
-        line([{ x: a.x, y: top }, { x: a.x, y: end }], DASHED, true),
-        { type: "polygon", attrs: { coordinates: [{ x: a.x, y: end }, { x: a.x - 4, y: end - 5 }, { x: a.x + 4, y: end - 5 }] }, styles: fillOnly(color), ignoreEvent: true },
-        { type: "text", attrs: { x: a.x, y: end - 5, text: textOf(p.overlay) || " ", align: "center", baseline: "bottom" }, styles: { size: textSizeOf(p.overlay), backgroundColor: color, borderColor: color, color: "#ffffff" } },
+        line([{ x: a.x, y: g.stemStart }, { x: a.x, y: g.arrowTip }], DASHED, true),
+        { type: "polygon", attrs: { coordinates: [{ x: a.x, y: g.arrowTip }, { x: a.x - 4, y: g.arrowBase }, { x: a.x + 4, y: g.arrowBase }] }, styles: fillOnly(color), ignoreEvent: true },
+        {
+          type: "text",
+          attrs: { x: a.x, y: g.labelY, text: textOf(p.overlay) || " ", align: "center", baseline: g.below ? "top" : "bottom" },
+          styles: { size, backgroundColor: color, borderColor: color, color: "#ffffff" },
+        },
       ];
     },
   },
@@ -1228,6 +1240,41 @@ const annotation: Template[] = [
   },
 ];
 
+/**
+ * Vertical geometry for a `simpleAnnotation` inside a pane of height `paneHeight`, shared between
+ * the canvas overlay and the in-place HTML text editor so neither clips or drifts into the pane above.
+ * Defaults to 50px stem above the anchor; flips below when near the pane's top edge, or shortens
+ * the stem when the pane is too short for the full offset.
+ */
+export function annotationLayout(
+  anchorY: number,
+  paneHeight: number,
+  fontSize: number,
+): { stemStart: number; arrowTip: number; arrowBase: number; labelY: number; below: boolean } {
+  const pad = 4;
+  const labelH = Math.ceil(fontSize * 1.35) + 6;
+  const fullAbove = 61 + labelH + pad;
+  if (anchorY >= fullAbove || paneHeight <= 0) {
+    const stemStart = anchorY - 6;
+    const arrowTip = stemStart - 50;
+    const arrowBase = arrowTip - 5;
+    return { stemStart, arrowTip, arrowBase, labelY: arrowBase, below: false };
+  }
+  const spaceBelow = paneHeight - anchorY;
+  if (spaceBelow > anchorY) {
+    const stem = Math.max(8, Math.min(50, spaceBelow - 6 - 5 - labelH - pad));
+    const stemStart = anchorY + 6;
+    const arrowTip = stemStart + stem;
+    const arrowBase = Math.min(Math.max(arrowTip + 5, pad), Math.max(pad, paneHeight - labelH - pad));
+    return { stemStart: Math.min(stemStart, arrowTip), arrowTip: Math.min(arrowTip, arrowBase), arrowBase, labelY: arrowBase, below: true };
+  }
+  const labelY = Math.max(labelH + pad, anchorY - 61);
+  const arrowBase = labelY;
+  const arrowTip = Math.min(anchorY, arrowBase + 5);
+  const stemStart = Math.max(arrowTip, anchorY - 6);
+  return { stemStart, arrowTip, arrowBase, labelY, below: false };
+}
+
 /** TradingView's 向上 / 向下箭头: a fat arrow under (over) the point, green (red). */
 function arrowMark(name: string, up: boolean): Template {
   return {
@@ -1265,13 +1312,13 @@ function patchMoves() {
     moveAll.call(this, point, store);
     const from = this._prevPressedPoint?.value;
     if (from === undefined || point.value === undefined) return;
-    const space = spaceById(this.id);
+    const space = spaceOfOverlay(this);
     const values = movePrices(
       this._prevPressedPoints.map((pt) => pt.value),
       from,
       point.value,
       space,
-      space === "log" || mainScale() === "log",
+      space === "log" || paneScale(this.paneId) === "log",
     );
     this.points.forEach((pt, i) => (pt.value = values ? values[i] : before[i]?.value));
     // a regression's handles go back onto the fit of its new bars
@@ -1279,7 +1326,7 @@ function patchMoves() {
   };
   const moveOne = proto.eventPressedPointMove;
   proto.eventPressedPointMove = function (this: Moving, point, index) {
-    const stay = spaceById(this.id) === "log" && point.value !== undefined && point.value <= 0;
+    const stay = spaceOfOverlay(this) === "log" && point.value !== undefined && point.value <= 0;
     moveOne.call(this, stay ? { ...point, value: undefined } : point, index);
   };
 }

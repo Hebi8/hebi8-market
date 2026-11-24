@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Chart, Period } from "klinecharts";
-import { tradingDayOffset, tradingDayTimestamp } from "@/components/drawing-time";
+import { tradingDayOffset, tradingDayTimestamp, yearOffset, yearTimestamp } from "@/components/drawing-time";
 import { setOverlayChart, snapToBar } from "@/components/chart-overlays";
 
 vi.mock("klinecharts", () => ({ getOverlayClass: vi.fn(), registerOverlay: vi.fn(), utils: {} }));
@@ -143,5 +143,29 @@ describe("chart store daily mapping", () => {
     setBars(["2026-05-15", "2026-05-18"]);
     setWeekends(false);
     expect(store.dataIndexToTimestamp(2)).toBe(day("2026-05-19"));
+  });
+
+  it("maps yearly periods in UTC outside the loaded bars, including leap years and mid-year timestamps", () => {
+    // pure helpers
+    expect(yearTimestamp(day("2024-01-01"), 1)).toBe(day("2025-01-01"));
+    expect(yearTimestamp(day("2024-01-01"), -2)).toBe(day("2022-01-01"));
+    // 2024 is a leap year (366 days): half a year lands on day 183 (July 2)
+    expect(yearTimestamp(day("2024-01-01"), 0.5)).toBe(day("2024-07-02"));
+    expect(yearOffset(day("2024-01-01"), day("2024-07-02"))).toBe(0.5);
+    for (const offset of [-10, -1.25, -0.5, 0, 0.25, 1, 2.75, 15]) {
+      const ts = yearTimestamp(day("2024-01-01"), offset);
+      expect(yearOffset(day("2024-01-01"), ts)).toBeCloseTo(offset, 8);
+    }
+
+    // patched store for `{ type: "year", span: 1 }`
+    const { chart, store, originals, setPeriod } = chartWith(["2024-01-01", "2025-01-01", "2026-01-01"]);
+    setPeriod({ type: "year", span: 1 });
+    expect(store.dataIndexToTimestamp(3)).toBe(day("2027-01-01"));
+    expect(store.dataIndexToTimestamp(-1)).toBe(day("2023-01-01"));
+    expect(store.timestampToDataIndex(day("2027-01-01"))).toBe(3);
+    expect(store.timestampToDataIndex(day("2026-07-15"))).toBe(2); // mid-year stays on 2026 bar regardless of host timezone
+    expect(store.timestampToDataIndex(day("2023-12-31"))).toBe(-1);
+    expect(snapToBar(chart, day("2027-08-01"))).toBe(day("2027-01-01"));
+    Object.values(originals).forEach((method) => expect(method).not.toHaveBeenCalled());
   });
 });

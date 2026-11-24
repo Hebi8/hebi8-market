@@ -24,6 +24,8 @@ export interface Stats {
   pos52: number | null;
   /** Weekly closes for the last two years */
   spark: number[];
+  /** Latest values of configured overview formula columns (`hebi8.yaml` `columns`), by column id */
+  columns?: Record<string, number | null>;
 }
 
 function change(last: number, prev: number | undefined): number | null {
